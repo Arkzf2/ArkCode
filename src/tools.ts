@@ -204,8 +204,8 @@ async function readText(path: string): Promise<string> {
   } finally { await file.close(); }
 }
 
-function result(text: string, details: unknown = {}): { content: { type: "text"; text: string }[]; details: unknown } {
-  return { content: [{ type: "text", text: cleanOutput(text) }], details };
+function result(text: string, details: unknown = {}, isError = false): { content: { type: "text"; text: string }[]; details: unknown; isError?: boolean } {
+  return { content: [{ type: "text", text: cleanOutput(text) }], details, ...(isError ? { isError: true } : {}) };
 }
 
 function define<T extends TSchema>(
@@ -337,8 +337,7 @@ export function createTools(options: {
     try {
       const receipt = await shell.execute(params.command, controller.signal, (value) => update?.(value.output));
       const text = `${receipt.output}\n[${receipt.status}; exit code ${receipt.exitCode ?? "unknown"}${receipt.truncated ? "; output truncated" : ""}]`;
-      if (receipt.status !== "completed") throw new Error(text);
-      return result(text, receipt);
+      return result(text, receipt, receipt.status !== "completed");
     } finally {
       if (timer) clearTimeout(timer);
       signal?.removeEventListener("abort", abort);

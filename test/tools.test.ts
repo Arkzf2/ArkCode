@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
+import { z } from "zod";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ApprovalRequest } from "../src/domain.js";
 import { createTools, ManagedShell, workspacePath } from "../src/tools.js";
@@ -141,8 +142,15 @@ test("bash timeout and nonzero exit report a failed tool result", { timeout: 150
   try {
     const bash = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "bash");
     assert.ok(bash);
-    await assert.rejects(executeTool(bash, "failure", { command: "node -e \"process.exit(9)\"" }), /exit code 9/);
-    await assert.rejects(executeTool(bash, "timeout", { command: "node -e \"setTimeout(()=>{},30000)\"", timeout: 1 }), /cancelled/);
+    const failedReceipt = z.object({ isError: z.literal(true), content: z.array(z.object({ type: z.literal("text"), text: z.string() })), details: z.object({ exitCode: z.number().nullable(), status: z.string() }) });
+    const failure = failedReceipt.parse(await executeTool(bash, "failure", { command: "node -e \"process.exit(9)\"" }));
+    assert.equal(failure.isError, true);
+    assert.equal(failure.details.exitCode, 9);
+    assert.match(JSON.stringify(failure.content), /exit code 9/);
+    const timeout = failedReceipt.parse(await executeTool(bash, "timeout", { command: "node -e \"setTimeout(()=>{},30000)\"", timeout: 1 }));
+    assert.equal(timeout.isError, true);
+    assert.equal(timeout.details.status, "cancelled");
+    assert.match(JSON.stringify(timeout.content), /cancelled/);
     assert.equal(shell.list().filter((entry) => entry.status === "running").length, 0);
   } finally { await shell.stopAll(); await files.cleanup(); }
 });

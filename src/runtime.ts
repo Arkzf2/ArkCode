@@ -14,7 +14,7 @@ import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, readRunMarker, w
 import { ManagedShell, createTools, cleanOutput, workspacePath } from "./tools.js";
 import { getBranch } from "./review.js";
 import type { CliOptions } from "./args.js";
-import type { ApprovalRequest, InputMode, Permission, RunState, UserInterface } from "./domain.js";
+import type { ApprovalRequest, InputMode, Permission, RunState, ToolDetails, UserInterface } from "./domain.js";
 
 export function contentText(content: unknown): string {
   if (typeof content === "string") return cleanOutput(content);
@@ -28,6 +28,21 @@ const unsupported = new Set(["goal", "agent", "mcp", "plugins", "memories", "pla
 const mutatingTools = ["write", "edit", "bash"];
 const readTools = ["read", "grep", "find", "ls"];
 const modelsDocument = z.object({ providers: z.record(z.string(), z.record(z.string(), z.unknown())).default({}) }).passthrough();
+const toolTargetSchema = z.object({ path: z.string().optional(), command: z.string().optional(), pattern: z.string().optional() });
+const toolResultSchema = z.object({ exitCode: z.number().nullable().optional() });
+const shellHistorySchema = z.object({ id: z.string(), command: z.string(), exitCode: z.number().nullable(), status: z.enum(["running", "completed", "failed", "cancelled"]), output: z.string() });
+
+function toolDetails(args: unknown): ToolDetails | undefined {
+  const result = toolTargetSchema.safeParse(args);
+  if (!result.success) return undefined;
+  const target = result.data.command ?? result.data.path ?? result.data.pattern;
+  return target ? { target: cleanOutput(target) } : undefined;
+}
+
+function toolResultDetails(value: unknown): ToolDetails | undefined {
+  const result = toolResultSchema.safeParse(value);
+  return result.success && typeof result.data.exitCode === "number" ? { exitCode: result.data.exitCode } : undefined;
+}
 
 export function configureEndpoint(options: { home: string; provider: string; model: string; baseUrl?: string; apiKeyEnv?: string }): void {
   const path = join(options.home, "models.json");
@@ -70,6 +85,7 @@ export class ArkHost {
   private lastAnswer = "";
   private storageFailed = false;
   private executionUnconfirmed = false;
+  private responseId = "";
   readonly home: string;
   cwd: string;
 
@@ -124,7 +140,7 @@ export class ArkHost {
       manager = this.options.command === "fork" ? SessionManager.forkFrom(path, this.cwd, this.sessionDir()) : SessionManager.open(path, this.sessionDir(), this.cwd);
     }
     await this.replaceSession(manager, true);
-    this.ui.message("info", `Workspace ${this.cwd}\nSandbox: none | Permissions: ${this.effectivePermission()} | Shell: ${this.shell.executable}`);
+    this.ui.message("info", "Sandbox: none. Approved commands run with your OS privileges.");
     if (this.executionUnconfirmed && this.state.kind === "idle" && this.state.outcome !== "interrupted") this.ui.message("error", `Execution unconfirmed. This workspace remains Read Only. Inspect files and terminate any orphaned commands before resolving active run markers in ${join(this.home, "runs")}. No tools will be replayed.`);
     if (this.lease.viewer) this.ui.message("info", this.lease.viewerReason
       ? `Read-only viewer. ${this.lease.viewerReason} Session mutations and agent execution are disabled.`
@@ -197,27 +213,56 @@ export class ArkHost {
   }
   private toolNames(): string[] { return this.effectivePermission() === "read-only" ? readTools : [...readTools, ...mutatingTools]; }
   private renderHistory(): void {
+    const details = new Map<string, ToolDetails>();
     for (const message of this.session?.messages ?? []) {
       if (message.role === "user") this.ui.message("user", contentText(message.content));
       else if (message.role === "assistant") {
+        for (const [index, block] of message.content.entries()) {
+          if (block.type === "toolCall") {
+            const target = toolDetails(block.arguments);
+            if (target) details.set(block.id, target);
+          } else if (block.type === "thinking" && !block.redacted && block.thinking) {
+            this.ui.reasoning(`${randomUUID()}:${index}`, cleanOutput(block.thinking), false);
+          }
+        }
         const text = contentText(message.content);
         if (text) this.ui.message("assistant", text);
         if ((message.stopReason === "stop" || message.stopReason === "length") && text) this.lastAnswer = text;
-      } else if (message.role === "toolResult") this.ui.tool(message.toolCallId, message.toolName, contentText(message.content), message.isError ? "error" : "done");
-      else if (message.role === "bashExecution") this.ui.tool(randomUUID(), "shell", message.output, message.cancelled || message.exitCode !== 0 ? "error" : "done");
-      else if (message.role === "custom" && message.customType === "arkcode-shell") this.ui.message("info", contentText(message.content));
+      } else if (message.role === "toolResult") this.ui.tool(message.toolCallId, message.toolName, contentText(message.content), message.isError ? "error" : "done", { ...details.get(message.toolCallId), ...toolResultDetails(message.details) });
+      else if (message.role === "bashExecution") this.ui.tool(randomUUID(), "shell", message.output, message.cancelled || message.exitCode !== 0 ? "error" : "done", { target: cleanOutput(message.command), exitCode: message.exitCode });
+      else if (message.role === "custom" && message.customType === "arkcode-shell") {
+        const receipt = shellHistorySchema.safeParse(message.details);
+        if (receipt.success) {
+          const { id, command, output, status, exitCode } = receipt.data;
+          this.ui.tool(id, "shell", cleanOutput(output), status === "completed" ? "done" : "error", { target: cleanOutput(command), ...(exitCode !== null ? { exitCode } : {}) });
+        } else this.ui.message("info", contentText(message.content));
+      }
     }
   }
   private event(event: AgentSessionEvent): void {
     switch (event.type) {
       case "message_start":
         if (event.message.role === "user") this.ui.message("user", contentText(event.message.content));
+        else if (event.message.role === "assistant") this.responseId = randomUUID();
         break;
       case "message_update":
         if (event.assistantMessageEvent.type === "text_delta") this.ui.assistantDelta(cleanOutput(event.assistantMessageEvent.delta));
+        else if (event.assistantMessageEvent.type === "text_start") {
+          for (const [index, block] of event.assistantMessageEvent.partial.content.entries()) {
+            if (block.type === "thinking" && !block.redacted) this.ui.reasoning(`${this.responseId}:${index}`, cleanOutput(block.thinking), false);
+          }
+        }
+        else if (event.assistantMessageEvent.type === "thinking_delta" || event.assistantMessageEvent.type === "thinking_end") {
+          const update = event.assistantMessageEvent;
+          const block = update.partial.content[update.contentIndex];
+          if (block?.type === "thinking" && !block.redacted) this.ui.reasoning(`${this.responseId}:${update.contentIndex}`, cleanOutput(block.thinking), update.type !== "thinking_end");
+        }
         return;
       case "message_end":
         if (event.message.role === "assistant") {
+          for (const [index, block] of event.message.content.entries()) {
+            if (block.type === "thinking" && !block.redacted) this.ui.reasoning(`${this.responseId}:${index}`, cleanOutput(block.thinking), false);
+          }
           const text = contentText(event.message.content);
           this.ui.assistantEnd(text);
           if (event.message.stopReason === "error") { this.failure = true; this.ui.message("error", cleanOutput(event.message.errorMessage ?? "Model request failed.")); }
@@ -225,9 +270,9 @@ export class ArkHost {
           else if ((event.message.stopReason === "stop" || event.message.stopReason === "length") && text) this.lastAnswer = text;
         }
         break;
-      case "tool_execution_start": this.ui.tool(event.toolCallId, event.toolName, cleanOutput(JSON.stringify(event.args)), "running"); break;
+      case "tool_execution_start": this.ui.tool(event.toolCallId, event.toolName, "", "running", toolDetails(event.args)); break;
       case "tool_execution_update": this.ui.tool(event.toolCallId, event.toolName, contentText(event.partialResult.content), "running"); break;
-      case "tool_execution_end": this.ui.tool(event.toolCallId, event.toolName, contentText(event.result.content), event.isError ? "error" : "done"); break;
+      case "tool_execution_end": this.ui.tool(event.toolCallId, event.toolName, contentText(event.result.content), event.isError ? "error" : "done", toolResultDetails(event.result.details)); break;
       case "queue_update": this.queued = [...event.steering.map((text) => `Instruction pending: ${text}`), ...event.followUp.map((text) => `Queued follow-up: ${text}`)]; break;
       case "auto_retry_start": this.ui.message("info", `Retry ${event.attempt}/${event.maxAttempts}. ${cleanOutput(event.errorMessage)}`); break;
       case "auto_retry_end": if (!event.success && event.finalError) { this.failure = true; this.ui.message("error", cleanOutput(event.finalError)); } else if (event.success) this.failure = false; break;
@@ -333,9 +378,9 @@ export class ArkHost {
     if (!command) throw new Error("Use ! followed by a shell command.");
     if (!await this.broker.authorize({ id, tool: "bash", cwd: this.cwd, description: command })) throw new Error("Shell command denied.");
     if (this.interrupted) return;
-    const receipt = await this.shell.execute(command, undefined, (value) => this.ui.tool(value.id, "shell", value.output || value.command, "running"));
-    this.ui.tool(receipt.id, "shell", receipt.output + `\nExit code: ${receipt.exitCode ?? "unknown"}`, receipt.status === "completed" ? "done" : "error");
-    await this.session?.sendCustomMessage({ customType: "arkcode-shell", content: `User shell command: ${command}\n${receipt.output}\nExit code: ${receipt.exitCode}`, display: true }, { triggerTurn: false });
+    const receipt = await this.shell.execute(command, undefined, (value) => this.ui.tool(value.id, "shell", value.output, "running", { target: cleanOutput(command) }));
+    this.ui.tool(receipt.id, "shell", receipt.output + `\nExit code: ${receipt.exitCode ?? "unknown"}`, receipt.status === "completed" ? "done" : "error", { target: cleanOutput(command), ...(receipt.exitCode !== null ? { exitCode: receipt.exitCode } : {}) });
+    await this.session?.sendCustomMessage({ customType: "arkcode-shell", content: `User shell command: ${command}\n${receipt.output}\nExit code: ${receipt.exitCode}`, details: receipt, display: true }, { triggerTurn: false });
     this.failure = receipt.status === "failed";
     this.interrupted ||= receipt.status === "cancelled";
   }

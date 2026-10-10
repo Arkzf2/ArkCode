@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   CombinedAutocompleteProvider,
   Container,
+  CURSOR_MARKER,
   Editor,
   getNativeClipboard,
   Input,
@@ -16,7 +17,9 @@ import {
   SelectList,
   stripTerminalSequences,
   Text,
+  truncateToWidth,
   TuiMainScreen,
+  visibleWidth,
   wrapTextWithAnsi,
   type Component,
   type EditorTheme,
@@ -31,6 +34,7 @@ import type {
   Choice,
   InputMode,
   Status,
+  ToolDetails,
   UiActions,
   UserInterface,
 } from "./domain.js";
@@ -40,7 +44,8 @@ type MessageKind = Parameters<UserInterface["message"]>[0];
 type ToolState = Parameters<UserInterface["tool"]>[3];
 type TranscriptEntry =
   | { kind: "message"; role: MessageKind; text: string; component: Markdown | Text }
-  | { kind: "tool"; id: string; name: string; text: string; state: ToolState; component: Text };
+  | { kind: "reasoning"; id: string; text: string; active: boolean; component: Text }
+  | { kind: "tool"; id: string; name: string; target: string; exitCode?: number; text: string; state: ToolState };
 type Panel =
   | { kind: "choice"; component: Container; cancel: () => void; select: (index: number) => void }
   | { kind: "input"; component: Container; cancel: () => void };
@@ -52,17 +57,27 @@ export function sanitizeTerminalText(text: string): string {
 }
 
 const ansi = (code: number) => (text: string): string => `\x1b[${code}m${text}\x1b[0m`;
+const fg = (red: number, green: number, blue: number) => (text: string): string => `\x1b[38;2;${red};${green};${blue}m${text}\x1b[0m`;
 const bold = ansi(1);
-const cyan = ansi(36);
-const green = ansi(32);
-const yellow = ansi(33);
-const red = ansi(31);
+const accent = fg(184, 178, 213);
+const green = fg(146, 189, 160);
+const yellow = fg(199, 183, 164);
+const red = fg(219, 160, 160);
+const dim = fg(145, 146, 154);
+const userText = fg(209, 201, 181);
+const pathText = fg(168, 170, 180);
+const commandText = fg(214, 215, 218);
+const neutral = fg(195, 196, 205);
+const reasoningText = fg(180, 173, 191);
+const directoryText = fg(167, 188, 192);
+const permissionText = fg(203, 189, 152);
+const branchText = fg(170, 192, 172);
 const italic = ansi(3);
 
 function themes(): { editor: EditorTheme; markdown: MarkdownTheme; select: SelectListTheme } {
-  const muted = ansi(90);
+  const muted = dim;
   const select: SelectListTheme = {
-    selectedPrefix: cyan,
+    selectedPrefix: accent,
     selectedText: bold,
     description: muted,
     scrollInfo: muted,
@@ -70,24 +85,59 @@ function themes(): { editor: EditorTheme; markdown: MarkdownTheme; select: Selec
   };
   return {
     select,
-    editor: { borderColor: muted, selectList: select },
+    editor: { borderColor: accent, selectList: select },
     markdown: {
-      heading: (text) => bold(cyan(text)),
-      link: cyan,
+      heading: (text) => bold(neutral(text)),
+      link: neutral,
       linkUrl: muted,
-      code: yellow,
-      codeBlock: green,
+      code: neutral,
+      codeBlock: neutral,
       codeBlockBorder: muted,
       quote: italic,
       quoteBorder: muted,
       hr: muted,
-      listBullet: cyan,
+      listBullet: neutral,
       bold,
       italic,
       strikethrough: ansi(9),
       underline: ansi(4),
     },
   };
+}
+
+class ArkEditor extends Editor {
+  private bottomBorder = "";
+  protected override renderTopBorder(width: number, hiddenLineCount: number): string {
+    if (width < 2) return accent("─".repeat(width));
+    const edge = hiddenLineCount > 0 ? "↑" : "╭";
+    return accent(`${edge}${"─".repeat(Math.max(0, width - 2))}╮`);
+  }
+
+  protected override renderBottomBorder(width: number, hiddenLineCount: number): string {
+    const edge = hiddenLineCount > 0 ? "↓" : "╰";
+    this.bottomBorder = accent(width < 2 ? "─".repeat(width) : `${edge}${"─".repeat(Math.max(0, width - 2))}╯`);
+    return this.bottomBorder;
+  }
+
+  override render(width: number): string[] {
+    const lines = super.render(width);
+    const bottom = lines.indexOf(this.bottomBorder);
+    const padding = Math.min(this.getPaddingX(), Math.max(0, Math.floor((width - 1) / 2)));
+    if (bottom > 1 && padding > 0) {
+      const prompt = padding >= 3 ? `│ ›${" ".repeat(padding - 3)}` : padding === 2 ? "│›" : "│";
+      const continuation = `│${" ".repeat(padding - 1)}`;
+      for (let index = 1; index < bottom; index++) {
+        const line = lines[index];
+        if (line !== undefined) lines[index] = `${accent(index === 1 ? prompt : continuation)}${line.slice(padding, -1)}${accent("│")}`;
+      }
+      if (!this.getText()) {
+        const available = Math.max(1, width - padding - 1);
+        const placeholder = truncateToWidth("Ask ArkCode to do anything", available, "");
+        lines[1] = `${accent(prompt)}${this.focused ? CURSOR_MARKER : ""}${dim(placeholder)}${" ".repeat(Math.max(0, available - visibleWidth(placeholder)))}${accent("│")}`;
+      }
+    }
+    return lines;
+  }
 }
 
 class RenderComponent implements Component {
@@ -162,6 +212,9 @@ export class TerminalUI implements UserInterface {
   status(value: Status): void {
     const oldCwd = this.currentStatus?.cwd;
     this.currentStatus = value;
+    if (value.state.kind === "idle") {
+      for (const entry of this.entries) if (entry.kind === "reasoning") entry.active = false;
+    }
     if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands, value.cwd));
     this.render();
   }
@@ -173,6 +226,7 @@ export class TerminalUI implements UserInterface {
   }
 
   assistantDelta(text: string): void {
+    for (const entry of this.entries) if (entry.kind === "reasoning") entry.active = false;
     if (!this.activeAssistant) {
       this.activeAssistant = { kind: "message", role: "assistant", text: "", component: this.messageComponent("assistant", "") };
       this.entries.push(this.activeAssistant);
@@ -191,17 +245,31 @@ export class TerminalUI implements UserInterface {
     } else if (text) this.message("assistant", text);
   }
 
-  tool(id: string, name: string, text: string, state: ToolState): void {
+  reasoning(id: string, text: string, active: boolean): void {
+    const existing = this.entries.find((entry) => entry.kind === "reasoning" && entry.id === id);
+    if (existing?.kind === "reasoning") {
+      existing.text = sanitizeTerminalText(text);
+      existing.active = active;
+      existing.component.setText(existing.text);
+    } else {
+      const cleaned = sanitizeTerminalText(text);
+      this.entries.push({ kind: "reasoning", id, text: cleaned, active, component: new Text(cleaned, 0, 1) });
+    }
+    this.render();
+  }
+
+  tool(id: string, name: string, text: string, state: ToolState, details?: ToolDetails): void {
     let entry = this.tools.get(id);
     if (!entry) {
-      entry = { kind: "tool", id, name, text, state, component: new Text("", 2, 0) };
+      entry = { kind: "tool", id, name, target: "", text, state };
       this.tools.set(id, entry);
       this.entries.push(entry);
     }
     entry.name = sanitizeTerminalText(name);
     entry.text = sanitizeTerminalText(text);
     entry.state = state;
-    this.updateTool(entry);
+    if (details?.target !== undefined) entry.target = sanitizeTerminalText(details.target);
+    if (details?.exitCode !== undefined) entry.exitCode = details.exitCode;
     this.render();
   }
 
@@ -220,6 +288,7 @@ export class TerminalUI implements UserInterface {
       const component = new Container();
       component.addChild(new Text(bold(sanitizeTerminalText(title)), 2, 1));
       component.addChild(list);
+      component.addChild(new Text(dim("↑/↓ select · Enter confirm · Esc cancel"), 2, 1));
       const finish = (value: string | null): void => {
         this.closePanel();
         resolve(value);
@@ -249,6 +318,7 @@ export class TerminalUI implements UserInterface {
       const component = new Container();
       component.addChild(new Text(bold(sanitizeTerminalText(title)), 2, 1));
       component.addChild(input);
+      component.addChild(new Text(dim("Enter confirm · Esc cancel"), 2, 1));
       const finish = (value: string | null): void => {
         this.closePanel();
         resolve(value);
@@ -264,10 +334,10 @@ export class TerminalUI implements UserInterface {
 
   async approve(request: ApprovalRequest): Promise<ApprovalDecision> {
     const result = await this.choose(
-      `Approval required\n${request.tool}\n${request.description}\nDirectory ${request.cwd}`,
+      `Allow this tool request?\nTool: ${request.tool}\nRequest: ${request.description}\nDirectory: ${request.cwd}`,
       [
         { value: "once", label: "1. Yes, proceed" },
-        { value: "session", label: "2. Allow this exact operation for the session" },
+        { value: "session", label: "2. Yes, and don't ask again for this command in this session" },
         { value: "deny", label: "3. No, continue without running it" },
       ],
     );
@@ -303,43 +373,106 @@ export class TerminalUI implements UserInterface {
   }
 
   private createEditor(): Editor {
-    const editor = new Editor(this.tui, this.theme.editor, { paddingX: 2, autocompleteMaxVisible: 6 });
+    const editor = new ArkEditor(this.tui, this.theme.editor, { paddingX: 4, autocompleteMaxVisible: 6 });
     editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands, this.currentStatus?.cwd ?? process.cwd()));
     editor.onSubmit = (value) => this.submit(value, this.busy() ? "steer" : "prompt");
     return editor;
   }
 
   private messageComponent(kind: MessageKind, text: string): Markdown | Text {
-    if (kind === "assistant") return new Markdown(text, 2, 1, this.theme.markdown);
-    if (kind === "user") return new Text(`${cyan("> ")}${text}`, 2, 1);
-    return new Text(kind === "error" ? red(text) : ansi(2)(text), 2, 1);
+    if (kind === "assistant") return new Markdown(text, 0, 1, this.theme.markdown);
+    return new Text(text, 0, kind === "user" ? 0 : 1);
   }
 
-  private updateTool(entry: Extract<TranscriptEntry, { kind: "tool" }>): void {
-    const label = entry.state === "running" ? yellow("running") : entry.state === "error" ? red("failed") : green("done");
-    const lines = entry.text.split("\n");
-    const output = this.expanded ? entry.text : lines.slice(0, 3).join("\n");
-    const omitted = !this.expanded && lines.length > 3 ? `\n  ... ${lines.length - 3} more lines` : "";
-    entry.component.setText(`${label}  ${bold(entry.name)}${output ? `\n${output}` : ""}${omitted}`);
+  private toolLines(entry: Extract<TranscriptEntry, { kind: "tool" }>, width: number): string[] {
+    const action = this.toolAction(entry.name, entry.state);
+    const shell = entry.name === "bash" || entry.name === "shell";
+    const marker = entry.state === "error" ? red("•") : entry.state === "done" && shell ? green("•") : dim("•");
+    const target = (shell ? commandText : pathText)(entry.target || entry.name);
+    const result = entry.exitCode === undefined ? "" : `  ${entry.exitCode === 0 ? dim(`exit ${entry.exitCode}`) : red(`exit ${entry.exitCode}`)}`;
+    const heading = wrapTextWithAnsi(`${neutral(action)} ${target}${result}`, Math.max(1, width - 4));
+    const rows = heading.map((line, index) => `  ${index === 0 ? marker : " "} ${line}`);
+    const output = entry.text;
+    const wrapped = output ? output.split("\n").flatMap((line) => wrapTextWithAnsi(this.formatToolLine(line), Math.max(1, width - 6))) : [];
+    const preview = this.expanded ? wrapped : wrapped.slice(0, 3);
+    rows.push(...preview.map((line, index) => `    ${index === 0 ? dim("└") : " "} ${line}`));
+    if (!this.expanded && wrapped.length > 3) rows.push(...wrapTextWithAnsi(dim(`+${wrapped.length - 3} lines · Ctrl+T for details`), Math.max(1, width - 4)).map((line) => `    ${line}`));
+    return [...rows, ""];
+  }
+
+  private toolAction(name: string, state: ToolState): string {
+    if (state === "error") return "Failed";
+    if (name === "read" || name === "find" || name === "grep" || name === "ls") return state === "running" ? "Exploring" : "Explored";
+    if (name === "edit" || name === "write") return state === "running" ? "Editing" : "Edited";
+    if (name === "bash" || name === "shell") return state === "running" ? "Running" : "Ran";
+    return state === "running" ? "Working" : "Worked";
+  }
+
+  private formatToolLine(line: string): string {
+    if (line.startsWith("+") && !line.startsWith("+++")) return green(line);
+    if (line.startsWith("-") && !line.startsWith("---")) return red(line);
+    if (line.startsWith("@@")) return dim(line);
+    if (/^\s*(PASS|ok|✓)/.test(line)) return green(line);
+    if (/^\s*(FAIL|Error|AssertionError)/.test(line)) return red(line);
+    return dim(line);
   }
 
   private rebuild(): void {
     this.tui.clear();
-    this.tui.addChild(new RenderComponent((width) =>
-      new Text(bold(this.currentStatus?.viewer ? "ARKCODE  Saved session" : "ARKCODE"), 2, 1).render(width)));
+    this.tui.addChild(new RenderComponent((width) => this.headerLines(width)));
     this.tui.addChild(new RenderComponent((width) => {
       const lines: string[] = [];
-      for (const entry of this.entries.slice(this.visibleStart)) {
-        lines.push(...entry.component.render(width));
-        if (entry.kind === "tool") lines.push("");
+      const entries = this.entries.slice(this.visibleStart);
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index];
+        if (!entry) continue;
+        if (entry.kind === "tool") {
+          const group = [entry];
+          if (!this.expanded && this.exploration(entry)) {
+            let next = entries[index + 1];
+            while (next?.kind === "tool" && this.exploration(next)) {
+              group.push(next);
+              index++;
+              next = entries[index + 1];
+            }
+          }
+          if (group.length > 1) {
+            lines.push(`  ${dim("•")} ${neutral("Explored")}`);
+            const output = group.flatMap((tool) => wrapTextWithAnsi(`${tool.name === "read" ? "Read" : tool.name} ${tool.target || tool.name}`, Math.max(1, width - 6)));
+            lines.push(...output.slice(0, 3).map((line, offset) => `    ${offset === 0 ? dim("└") : " "} ${dim(line)}`));
+            if (output.length > 3) lines.push(...wrapTextWithAnsi(dim(`+${output.length - 3} lines · Ctrl+T for details`), Math.max(1, width - 4)).map((line) => `    ${line}`));
+            lines.push("");
+          } else lines.push(...this.toolLines(entry, width));
+          continue;
+        }
+        if (entry.kind === "reasoning" && !this.expanded) continue;
+        const user = entry.kind === "message" && entry.role === "user";
+        const rendered = entry.component.render(Math.max(1, width - (user ? 6 : 4)));
+        if (entry.kind === "message" && entry.role === "user") {
+          lines.push("", ...rendered.map((line, offset) => {
+            const body = truncateToWidth(line, Math.max(1, width - 6), "");
+            return `  \x1b[48;2;8;8;10m${bold(userText(`▎ ${offset === 0 ? "›" : " "} ${body}${" ".repeat(Math.max(0, width - 6 - visibleWidth(body)))}`))}\x1b[0m`;
+          }), "");
+          continue;
+        }
+        let first = true;
+        for (const line of rendered) {
+          if (!stripTerminalSequences(line).trim()) { lines.push(""); continue; }
+          const color = entry.kind === "reasoning" ? (value: string) => italic(dim(value)) : entry.role === "error" ? red : entry.role === "info" ? dim : neutral;
+          lines.push(`  ${first ? dim("•") : " "} ${color(line)}`);
+          first = false;
+        }
       }
       return lines;
     }));
     this.tui.addChild(new RenderComponent((width) => this.activity(width)));
-    if (this.panel) this.tui.addChild(this.panel.component);
-    this.tui.addChild(this.editor);
+    this.tui.addChild(this.panel?.component ?? this.editor);
     this.tui.addChild(new RenderComponent((width) => this.statusLines(width)));
     if (!this.panel) this.tui.setFocus(this.editor);
+  }
+
+  private exploration(entry: Extract<TranscriptEntry, { kind: "tool" }>): boolean {
+    return entry.state === "done" && ["read", "find", "grep", "ls"].includes(entry.name);
   }
 
   private activity(width: number): string[] {
@@ -349,24 +482,37 @@ export class TerminalUI implements UserInterface {
     if (status.state.kind !== "idle") {
       const elapsed = Math.floor((Date.now() - status.state.startedAt) / 1000);
       const currentTool = [...this.tools.values()].findLast((tool) => tool.state === "running");
-      const label = status.state.kind === "awaiting-approval" ? "Awaiting approval" :
-        status.state.kind === "stopping" ? "Stopping" : currentTool ? `Running ${currentTool.name}` : "Working";
-      rows.push(`${label}  ${elapsed}s`);
+      const thinking = this.entries.some((entry) => entry.kind === "reasoning" && entry.active);
+      const label = status.state.kind === "awaiting-approval" ? "Approval needed" :
+        status.state.kind === "stopping" ? "Stopping" : currentTool ? `${this.toolAction(currentTool.name, "running")} ${currentTool.target || currentTool.name}` : this.activeAssistant ? "Writing response" : thinking ? "Thinking" : "Working";
+      rows.push(`${dim("•")} ${label}  ${dim(`(${elapsed}s)`)}`);
     } else if (status.state.outcome === "interrupted") rows.push("Interrupted");
     else if (status.state.outcome === "failed") rows.push("Failed");
-    if (status.queued.length) rows.push(...status.queued.map(sanitizeTerminalText));
-    return rows.flatMap((row) => wrapTextWithAnsi(ansi(2)(row), Math.max(1, width - 4)).map((line) => `  ${line}`));
+    else rows.push(status.state.outcome === "completed" ? "Completed" : "Ready");
+    if (status.queued.length) rows.push(...status.queued.map((item) => `Queued · ${sanitizeTerminalText(item)}`));
+    return rows.flatMap((row) => wrapTextWithAnsi(dim(row), Math.max(1, width - 4)).map((line) => `  ${line}`));
   }
 
   private statusLines(width: number): string[] {
     const status = this.currentStatus;
     if (!status) return [];
+    const permission = status.permission === "read-only" ? "Read only" : status.permission === "ask" ? "Ask for approval" : "Full access";
     const fields = [
-      `Model ${status.model}`, `Thinking ${status.thinking}`, `Directory ${status.cwd}`,
-      `Permissions ${status.permission}`, `Branch ${status.branch || "none"}`, `Context ${status.context}`,
-    ].map(sanitizeTerminalText);
-    return fields.join("  |  ").split("\n").flatMap((line) =>
-      wrapTextWithAnsi(ansi(2)(line), Math.max(1, width - 4)).map((row) => `  ${row}`));
+      accent(sanitizeTerminalText(status.model)),
+      reasoningText(sanitizeTerminalText(status.thinking)),
+      directoryText(sanitizeTerminalText(status.cwd)),
+      permissionText(permission),
+      branchText(sanitizeTerminalText(status.branch || "No Git")),
+      yellow(sanitizeTerminalText(status.context.replace("Context unknown", "Context unavailable"))),
+    ];
+    const joined = fields.join("  ");
+    return wrapTextWithAnsi(joined, Math.max(1, width - 4)).map((row) => `  ${row}`);
+  }
+
+  private headerLines(width: number): string[] {
+    const status = this.currentStatus;
+    const title = `${bold(neutral(">_ ArkCode"))}${status?.viewer ? ` ${dim("Saved session")}` : ""}`;
+    return [`  ${truncateToWidth(title, Math.max(1, width - 4), "")}`, `  ${fg(25, 25, 30)("─".repeat(Math.max(1, width - 4)))}`, ""];
   }
 
   private closePanel(): void {
@@ -396,10 +542,9 @@ export class TerminalUI implements UserInterface {
 
   private handleKeys(data: string): TuiInputListenerResult {
     if (isKeyRelease(data)) return { consume: true };
-    // Paste payload must never become an approval decision or a global shortcut.
     if (this.pasting || data.includes("\x1b[200~")) {
       this.pasting = !data.includes("\x1b[201~");
-      return this.panel?.kind === "choice" ? { consume: true } : undefined;
+      return this.panel?.kind === "choice" || (!this.panel && this.currentStatus?.state.kind === "stopping") ? { consume: true } : undefined;
     }
     const now = Date.now();
     if (!matchesKey(data, "escape")) this.lastEscape = 0;
@@ -418,6 +563,7 @@ export class TerminalUI implements UserInterface {
       }
       return undefined;
     }
+    if (this.currentStatus?.state.kind === "stopping" && !matchesKey(data, "ctrl+c") && !matchesKey(data, "ctrl+t") && !matchesKey(data, "ctrl+o")) return { consume: true };
     if (matchesKey(data, "ctrl+c")) {
       this.run(() => this.busy() ? this.actions.interrupt() : this.actions.exit());
     } else if (matchesKey(data, "ctrl+d") && !this.draft()) {
@@ -426,7 +572,6 @@ export class TerminalUI implements UserInterface {
       if (this.editor.isShowingAutocomplete()) return undefined;
       if (this.expanded) {
         this.expanded = false;
-        for (const tool of this.tools.values()) this.updateTool(tool);
         this.render();
       } else if (this.busy()) this.run(() => this.actions.interrupt());
       else if (!this.draft()) {
@@ -440,7 +585,6 @@ export class TerminalUI implements UserInterface {
     } else if (matchesKey(data, "ctrl+t")) {
       this.expanded = !this.expanded;
       if (this.expanded) this.visibleStart = 0;
-      for (const tool of this.tools.values()) this.updateTool(tool);
       this.render();
     } else if (matchesKey(data, "ctrl+o")) {
       this.run(() => this.actions.submit("/copy", "prompt"));
@@ -532,7 +676,10 @@ export class PlainUI implements UserInterface {
       this.streamedText = "";
     }
   }
-  tool(id: string, name: string, text: string, state: ToolState): void { this.event("tool", { id, name, text, state }); }
+  reasoning(id: string, text: string, active: boolean): void { this.event("reasoning", { id, text, active }); }
+  tool(id: string, name: string, text: string, state: ToolState, details?: ToolDetails): void {
+    this.event("tool", { id, name, text, state, ...details });
+  }
   choose(_title: string, _choices: Choice[]): Promise<string | null> { return Promise.resolve(null); }
   input(_title: string, _initial?: string): Promise<string | null> { return Promise.resolve(null); }
   approve(request: ApprovalRequest): Promise<ApprovalDecision> {

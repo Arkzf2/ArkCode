@@ -10,7 +10,7 @@ import { parseCli } from "../src/args.js";
 import { ArkHost } from "../src/runtime.js";
 import { ApprovalBroker } from "../src/approval.js";
 import { inspectSession, writeRunMarker } from "../src/storage.js";
-import type { ApprovalDecision, ApprovalRequest, Choice, Permission, Status, UserInterface } from "../src/domain.js";
+import type { ApprovalDecision, ApprovalRequest, Choice, Permission, Status, ToolDetails, UserInterface } from "../src/domain.js";
 
 const requestSchema = z.object({
   model: z.string(),
@@ -18,12 +18,13 @@ const requestSchema = z.object({
   tools: z.array(z.object({ function: z.object({ name: z.string() }).passthrough() }).passthrough()).optional(),
 }).passthrough();
 type ModelRequest = z.infer<typeof requestSchema>;
-type Reply = { kind: "text"; text: string } | { kind: "tool"; name: string; arguments: object };
+type Reply = { kind: "text"; text: string; thinking?: string } | { kind: "tool"; name: string; arguments: object };
 
 class RecordingUI implements UserInterface {
   statuses: Status[] = [];
   messages: Array<{ kind: "user" | "assistant" | "info" | "error"; text: string }> = [];
-  tools: Array<{ name: string; text: string; state: "running" | "done" | "error" }> = [];
+  tools: Array<{ name: string; text: string; state: "running" | "done" | "error"; details?: ToolDetails }> = [];
+  thoughts: Array<{ id: string; text: string; active: boolean }> = [];
   answers: string[] = [];
   deltas = "";
   approvals: ApprovalRequest[] = [];
@@ -34,7 +35,8 @@ class RecordingUI implements UserInterface {
   message(kind: "user" | "assistant" | "info" | "error", text: string): void { this.messages.push({ kind, text }); }
   assistantDelta(text: string): void { this.deltas += text; }
   assistantEnd(text: string): void { this.answers.push(text); }
-  tool(_id: string, name: string, text: string, state: "running" | "done" | "error"): void { this.tools.push({ name, text, state }); }
+  reasoning(id: string, text: string, active: boolean): void { this.thoughts.push({ id, text, active }); }
+  tool(_id: string, name: string, text: string, state: "running" | "done" | "error", details?: ToolDetails): void { this.tools.push({ name, text, state, details }); }
   async choose(_title: string, _choices: Choice[]): Promise<string | null> { return null; }
   async input(_title: string, _initial?: string): Promise<string | null> { return null; }
   approve(request: ApprovalRequest): Promise<ApprovalDecision> { this.approvals.push(request); return this.decision(request); }
@@ -61,6 +63,11 @@ function stream(response: ServerResponse, reply: Reply, index: number): void {
   })}\n\n`);
   chunk({ role: "assistant" });
   if (reply.kind === "text") {
+    if (reply.thinking) {
+      const middle = Math.floor(reply.thinking.length / 2);
+      chunk({ reasoning_content: reply.thinking.slice(0, middle) });
+      chunk({ reasoning_content: reply.thinking.slice(middle) });
+    }
     const midpoint = Math.floor(reply.text.length / 2);
     chunk({ content: reply.text.slice(0, midpoint) });
     chunk({ content: reply.text.slice(midpoint) });
@@ -167,12 +174,51 @@ test("a streamed agent turn reads, writes, edits and executes the native shell",
   assert.equal(host.outcome, "completed");
   assert.equal(await readFile(join(f.cwd, "result.txt"), "utf8"), "after\n");
   assert.equal(ui.deltas, "Verified all changes.");
+  assert.deepEqual(ui.tools.filter((tool) => tool.state === "running" && tool.text === "").map((tool) => tool.details?.target), ["input.txt", "result.txt", "result.txt", shell]);
   assert.ok(ui.tools.some((tool) => tool.name === "read" && tool.state === "done" && tool.text.includes("1: source evidence")));
   assert.ok(ui.tools.some((tool) => tool.name === "bash" && tool.state === "done" && tool.text.includes("shell verified") && tool.text.includes("exit code 0")));
   const lastRequest = f.requests.at(-1); assert.ok(lastRequest);
   assert.ok(lastRequest.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("Edited result.txt")));
   const saved = await f.sessions(); assert.equal(saved.length, 1);
   assert.ok((await readFile(saved[0] ?? "", "utf8")).includes("Verified all changes."));
+});
+
+test("actual provider reasoning reaches the transcript with a stable identity and survives resume", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "The handler is ready.", thinking: "Inspect the existing handler before changing it." }));
+  class ReasoningUI extends RecordingUI {
+    override assistantDelta(text: string): void {
+      assert.equal(this.thoughts.at(-1)?.active, false, "Reasoning stays active while the answer streams");
+      super.assistantDelta(text);
+    }
+  }
+  const { host, ui } = await f.start(new ReasoningUI());
+  await host.submit("Inspect the handler.");
+  assert.equal(host.outcome, "completed");
+  assert.equal(ui.thoughts.at(-1)?.text, "Inspect the existing handler before changing it.");
+  assert.equal(ui.thoughts.at(-1)?.active, false);
+  assert.equal(new Set(ui.thoughts.map((thought) => thought.id)).size, 1);
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.equal(resumed.ui.thoughts.at(-1)?.text, "Inspect the existing handler before changing it.");
+  assert.equal(resumed.ui.thoughts.at(-1)?.active, false);
+  assert.equal(f.requests.length, 1);
+});
+
+test("failed shell receipts retain the exit code in the TUI and restored history", { timeout: 30000 }, async (t) => {
+  const command = 'node -e "process.exit(9)"';
+  const f = await fixture(t, (_request, index) => index === 0
+    ? { kind: "tool", name: "bash", arguments: { command } }
+    : { kind: "text", text: "The command failed with exit code 9." });
+  const { host, ui } = await f.start();
+  await host.submit("Run the diagnostic command.");
+  const failed = ui.tools.findLast((tool) => tool.state === "error");
+  assert.equal(failed?.details?.exitCode, 9);
+  assert.match(failed?.text ?? "", /exit code 9/);
+  assert.ok(f.requests.at(-1)?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("exit code 9")));
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.deepEqual(resumed.ui.tools.findLast((tool) => tool.state === "error")?.details, { target: command, exitCode: 9 });
+  assert.equal(f.requests.length, 2);
 });
 
 test("interrupt during run preparation prevents the model from starting", { timeout: 30000 }, async (t) => {
@@ -367,6 +413,12 @@ test("a user shell queued during a turn runs afterward and persists its result",
   const paths = await f.sessions(); assert.equal(paths.length, 1);
   const entries = (await readFile(paths[0] ?? "", "utf8")).trim().split("\n").map((line) => z.object({ type: z.string() }).passthrough().parse(JSON.parse(line)));
   assert.ok(entries.some((entry) => JSON.stringify(entry).includes("arkcode-shell") && JSON.stringify(entry).includes("queued shell output") && JSON.stringify(entry).includes("Exit code: 0")));
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  const restoredShell = resumed.ui.tools.find((tool) => tool.name === "shell");
+  assert.deepEqual(restoredShell?.details, { target: command, exitCode: 0 });
+  assert.equal(restoredShell?.state, "done");
+  assert.equal(f.requests.length, 1);
 });
 
 test("interrupt restores queued local commands without executing them", { timeout: 30000 }, async (t) => {

@@ -88,9 +88,11 @@ Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交�
 | `/copy`、`/init` | 复制完整回答、生成 AGENTS.md |
 | `/exit` | 停止执行并退出 |
 
-TUI 使用固定深色主题和六字段底栏。旧 `settings.json` 中的 `theme` 和 `statusline` 可读取，下一次保存时移除。文件差异可在 IDE 或外部 Git 工具中查看。代码审查可直接作为普通任务提交。
+TUI 遵循原生设计 demo 的 `prism/instrument-deepfield`，使用固定 Prism 配色、完整输入框和六字段底栏。底栏依次显示模型、推理等级、目录、权限、Git 分支和上下文用量。审批与选择面板替换输入框，关闭后恢复草稿。工具显示实际目标与执行状态，默认预览最多三行终端输出，失败命令保留退出码。模型提供的推理内容默认收起。
 
-Esc 中断 agent；面板中的 Esc 返回。Ctrl+C 运行时中断，空闲时退出。Ctrl+D 在空输入区退出。Ctrl+T 展开工具转录，Ctrl+O 复制最近完整回答，Ctrl+R 搜索提示历史，Ctrl+G 使用 `VISUAL` 或 `EDITOR` 编辑草稿。Ctrl+L 仅清理视图。Shift+Left 编辑未消费队列输入。空输入区双 Esc 编辑上一条提示并创建分支，不回滚文件。
+旧 `settings.json` 中的 `theme` 和 `statusline` 可读取，下一次保存时移除。文件差异可在 IDE 或外部 Git 工具中查看。代码审查可直接作为普通任务提交。
+
+Esc 中断 agent；面板中的 Esc 返回。Ctrl+C 运行时中断，空闲时退出。Ctrl+D 在空输入区退出。Ctrl+T 展开工具转录及模型提供的推理内容，Ctrl+O 复制最近完整回答，Ctrl+R 搜索提示历史，Ctrl+G 使用 `VISUAL` 或 `EDITOR` 编辑草稿。Ctrl+L 仅清理视图。Shift+Left 编辑未消费队列输入。空输入区双 Esc 编辑上一条提示并创建分支，不回滚文件。
 
 Goal、多代理、MCP、插件、持久 Plan、学习式记忆、云执行和媒体输入后置。已知后置 slash 命令显示不可用，未知命令不会发送给模型。
 

@@ -15,6 +15,7 @@ export interface ApprovalRequest {
 }
 export type ApprovalDecision = "once" | "session" | "deny";
 export interface Choice { value: string; label: string; description?: string }
+export interface ToolDetails { target?: string; exitCode?: number }
 export interface Status {
   model: string;
   thinking: string;
@@ -31,7 +32,8 @@ export interface UserInterface {
   message(kind: "user" | "assistant" | "info" | "error", text: string): void;
   assistantDelta(text: string): void;
   assistantEnd(text: string): void;
-  tool(id: string, name: string, text: string, state: "running" | "done" | "error"): void;
+  reasoning(id: string, text: string, active: boolean): void;
+  tool(id: string, name: string, text: string, state: "running" | "done" | "error", details?: ToolDetails): void;
   choose(title: string, choices: Choice[]): Promise<string | null>;
   input(title: string, initial?: string): Promise<string | null>;
   approve(request: ApprovalRequest): Promise<ApprovalDecision>;

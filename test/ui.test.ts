@@ -176,9 +176,10 @@ test("status and Markdown fit narrow and wide terminal cells", async (t) => {
     ui.start();
     await setTimeout(50);
     const text = terminal.text();
-    for (const label of ["Model", "Thinking", "Directory", "Permissions", "Branch", "Context"]) {
-      assert.ok(text.includes(label), `${label} is missing at ${width} columns`);
+    for (const value of [idle.model, idle.thinking, idle.cwd, "Ask for approval", idle.branch, idle.context]) {
+      assert.ok(text.replace(/\s+/g, "").includes(value.replace(/\s+/g, "")), `${value} is missing at ${width} columns`);
     }
+    assert.doesNotMatch(text, /Model deepseek|Thinking medium|Permissions ask|Branch main/);
     assert.match(text, /const answer = 42/);
     for (const line of text.split(/\r?\n/)) assert.ok(visibleWidth(line) <= width, `Line exceeds ${width} columns`);
     ui.stop();
@@ -187,6 +188,107 @@ test("status and Markdown fit narrow and wide terminal cells", async (t) => {
 
 test("tool output cannot inject terminal control sequences", () => {
   assert.equal(sanitizeTerminalText("ok\x1b]52;c;payload\x07\x1b[31mred\x1b[0m\x03"), "okred");
+});
+
+test("Prism composer has complete borders and a placeholder without becoming a draft", async (t) => {
+  const terminal = new MemoryTerminal(80);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.start();
+  await setTimeout(50);
+  const rows = terminal.text().split(/\r?\n/);
+  assert.ok(rows.some((line) => line.includes("╭") && line.includes("╮")));
+  assert.ok(rows.some((line) => line.includes("│ › Ask ArkCode to do anything") && line.trimEnd().endsWith("│")));
+  assert.ok(rows.some((line) => line.includes("╰") && line.includes("╯")));
+  assert.equal(ui.draft(), "");
+  ui.setDraft("Keep the ╯ glyph and 中文 text");
+  terminal.output = "";
+  await setTimeout(50);
+  assert.match(terminal.text(), /Keep the ╯ glyph and 中文 text/);
+  assert.equal(ui.draft(), "Keep the ╯ glyph and 中文 text");
+});
+
+test("approval replaces the composer while retaining footer metadata and the original draft", async (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.setDraft("Continue after this decision");
+  const approval = ui.approve({ id: "request", tool: "write", description: "Write result.txt", cwd: idle.cwd });
+  ui.start();
+  await setTimeout(50);
+  const frame = terminal.text();
+  assert.match(frame, /Allow this tool request/);
+  assert.doesNotMatch(frame, /Continue after this decision|Ask ArkCode to do anything|╭/);
+  assert.match(frame, /deepseek\/deepseek-chat/);
+  assert.equal(ui.draft(), "Continue after this decision");
+  terminal.press("\x1b");
+  assert.equal(await approval, "deny");
+  assert.equal(ui.draft(), "Continue after this decision");
+});
+
+test("compact transcript hides reasoning and Ctrl+T shows its final content only once", async (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.reasoning("thought-1", "Inspect the source", true);
+  ui.reasoning("thought-1", "Inspect the source and confirm the retry path.", false);
+  ui.start();
+  await setTimeout(50);
+  assert.doesNotMatch(terminal.text(), /Inspect the source/);
+  terminal.output = "";
+  terminal.press("\x14");
+  await setTimeout(50);
+  assert.equal(terminal.text().split("Inspect the source and confirm the retry path.").length - 1, 1);
+});
+
+test("streaming answer text replaces the active reasoning indicator", async (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, state: { kind: "running", id: "run", startedAt: Date.now() } });
+  ui.reasoning("thought-1", "Inspect the existing handler.", true);
+  ui.start();
+  await setTimeout(50);
+  assert.match(terminal.text(), /Thinking/);
+  terminal.output = "";
+  ui.assistantDelta("The handler is ready.");
+  await setTimeout(50);
+  assert.match(terminal.text(), /Writing response/);
+  assert.doesNotMatch(terminal.text(), /Thinking/);
+});
+
+test("failed tool summaries keep exit codes visible when receipts are collapsed", async (t) => {
+  const terminal = new MemoryTerminal(80);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.tool("shell1", "bash", "", "running", { target: "npm test" });
+  ui.tool("shell1", "bash", "first\nsecond\nthird\nlast-error", "error", { exitCode: 9 });
+  ui.start();
+  await setTimeout(50);
+  assert.match(terminal.text(), /Failed npm test\s+exit 9/);
+  assert.doesNotMatch(terminal.text(), /last-error/);
+  terminal.press("\x14");
+  await setTimeout(50);
+  assert.match(terminal.text(), /last-error/);
+});
+
+test("stopping preserves the draft and prevents keys and paste from sending or editing it", (t) => {
+  const terminal = new MemoryTerminal();
+  const submitted: string[] = [];
+  const ui = new TerminalUI({ ...inertActions, async submit(text) { submitted.push(text); } }, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, state: { kind: "stopping", id: "run", startedAt: Date.now() } });
+  ui.setDraft("Recover this draft");
+  ui.start();
+  terminal.press("x");
+  terminal.press("\x1b[200~pasted\ntext\x1b[201~");
+  terminal.press("\r");
+  assert.equal(ui.draft(), "Recover this draft");
+  assert.deepEqual(submitted, []);
 });
 
 test("plain output streams deltas without duplicating its final answer", async () => {
