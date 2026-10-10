@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import {
@@ -13,6 +13,7 @@ import { createModelRuntime, createResources, loadConfig, saveConfig, selectMode
 import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, listArkSessions, readRunMarker, writeRunMarker } from "./storage.js";
 import { ManagedShell, createTools, cleanOutput, workspacePath } from "./tools.js";
 import { getBranch } from "./review.js";
+import { displayUserText, prepareMentions } from "./mentions.js";
 import type { CliOptions } from "./args.js";
 import type { ApprovalRequest, InputMode, Permission, RunState, SessionItem, ToolDetails, UserInterface } from "./domain.js";
 
@@ -52,11 +53,15 @@ export function configureEndpoint(options: { home: string; provider: string; mod
   if (options.baseUrl) {
     const url = new URL(options.baseUrl);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Use an HTTP(S) endpoint without embedded credentials.");
-    document.providers[options.provider] = {
+    const provider = {
       ...document.providers[options.provider], baseUrl: options.baseUrl, api: "openai-completions",
       ...(options.apiKeyEnv ? { apiKey: "${" + options.apiKeyEnv + "}" } : {}),
       models: [{ id: options.model }],
     };
+    document.providers[options.provider] = options.provider === "deepseek" && options.model === "deepseek-flash"
+      && /^https:\/\/api\.deepseek\.com(?:\/v1)?\/?$/.test(options.baseUrl)
+      ? { ...provider, models: [] }
+      : provider;
     writeFileSync(path, JSON.stringify(document, null, 2) + "\n", { mode: 0o600 });
   }
   const config = loadConfig(options.home);
@@ -252,7 +257,7 @@ export class ArkHost {
       }
       if (entry.type !== "message") continue;
       const message = entry.message;
-      if (message.role === "user") this.ui.message("user", contentText(message.content));
+      if (message.role === "user") this.ui.message("user", displayUserText(contentText(message.content)));
       else if (message.role === "assistant") {
         for (const [index, block] of message.content.entries()) {
           if (block.type === "toolCall") {
@@ -279,7 +284,7 @@ export class ArkHost {
   private event(event: AgentSessionEvent): void {
     switch (event.type) {
       case "message_start":
-        if (event.message.role === "user") this.ui.message("user", contentText(event.message.content));
+        if (event.message.role === "user") this.ui.message("user", displayUserText(contentText(event.message.content)));
         else if (event.message.role === "assistant") this.responseId = randomUUID();
         break;
       case "message_update":
@@ -336,28 +341,16 @@ export class ArkHost {
         if (text.startsWith("!")) {
           this.localQueue.push(text); this.refreshStatus(); return;
         }
-        const expanded = await this.expandMentions(text);
-        if (mode === "follow-up") await session.followUp(expanded); else await session.steer(expanded);
+        const prepared = await prepareMentions(text, this.cwd, session.model.input.includes("image"));
+        if (mode === "follow-up") await session.followUp(prepared.text, prepared.images); else await session.steer(prepared.text, prepared.images);
         this.refreshStatus(); return;
       }
       await this.run(text);
-    } catch (error) { this.ui.message("error", cleanOutput(error instanceof Error ? error.message : String(error))); this.ui.setDraft(text); }
-  }
-  private async expandMentions(text: string): Promise<string> {
-    const matches = [...text.matchAll(/(?:^|\s)@(?:"([^"]+)"|([^\s]+))/g)];
-    if (matches.length > 8) throw new Error("At most 8 file references per input.");
-    const files: string[] = [];
-    for (const match of matches) {
-      const name = match[1] ?? match[2];
-      if (!name) continue;
-      const path = await workspacePath(this.cwd, name);
-      const info = await stat(path);
-      if (!info.isFile() || info.size > 128 * 1024) throw new Error(`File reference is not a regular file or exceeds 128 KiB: ${name}`);
-      const buffer = await readFile(path);
-      if (buffer.length > 128 * 1024 || buffer.includes(0)) throw new Error(`File reference is binary or exceeds 128 KiB: ${name}`);
-      files.push(`\n<file path=${JSON.stringify(name)}>\n${buffer.toString("utf8")}\n</file>`);
+    } catch (error) {
+      if (!text.startsWith("/")) this.ui.message("user", text);
+      this.ui.message("error", cleanOutput(error instanceof Error ? error.message : String(error)));
+      this.ui.setDraft(text);
     }
-    return text + files.join("\n");
   }
   private async run(text: string): Promise<void> {
     const session = this.session;
@@ -374,9 +367,11 @@ export class ArkHost {
         if (this.interrupted) return;
         if (text.startsWith("!")) await this.userShell(text.slice(1).trim(), runId);
         else {
-          const prompt = await this.expandMentions(text);
+          let prompt;
+          try { prompt = await prepareMentions(text, this.cwd, session.model?.input.includes("image") ?? false); }
+          catch (error) { this.ui.message("user", text); throw error; }
           if (this.interrupted) return;
-          await session.prompt(prompt);
+          await session.prompt(prompt.text, { images: prompt.images });
         }
         await session.waitForIdle();
         while (!this.interrupted && this.localQueue.length) {
@@ -452,8 +447,8 @@ export class ArkHost {
       const marker = current ? null : await readRunMarker(this.home, entry.id);
       return {
         id: entry.id, path: entry.path, cwd: entry.cwd,
-        title: entry.name || entry.firstMessage.replace(/\s+/g, " ").slice(0, 100) || "Untitled session",
-        preview: entry.firstMessage,
+        title: entry.name || displayUserText(entry.firstMessage).replace(/\s+/g, " ").slice(0, 100) || "Untitled session",
+        preview: displayUserText(entry.firstMessage),
         modified: entry.modified.getTime(),
         state: current ? currentState : marker?.status === "active" ? "unconfirmed" : "inactive",
         current,
@@ -464,8 +459,8 @@ export class ArkHost {
       const firstPrompt = this.session.messages.find((message) => message.role === "user");
       items.unshift({
         id: this.session.sessionId, path: this.session.sessionFile ?? null, cwd: this.cwd,
-        title: this.session.sessionName || (firstPrompt ? contentText(firstPrompt.content).replace(/\s+/g, " ").slice(0, 100) : "Untitled session"),
-        preview: firstPrompt ? contentText(firstPrompt.content) : "No messages yet",
+        title: this.session.sessionName || (firstPrompt ? displayUserText(contentText(firstPrompt.content)).replace(/\s+/g, " ").slice(0, 100) : "Untitled session"),
+        preview: firstPrompt ? displayUserText(contentText(firstPrompt.content)) : "No messages yet",
         modified: Date.now(), state: currentState, current: true,
         ...(this.session.model ? { model: `${this.session.model.provider}/${this.session.model.id}` } : {}),
       });
@@ -548,7 +543,7 @@ export class ArkHost {
       return matched[0]?.path ?? null;
     }
     return this.ui.choose("Resume a saved conversation", sessions.map((session) => ({ value: session.path,
-      label: session.name ?? (session.firstMessage.slice(0, 70) || session.id),
+      label: session.name ?? (displayUserText(session.firstMessage).slice(0, 70) || session.id),
       description: `${session.id.slice(0, 8)} | ${session.modified.toLocaleString()} | ${session.messageCount} messages`,
     })));
   }
@@ -565,7 +560,7 @@ export class ArkHost {
     }
     const prompt = [...(this.manager?.getBranch() ?? [])].reverse().find((entry) => entry.type === "message" && entry.message.role === "user");
     if (!prompt || prompt.type !== "message" || prompt.message.role !== "user" || !this.manager || !prompt.parentId) return;
-    const text = contentText(prompt.message.content);
+    const text = displayUserText(contentText(prompt.message.content));
     const path = this.manager.createBranchedSession(prompt.parentId);
     if (path) { await this.replaceSession(SessionManager.open(path, this.sessionDir(), this.cwd)); this.ui.setDraft(text); }
   }

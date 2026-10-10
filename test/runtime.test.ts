@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { deflateSync } from "node:zlib";
 import test, { type TestContext } from "node:test";
 import { z } from "zod";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -20,6 +22,34 @@ const requestSchema = z.object({
 }).passthrough();
 type ModelRequest = z.infer<typeof requestSchema>;
 type Reply = { kind: "text"; text: string; thinking?: string } | { kind: "tool"; name: string; arguments: object };
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const body = Buffer.concat([Buffer.from(type), data]);
+  let crc = 0xffffffff;
+  for (const byte of body) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  const length = Buffer.alloc(4);
+  const checksum = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+  return Buffer.concat([length, body, checksum]);
+}
+
+function largePng(): Buffer {
+  const width = 256;
+  const height = 256;
+  const pixels = randomBytes(width * height * 3);
+  const rows = Buffer.alloc(height * (width * 3 + 1));
+  for (let row = 0; row < height; row++) pixels.copy(rows, row * (width * 3 + 1) + 1, row * width * 3, (row + 1) * width * 3);
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  return Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), pngChunk("IHDR", header), pngChunk("IDAT", deflateSync(rows)), pngChunk("IEND", Buffer.alloc(0))]);
+}
 
 class RecordingUI implements UserInterface {
   statuses: Status[] = [];
@@ -84,7 +114,7 @@ function stream(response: ServerResponse, reply: Reply, index: number): void {
   response.end("data: [DONE]\n\n");
 }
 
-async function fixture(t: TestContext, respond: (request: ModelRequest, index: number) => Reply | Promise<Reply>) {
+async function fixture(t: TestContext, respond: (request: ModelRequest, index: number) => Reply | Promise<Reply>, imageInput = false) {
   const directory = await mkdtemp(join(tmpdir(), "arkcode-runtime-"));
   const cwd = join(directory, "workspace");
   const home = join(directory, "home");
@@ -112,7 +142,7 @@ async function fixture(t: TestContext, respond: (request: ModelRequest, index: n
   await writeFile(join(home, "models.json"), JSON.stringify({ providers: { fixture: {
     baseUrl: `http://127.0.0.1:${address.port}/v1`, api: "openai-completions", apiKey: "fixture-key",
     models: [
-      { id: "test", name: "Local test model", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 4096 },
+      { id: "test", name: "Local test model", reasoning: false, input: imageInput ? ["text", "image"] : ["text"], contextWindow: 128000, maxTokens: 4096 },
       { id: "alternate", name: "Alternate test model", reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 4096 },
     ],
   } } }));
@@ -247,7 +277,8 @@ test("removed commands are rejected without running the agent, while @ reference
   await host.submit('Inspect @"reference file.txt"');
   assert.equal(host.outcome, "completed");
   assert.equal(f.requests.length, 1);
-  assert.ok(f.requests[0]?.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("attached source evidence")));
+  assert.ok(f.requests[0]?.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes('Inspect @\\"reference file.txt\\"')));
+  assert.ok(!JSON.stringify(f.requests[0]?.messages).includes("attached source evidence"));
   await host.submit("/exit");
   await host.submit("This must not run after exit");
   assert.equal(f.requests.length, 1);
@@ -468,6 +499,80 @@ test("resuming a compacted session displays messages from before compaction", { 
   const { ui } = await f.start(new RecordingUI(), ["resume", "--last"]);
   assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text),
     ["The original requirement", "A later requirement"]);
+});
+
+test("file mentions keep paths visible without copying file contents into history or model input", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "I will inspect the path." }));
+  await writeFile(join(f.cwd, "large.txt"), "private file content\n".repeat(9000));
+  await mkdir(join(f.cwd, "folder"));
+  const { host, ui } = await f.start();
+  const input = "Inspect @large.txt and @folder";
+  await host.submit(input);
+  assert.equal(host.outcome, "completed");
+  assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text), [input]);
+  const request = JSON.stringify(f.requests[0]?.messages);
+  assert.ok(request.includes(input));
+  assert.ok(!request.includes("private file content"));
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.deepEqual(resumed.ui.messages.filter((message) => message.kind === "user").map((message) => message.text), [input]);
+});
+
+test("image mentions above 128 KiB reach an image-capable model as image parts", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Image received." }), true);
+  const png = largePng();
+  assert.ok(png.length > 128 * 1024);
+  await writeFile(join(f.cwd, "large.png"), png);
+  const { host, ui } = await f.start();
+  await host.submit("Inspect @large.png");
+  assert.equal(host.outcome, "completed");
+  assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text), ["Inspect @large.png"]);
+  const userMessage = f.requests[0]?.messages.find((message) => message.role === "user");
+  assert.ok(JSON.stringify(userMessage?.content).includes("image_url"));
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.deepEqual(resumed.ui.messages.filter((message) => message.kind === "user").map((message) => message.text), ["Inspect @large.png"]);
+});
+
+test("image mentions give a clear error when the selected model accepts text only", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unexpected request." }));
+  await writeFile(join(f.cwd, "image.png"), largePng());
+  const { host, ui } = await f.start();
+  const query = "Inspect @image.png";
+  await host.submit(query);
+  assert.equal(f.requests.length, 0);
+  assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text), [query]);
+  assert.ok(ui.messages.some((message) => message.kind === "error" && message.text.includes("does not support images")));
+  await host.exit();
+  const resumed = await f.start(new RecordingUI());
+  assert.deepEqual(resumed.ui.messages.filter((message) => message.kind === "user"), []);
+});
+
+test("queued image mentions retain their image part when the running turn completes", { timeout: 30000 }, async (t) => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const f = await fixture(t, async (_request, index) => {
+    if (index === 0) await gate;
+    return { kind: "text", text: "Done." };
+  }, true);
+  await writeFile(join(f.cwd, "queued.png"), largePng());
+  const { host } = await f.start();
+  const run = host.submit("Start work");
+  await until(() => f.requests.length === 1);
+  await host.submit("Inspect @queued.png", "follow-up");
+  release();
+  await run;
+  assert.equal(host.outcome, "completed");
+  assert.ok(f.requests[1]?.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("image_url")));
+});
+
+test("legacy expanded file mentions display only the authored prompt", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  const encoded = Buffer.from(process.platform === "win32" ? f.cwd.toLowerCase() : f.cwd).toString("base64url");
+  const manager = SessionManager.create(f.cwd, join(f.home, "sessions", encoded));
+  manager.appendMessage({ role: "user", content: 'Inspect @source.txt\n<file path="source.txt">\nprivate file content\n</file>', timestamp: Date.now() });
+  const { ui } = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text), ["Inspect @source.txt"]);
 });
 
 test("a second workspace process is a viewer and cannot mutate sessions", { timeout: 30000 }, async (t) => {

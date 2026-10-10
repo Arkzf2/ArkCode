@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
+import { displayUserText } from "./mentions.js";
 
 const leaseSchema = z.object({ pid: z.number().int().positive(), token: z.string().uuid(), cwd: z.string(), createdAt: z.number() });
 
@@ -184,7 +185,7 @@ export async function inspectSession(path: string, expectedCwd?: string): Promis
   let model: string | undefined;
   for (let index = 1; index < lines.length; index++) {
     const line = lines[index];
-    if (!line || Buffer.byteLength(line) > 4 * 1024 * 1024) throw new Error(`Invalid session line ${index + 1}.`);
+    if (!line || Buffer.byteLength(line) > 8 * 1024 * 1024) throw new Error(`Invalid session line ${index + 1}.`);
     let entry: z.infer<typeof entrySchema>;
     try { entry = entrySchema.parse(JSON.parse(line)); }
     catch (error) { throw new Error(`Invalid session line ${index + 1}. ${error instanceof Error ? error.message : String(error)}`); }
@@ -207,7 +208,8 @@ export async function inspectSession(path: string, expectedCwd?: string): Promis
     if (entry.type !== "message") continue;
     if (entry.message.role === "user" || entry.message.role === "assistant") {
       const content = entry.message.content;
-      const value = typeof content === "string" ? content : content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+      const text = typeof content === "string" ? content : content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+      const value = entry.message.role === "user" ? displayUserText(text) : text;
       if (value) {
         lastMessage = value.slice(0, 2048);
         if (entry.message.role === "user" && !prompt) prompt = value.slice(0, 2048);

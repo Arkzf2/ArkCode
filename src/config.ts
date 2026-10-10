@@ -7,6 +7,12 @@ import { z } from "zod";
 import type { Permission } from "./domain.js";
 
 const permissionSchema = z.enum(["read-only", "ask", "full-access"]) satisfies z.ZodType<Permission>;
+const legacyDeepSeekProviderSchema = z.object({
+  baseUrl: z.literal("https://api.deepseek.com/v1"),
+  api: z.literal("openai-completions"),
+  apiKey: z.literal("${DEEPSEEK_API_KEY}"),
+  models: z.tuple([z.object({ id: z.literal("deepseek-flash"), name: z.literal("DeepSeek Flash").optional() }).strict()]),
+}).passthrough();
 export const arkConfigSchema = z.object({
   provider: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
@@ -44,6 +50,25 @@ export function saveConfig(home: string, config: ArkConfig): void {
   }
 }
 
+function upgradeLegacyDeepSeekModel(path: string): void {
+  if (!existsSync(path)) return;
+  let source: unknown;
+  try { source = JSON.parse(readFileSync(path, "utf8")); }
+  catch { return; }
+  const document = z.object({ providers: z.record(z.string(), z.unknown()) }).passthrough().safeParse(source);
+  if (!document.success) return;
+  const provider = legacyDeepSeekProviderSchema.safeParse(document.data.providers.deepseek);
+  if (!provider.success) return;
+  const updated = { ...document.data, providers: { ...document.data.providers, deepseek: { ...provider.data, models: [] } } };
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(updated, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    renameSync(temporary, path);
+  } finally {
+    if (existsSync(temporary)) unlinkSync(temporary);
+  }
+}
+
 export async function createModelRuntime(home: string): Promise<ModelRuntime> {
   mkdirSync(home, { recursive: true });
   const modelsPath = join(home, "models.json");
@@ -52,11 +77,11 @@ export async function createModelRuntime(home: string): Promise<ModelRuntime> {
       baseUrl: "https://api.deepseek.com/v1",
       api: "openai-completions",
       apiKey: "${DEEPSEEK_API_KEY}",
-      models: [{ id: "deepseek-flash", name: "DeepSeek Flash" }],
     } } };
     try { writeFileSync(modelsPath, `${JSON.stringify(models, null, 2)}\n`, { flag: "wx", mode: 0o600 }); }
     catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
   }
+  upgradeLegacyDeepSeekModel(modelsPath);
   const runtime = await ModelRuntime.create({
     authPath: join(home, "auth.json"),
     modelsPath,

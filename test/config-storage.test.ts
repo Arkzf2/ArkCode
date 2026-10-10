@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createModelRuntime, createResources, loadConfig, saveConfig, selectModel } from "../src/config.js";
+import { configureEndpoint } from "../src/runtime.js";
 import { inspectSession, listArkSessions, readRunMarker, recoverRunMarker, WorkspaceLease, writeRunMarker } from "../src/storage.js";
 
 test("settings persist defaults and reject unknown permission values", async () => {
@@ -166,7 +167,81 @@ test("DeepSeek configuration references the environment and selects Flash withou
     const selected = await selectModel(runtime);
     assert.equal(selected?.provider, "deepseek");
     assert.equal(selected?.id, "deepseek-flash");
+    assert.deepEqual(selected?.input, ["text", "image"]);
     await assert.rejects(selectModel(runtime, "does-not-exist"), /Unknown model/);
+  } finally {
+    if (original === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = original;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("existing ArkCode DeepSeek configuration keeps Pi's image-capable model metadata", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-deepseek-legacy-"));
+  const original = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = "arkcode-test-key-not-secret";
+  try {
+    await writeFile(join(home, "models.json"), JSON.stringify({ providers: { deepseek: {
+      baseUrl: "https://api.deepseek.com/v1", api: "openai-completions", apiKey: "${DEEPSEEK_API_KEY}",
+      models: [{ id: "deepseek-flash", name: "DeepSeek Flash" }],
+    } } }));
+    const runtime = await createModelRuntime(home);
+    const selected = await selectModel(runtime, "deepseek/deepseek-flash");
+    assert.deepEqual(selected?.input, ["text", "image"]);
+  } finally {
+    if (original === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = original;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("DeepSeek configuration created by /connect retains image input", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-deepseek-connect-"));
+  const original = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = "arkcode-test-key-not-secret";
+  try {
+    await writeFile(join(home, "models.json"), JSON.stringify({ providers: { deepseek: {
+      baseUrl: "https://api.deepseek.com/v1", api: "openai-completions", apiKey: "${DEEPSEEK_API_KEY}",
+      models: [{ id: "deepseek-flash" }],
+    } } }));
+    const runtime = await createModelRuntime(home);
+    assert.deepEqual((await selectModel(runtime, "deepseek/deepseek-flash"))?.input, ["text", "image"]);
+  } finally {
+    if (original === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = original;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("explicit custom model input is not changed by DeepSeek legacy migration", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-deepseek-custom-"));
+  const original = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = "arkcode-test-key-not-secret";
+  try {
+    const path = join(home, "models.json");
+    const source = JSON.stringify({ providers: { deepseek: {
+      baseUrl: "https://api.deepseek.com/v1", api: "openai-completions", apiKey: "${DEEPSEEK_API_KEY}",
+      models: [{ id: "deepseek-flash", input: ["text"] }],
+    } } });
+    await writeFile(path, source);
+    const runtime = await createModelRuntime(home);
+    assert.deepEqual((await selectModel(runtime, "deepseek/deepseek-flash"))?.input, ["text"]);
+    assert.equal(await readFile(path, "utf8"), source);
+  } finally {
+    if (original === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = original;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("configuring the official DeepSeek endpoint uses Pi's built-in model capabilities", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-deepseek-endpoint-"));
+  const original = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = "arkcode-test-key-not-secret";
+  try {
+    configureEndpoint({ home, provider: "deepseek", model: "deepseek-flash", baseUrl: "https://api.deepseek.com/v1", apiKeyEnv: "DEEPSEEK_API_KEY" });
+    const runtime = await createModelRuntime(home);
+    assert.deepEqual((await selectModel(runtime, "deepseek/deepseek-flash"))?.input, ["text", "image"]);
   } finally {
     if (original === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = original;
