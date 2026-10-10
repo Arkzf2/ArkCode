@@ -1,0 +1,490 @@
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { z } from "zod";
+import {
+  createAgentSession, SessionManager, SettingsManager,
+  type AgentSession, type AgentSessionEvent, type ModelRuntime,
+} from "@earendil-works/pi-coding-agent";
+import { ApprovalBroker } from "./approval.js";
+import { slashCommands } from "./commands.js";
+import { createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig } from "./config.js";
+import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, readRunMarker, writeRunMarker } from "./storage.js";
+import { ManagedShell, createTools, cleanOutput, workspacePath } from "./tools.js";
+import { getBranch } from "./review.js";
+import type { CliOptions } from "./args.js";
+import type { ApprovalRequest, InputMode, Permission, RunState, UserInterface } from "./domain.js";
+
+export function contentText(content: unknown): string {
+  if (typeof content === "string") return cleanOutput(content);
+  if (!Array.isArray(content)) return "";
+  return cleanOutput(content.flatMap((block: unknown) =>
+    block && typeof block === "object" && "type" in block && block.type === "text" && "text" in block && typeof block.text === "string" ? [block.text] : [],
+  ).join("\n"));
+}
+
+const unsupported = new Set(["goal", "agent", "mcp", "plugins", "memories", "plan", "cloud"]);
+const mutatingTools = ["write", "edit", "bash"];
+const readTools = ["read", "grep", "find", "ls"];
+const modelsDocument = z.object({ providers: z.record(z.string(), z.record(z.string(), z.unknown())).default({}) }).passthrough();
+
+export function configureEndpoint(options: { home: string; provider: string; model: string; baseUrl?: string; apiKeyEnv?: string }): void {
+  const path = join(options.home, "models.json");
+  mkdirSync(options.home, { recursive: true });
+  const document = modelsDocument.parse(existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {});
+  if (options.apiKeyEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.apiKeyEnv)) throw new Error("Invalid API key environment variable name.");
+  if (options.baseUrl) {
+    const url = new URL(options.baseUrl);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Use an HTTP(S) endpoint without embedded credentials.");
+    document.providers[options.provider] = {
+      ...document.providers[options.provider], baseUrl: options.baseUrl, api: "openai-completions",
+      ...(options.apiKeyEnv ? { apiKey: "${" + options.apiKeyEnv + "}" } : {}),
+      models: [{ id: options.model }],
+    };
+    writeFileSync(path, JSON.stringify(document, null, 2) + "\n", { mode: 0o600 });
+  }
+  const config = loadConfig(options.home);
+  saveConfig(options.home, { ...config, provider: options.provider, model: options.model });
+}
+
+export class ArkHost {
+  private config: ArkConfig;
+  private runtime: ModelRuntime | null = null;
+  private session: AgentSession | null = null;
+  private manager: SessionManager | null = null;
+  private lease: WorkspaceLease | null = null;
+  private shell: ManagedShell;
+  private state: RunState = { kind: "idle", outcome: null };
+  private permission: Permission;
+  private trusted = false;
+  private broker: ApprovalBroker;
+  private unsubscribe: (() => void) | null = null;
+  private active: Promise<void> | null = null;
+  private closing = false;
+  private failure = false;
+  private interrupted = false;
+  private branch = "No Git";
+  private queued: string[] = [];
+  private localQueue: string[] = [];
+  private lastAnswer = "";
+  private storageFailed = false;
+  private executionUnconfirmed = false;
+  readonly home: string;
+  cwd: string;
+
+  constructor(readonly options: CliOptions, private ui: UserInterface) {
+    this.home = options.home;
+    this.cwd = options.cwd;
+    this.config = loadConfig(this.home);
+    this.permission = options.permission ?? this.config.permission;
+    this.shell = new ManagedShell(this.cwd);
+    this.broker = new ApprovalBroker(ui, () => this.effectivePermission(), (request) => this.approvalChanged(request));
+  }
+
+  async start(): Promise<void> {
+    this.lease = await WorkspaceLease.acquire(this.cwd, this.home);
+    this.cwd = this.lease.canonicalCwd;
+    this.shell = new ManagedShell(this.cwd);
+    this.branch = await getBranch(this.cwd);
+    this.trusted = this.config.trustedWorkspaces.some((path) => this.samePath(path, this.cwd));
+    if (!this.trusted && !this.options.print && !this.options.trust) {
+      const choice = await this.ui.choose(`Trust workspace ${this.cwd}?`, [
+        { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Commands still require approval." },
+        { value: "read-only", label: "Continue Read Only", description: "No shell or writing tools. Project instructions are not loaded." },
+      ]);
+      if (choice === "trust") this.options.trust = true;
+    }
+    if (this.options.trust) {
+      this.trusted = true;
+      this.config.trustedWorkspaces = [...new Set([...this.config.trustedWorkspaces, this.cwd])];
+      saveConfig(this.home, this.config);
+    }
+    if (!this.trusted && !this.options.permission) this.permission = "read-only";
+    this.runtime = await createModelRuntime(this.home);
+    if (!this.lease.viewer) {
+      if (await hasActiveWorkspaceRun(this.home, this.cwd)) {
+        this.executionUnconfirmed = true;
+        this.permission = "read-only";
+      }
+      for (const saved of await SessionManager.list(this.cwd, this.sessionDir())) {
+        const marker = await readRunMarker(this.home, saved.id);
+        if (marker?.status !== "active") continue;
+        this.executionUnconfirmed = true;
+        this.permission = "read-only";
+        break;
+      }
+    }
+    let manager = SessionManager.create(this.cwd, this.sessionDir());
+    if (this.options.command === "resume" || this.options.command === "fork") {
+      const path = await this.resolveSession(this.options.target, this.options.last);
+      if (!path) throw new Error("No saved session found in this workspace.");
+      await inspectSession(path, this.cwd);
+      if (this.options.command === "fork" && this.lease.viewer) throw new Error("Read-only viewer cannot fork a session.");
+      manager = this.options.command === "fork" ? SessionManager.forkFrom(path, this.cwd, this.sessionDir()) : SessionManager.open(path, this.sessionDir(), this.cwd);
+    }
+    await this.replaceSession(manager, true);
+    this.ui.message("info", `Workspace ${this.cwd}\nSandbox: none | Permissions: ${this.effectivePermission()} | Shell: ${this.shell.executable}`);
+    if (this.executionUnconfirmed && this.state.kind === "idle" && this.state.outcome !== "interrupted") this.ui.message("error", `Execution unconfirmed. This workspace remains Read Only. Inspect files and terminate any orphaned commands before resolving active run markers in ${join(this.home, "runs")}. No tools will be replayed.`);
+    if (this.lease.viewer) this.ui.message("info", this.lease.viewerReason
+      ? `Read-only viewer. ${this.lease.viewerReason} Session mutations and agent execution are disabled.`
+      : "Read-only viewer. Another ArkCode process owns this workspace. Session mutations and agent execution are disabled.");
+    if (!this.session?.model) this.ui.message("info", "No model configured. Use /connect, or set a provider API key and open /model.");
+    this.refreshStatus();
+  }
+
+  private samePath(a: string, b: string): boolean { return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b; }
+  private sessionDir(): string {
+    const encoded = Buffer.from(process.platform === "win32" ? this.cwd.toLowerCase() : this.cwd).toString("base64url");
+    return join(this.home, "sessions", encoded);
+  }
+  private effectivePermission(): Permission { return this.lease?.viewer ? "read-only" : this.permission; }
+  private approvalChanged(request: ApprovalRequest | null): void {
+    if (this.state.kind === "idle" || this.state.kind === "stopping") return;
+    this.state = request ? { ...this.state, kind: "awaiting-approval", request } : { kind: "running", id: this.state.id, startedAt: this.state.startedAt };
+    this.refreshStatus();
+  }
+  private refreshStatus(): void {
+    const usage = this.session?.getContextUsage();
+    this.ui.status({ model: this.session?.model ? `${this.session.model.provider}/${this.session.model.id}` : "No model",
+      thinking: this.session?.thinkingLevel ?? this.config.thinking, cwd: this.cwd,
+      permission: this.effectivePermission(), branch: this.branch,
+      context: usage?.percent === null || usage?.percent === undefined ? "Context unknown" : `${usage.percent.toFixed(1)}% used`,
+      state: this.state, queued: [...this.queued, ...this.localQueue.map((input) => `Queued shell: ${input}`)], viewer: this.lease?.viewer ?? false,
+    });
+  }
+  private async replaceSession(manager: SessionManager, initial = false): Promise<void> {
+    const runtime = this.runtime;
+    if (!runtime) throw new Error("Model runtime is not initialized.");
+    this.unsubscribe?.();
+    this.session?.dispose();
+    this.broker.reset();
+    if (this.lease?.viewer) {
+      const header = manager.getHeader();
+      manager = SessionManager.inMemory(this.cwd, undefined, header ? [header, ...manager.getEntries()] : undefined);
+    }
+    this.manager = manager;
+    const explicitModel = initial && this.options.model ? await selectModel(runtime, this.options.model, this.config) : undefined;
+    const model = manager.getEntries().some((entry) => entry.type === "message") ? explicitModel : explicitModel ?? await selectModel(runtime, undefined, this.config);
+    const { session, modelFallbackMessage } = await createAgentSession({
+      cwd: this.cwd, agentDir: this.home, modelRuntime: runtime, model,
+      thinkingLevel: initial ? this.options.thinking : undefined,
+      sessionManager: manager,
+      settingsManager: SettingsManager.inMemory({ defaultProvider: this.config.provider, defaultModel: this.config.model,
+        defaultThinkingLevel: this.config.thinking, retry: { enabled: true, maxRetries: 2 }, compaction: { enabled: true },
+        cacheWarming: "off",
+      }),
+      resourceLoader: createResources(this.cwd, this.trusted),
+      tools: this.toolNames(), customTools: createTools({ cwd: this.cwd, shell: this.shell, authorize: (request) => readTools.includes(request.tool) ? Promise.resolve(true) : this.broker.authorize(request) }),
+    });
+    this.session = session;
+    this.unsubscribe = session.subscribe((event) => this.event(event));
+    this.lastAnswer = "";
+    const draft = this.ui.draft();
+    this.ui.clear();
+    this.renderHistory();
+    this.ui.setDraft(draft);
+    if (modelFallbackMessage) this.ui.message("info", modelFallbackMessage);
+    const marker = await readRunMarker(this.home, session.sessionId);
+    if (marker?.status === "active") {
+      this.ui.message("error", "Execution unconfirmed. The previous process ended during a run. Existing files remain. No tool or queued input has been replayed. Inspect the workspace and submit a new instruction.");
+      this.state = { kind: "idle", outcome: "interrupted" };
+      this.permission = "read-only";
+      this.executionUnconfirmed = true;
+      session.setActiveToolsByName(readTools);
+    }
+    this.refreshStatus();
+  }
+  private toolNames(): string[] { return this.effectivePermission() === "read-only" ? readTools : [...readTools, ...mutatingTools]; }
+  private renderHistory(): void {
+    for (const message of this.session?.messages ?? []) {
+      if (message.role === "user") this.ui.message("user", contentText(message.content));
+      else if (message.role === "assistant") {
+        const text = contentText(message.content);
+        if (text) this.ui.message("assistant", text);
+        if ((message.stopReason === "stop" || message.stopReason === "length") && text) this.lastAnswer = text;
+      } else if (message.role === "toolResult") this.ui.tool(message.toolCallId, message.toolName, contentText(message.content), message.isError ? "error" : "done");
+      else if (message.role === "bashExecution") this.ui.tool(randomUUID(), "shell", message.output, message.cancelled || message.exitCode !== 0 ? "error" : "done");
+      else if (message.role === "custom" && message.customType === "arkcode-shell") this.ui.message("info", contentText(message.content));
+    }
+  }
+  private event(event: AgentSessionEvent): void {
+    switch (event.type) {
+      case "message_start":
+        if (event.message.role === "user") this.ui.message("user", contentText(event.message.content));
+        break;
+      case "message_update":
+        if (event.assistantMessageEvent.type === "text_delta") this.ui.assistantDelta(cleanOutput(event.assistantMessageEvent.delta));
+        return;
+      case "message_end":
+        if (event.message.role === "assistant") {
+          const text = contentText(event.message.content);
+          this.ui.assistantEnd(text);
+          if (event.message.stopReason === "error") { this.failure = true; this.ui.message("error", cleanOutput(event.message.errorMessage ?? "Model request failed.")); }
+          else if (event.message.stopReason === "aborted") this.interrupted = true;
+          else if ((event.message.stopReason === "stop" || event.message.stopReason === "length") && text) this.lastAnswer = text;
+        }
+        break;
+      case "tool_execution_start": this.ui.tool(event.toolCallId, event.toolName, cleanOutput(JSON.stringify(event.args)), "running"); break;
+      case "tool_execution_update": this.ui.tool(event.toolCallId, event.toolName, contentText(event.partialResult.content), "running"); break;
+      case "tool_execution_end": this.ui.tool(event.toolCallId, event.toolName, contentText(event.result.content), event.isError ? "error" : "done"); break;
+      case "queue_update": this.queued = [...event.steering.map((text) => `Instruction pending: ${text}`), ...event.followUp.map((text) => `Queued follow-up: ${text}`)]; break;
+      case "auto_retry_start": this.ui.message("info", `Retry ${event.attempt}/${event.maxAttempts}. ${cleanOutput(event.errorMessage)}`); break;
+      case "auto_retry_end": if (!event.success && event.finalError) { this.failure = true; this.ui.message("error", cleanOutput(event.finalError)); } else if (event.success) this.failure = false; break;
+      case "compaction_start": this.ui.message("info", "Compacting conversation..."); break;
+      case "compaction_end": this.ui.message(event.errorMessage ? "error" : "info", event.errorMessage ? cleanOutput(event.errorMessage) : "Conversation compacted. Original history retained."); break;
+      case "agent_settled": this.interrupted ||= event.aborted; break;
+    }
+    this.refreshStatus();
+  }
+
+  async submit(text: string, mode: InputMode = "prompt"): Promise<void> {
+    if (this.closing) return;
+    text = text.trim();
+    if (!text) return;
+    try {
+      if (text.startsWith("/")) { await this.command(text); return; }
+      if (this.lease?.viewer) throw new Error("Read-only viewer cannot run an agent or modify a session.");
+      if (this.storageFailed) throw new Error("History not saved. Restart after resolving the storage error.");
+      if (this.executionUnconfirmed && this.effectivePermission() !== "read-only") throw new Error("Execution unconfirmed. Inspect the previous run before enabling writes.");
+      const session = this.session;
+      if (!session?.model) throw new Error("No model configured. Use /connect or /model.");
+      if (this.state.kind === "stopping") throw new Error("Stopping. Wait for process cleanup.");
+      if (this.state.kind !== "idle") {
+        if (text.startsWith("!")) {
+          this.localQueue.push(text); this.refreshStatus(); return;
+        }
+        const expanded = await this.expandMentions(text);
+        if (mode === "follow-up") await session.followUp(expanded); else await session.steer(expanded);
+        this.refreshStatus(); return;
+      }
+      await this.run(text);
+    } catch (error) { this.ui.message("error", cleanOutput(error instanceof Error ? error.message : String(error))); this.ui.setDraft(text); }
+  }
+  private async expandMentions(text: string): Promise<string> {
+    const matches = [...text.matchAll(/(?:^|\s)@(?:"([^"]+)"|([^\s]+))/g)];
+    if (matches.length > 8) throw new Error("At most 8 file references per input.");
+    const files: string[] = [];
+    for (const match of matches) {
+      const name = match[1] ?? match[2];
+      if (!name) continue;
+      const path = await workspacePath(this.cwd, name);
+      const info = await stat(path);
+      if (!info.isFile() || info.size > 128 * 1024) throw new Error(`File reference is not a regular file or exceeds 128 KiB: ${name}`);
+      const buffer = await readFile(path);
+      if (buffer.length > 128 * 1024 || buffer.includes(0)) throw new Error(`File reference is binary or exceeds 128 KiB: ${name}`);
+      files.push(`\n<file path=${JSON.stringify(name)}>\n${buffer.toString("utf8")}\n</file>`);
+    }
+    return text + files.join("\n");
+  }
+  private async run(text: string): Promise<void> {
+    const session = this.session;
+    if (!session) throw new Error("No session.");
+    const runId = randomUUID();
+    const startedAt = Date.now();
+    this.failure = false; this.interrupted = false;
+    session.setActiveToolsByName(this.toolNames());
+    this.state = { kind: "running", id: runId, startedAt };
+    this.refreshStatus();
+    const work = (async () => {
+      try {
+        if (!this.executionUnconfirmed) await writeRunMarker(this.home, session.sessionId, { status: "active", runId, startedAt, pid: process.pid, cwd: this.cwd });
+        if (this.interrupted) return;
+        if (text.startsWith("!")) await this.userShell(text.slice(1).trim(), runId);
+        else {
+          const prompt = await this.expandMentions(text);
+          if (this.interrupted) return;
+          await session.prompt(prompt);
+        }
+        await session.waitForIdle();
+        while (!this.interrupted && this.localQueue.length) {
+          const next = this.localQueue.shift();
+          if (!next) break;
+          session.setActiveToolsByName(this.toolNames());
+          this.refreshStatus();
+          await this.userShell(next.slice(1).trim(), randomUUID());
+          await session.waitForIdle();
+        }
+      } catch (error) {
+        if (!this.interrupted) { this.failure = true; this.ui.message("error", cleanOutput(error instanceof Error ? error.message : String(error))); }
+      } finally {
+        this.broker.cancel();
+        await this.shell.stopAll();
+        session.setActiveToolsByName(this.toolNames());
+        const outcome = this.interrupted ? "interrupted" : this.failure ? "failed" : "completed";
+        try {
+          if (session.sessionFile && existsSync(session.sessionFile)) await inspectSession(session.sessionFile, this.cwd);
+          else if (session.messages.length > 0) throw new Error("Session file is missing.");
+          if (!this.executionUnconfirmed) await writeRunMarker(this.home, session.sessionId, { status: this.interrupted ? "interrupted" : "completed", runId, startedAt, endedAt: Date.now(), cwd: this.cwd });
+        } catch (error) {
+          this.storageFailed = true; this.permission = "read-only";
+          this.ui.message("error", `History not saved. ${cleanOutput(error instanceof Error ? error.message : String(error))}`);
+        }
+        this.state = { kind: "idle", outcome: this.storageFailed ? "failed" : outcome };
+        this.branch = await getBranch(this.cwd);
+        this.active = null;
+        this.refreshStatus();
+      }
+    })();
+    this.active = work;
+    await work;
+  }
+  private async userShell(command: string, id: string): Promise<void> {
+    if (!command) throw new Error("Use ! followed by a shell command.");
+    if (!await this.broker.authorize({ id, tool: "bash", cwd: this.cwd, description: command })) throw new Error("Shell command denied.");
+    if (this.interrupted) return;
+    const receipt = await this.shell.execute(command, undefined, (value) => this.ui.tool(value.id, "shell", value.output || value.command, "running"));
+    this.ui.tool(receipt.id, "shell", receipt.output + `\nExit code: ${receipt.exitCode ?? "unknown"}`, receipt.status === "completed" ? "done" : "error");
+    await this.session?.sendCustomMessage({ customType: "arkcode-shell", content: `User shell command: ${command}\n${receipt.output}\nExit code: ${receipt.exitCode}`, display: true }, { triggerTurn: false });
+    this.failure = receipt.status === "failed";
+    this.interrupted ||= receipt.status === "cancelled";
+  }
+  async interrupt(): Promise<void> {
+    if (this.state.kind === "idle") { this.broker.cancel(); return; }
+    this.interrupted = true;
+    this.state = { kind: "stopping", id: this.state.id, startedAt: this.state.startedAt };
+    this.broker.cancel();
+    const queue = this.session?.clearQueue();
+    const returned = [...(queue?.steering ?? []), ...(queue?.followUp ?? []), ...this.localQueue];
+    this.localQueue = [];
+    if (returned.length) this.ui.setDraft([this.ui.draft(), ...returned].filter(Boolean).join("\n\n"));
+    this.queued = [];
+    this.refreshStatus();
+    await Promise.all([this.session?.abort(), this.shell.stopAll()]);
+    await this.active;
+  }
+  async exit(): Promise<void> {
+    if (this.closing) return;
+    this.closing = true;
+    try { await this.interrupt(); this.unsubscribe?.(); this.session?.dispose(); await this.lease?.release(); }
+    finally { this.ui.stop(); }
+  }
+  get outcome(): string | null { return this.state.kind === "idle" ? this.state.outcome : null; }
+
+  private async resolveSession(target?: string, last = false): Promise<string | null> {
+    const sessions = await SessionManager.list(this.cwd, this.sessionDir());
+    if (last) return sessions[0]?.path ?? null;
+    if (target) {
+      const matched = sessions.filter((session) => session.id === target || session.id.startsWith(target));
+      if (matched.length !== 1) throw new Error(matched.length ? "Session ID is ambiguous." : "Session not found in this workspace.");
+      return matched[0]?.path ?? null;
+    }
+    return this.ui.choose("Resume a saved conversation", sessions.map((session) => ({ value: session.path,
+      label: session.name ?? (session.firstMessage.slice(0, 70) || session.id),
+      description: `${session.id.slice(0, 8)} | ${session.modified.toLocaleString()} | ${session.messageCount} messages`,
+    })));
+  }
+  async editPrevious(): Promise<void> {
+    const session = this.session;
+    if (!session || this.lease?.viewer) return;
+    if (this.state.kind !== "idle") {
+      const queue = session.clearQueue();
+      const text = queue.followUp.pop() ?? queue.steering.pop();
+      for (const item of queue.steering) await session.steer(item);
+      for (const item of queue.followUp) await session.followUp(item);
+      if (text) this.ui.setDraft(text);
+      return;
+    }
+    const prompt = [...(this.manager?.getBranch() ?? [])].reverse().find((entry) => entry.type === "message" && entry.message.role === "user");
+    if (!prompt || prompt.type !== "message" || prompt.message.role !== "user" || !this.manager || !prompt.parentId) return;
+    const text = contentText(prompt.message.content);
+    const path = this.manager.createBranchedSession(prompt.parentId);
+    if (path) { await this.replaceSession(SessionManager.open(path, this.sessionDir(), this.cwd)); this.ui.setDraft(text); }
+  }
+
+  private async command(text: string): Promise<void> {
+    const [raw = "", ...args] = text.slice(1).split(/\s+/);
+    const name = raw.toLowerCase(); const argument = args.join(" ");
+    if (unsupported.has(name)) { this.ui.message("info", "Not available in this release."); this.ui.setDraft(text); return; }
+    const session = this.session;
+    const runtime = this.runtime;
+    if (!session || !runtime) throw new Error("Session not initialized.");
+    const safeCommands = new Set(["help", "status", "copy", "exit"]);
+    if (this.lease?.viewer && !safeCommands.has(name)) throw new Error("Read-only viewer. Session mutations are disabled.");
+    const idleCommands = new Set(["new", "clear", "resume", "fork", "compact", "init", "connect"]);
+    if (this.state.kind !== "idle" && idleCommands.has(name)) {
+      if (!["resume", "fork", "new", "clear"].includes(name)) throw new Error("Wait until the current run finishes.");
+      await this.interrupt();
+    }
+    switch (name) {
+      case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Ctrl+C interrupts or exits when idle. Esc interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
+      case "status": this.ui.message("info", `Sandbox: none\nPermissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
+      case "model": {
+        await runtime.refresh({ allowNetwork: false });
+        const models = await runtime.getAvailable();
+        const selected = argument || await this.ui.choose("Select a model", models.map((model) => ({ value: `${model.provider}/${model.id}`, label: `${model.provider}/${model.id}`, description: model.name })));
+        if (!selected) break;
+        const model = await selectModel(runtime, selected, this.config);
+        if (!model) throw new Error("No model available.");
+        await session.setModel(model);
+        this.config.provider = model.provider; this.config.model = model.id;
+        const levels = session.getAvailableThinkingLevels();
+        const thinking = await this.ui.choose("Thinking level", levels.map((value) => ({ value, label: value })));
+        if (thinking) { const level = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).parse(thinking); session.setThinkingLevel(level); this.config.thinking = level; }
+        saveConfig(this.home, this.config); break;
+      }
+      case "permissions": {
+        if (this.executionUnconfirmed) throw new Error("Execution unconfirmed. This host remains Read Only. Inspect the workspace and terminate any orphaned commands before restarting with a new session.");
+        const value = argument || await this.ui.choose("Permissions | Sandbox: none", [
+          { value: "read-only", label: "Read Only", description: "File reading and search only. No shell or writing tools." },
+          { value: "ask", label: "Ask for approval", description: "Confirm every write and command. No OS isolation." },
+          { value: "full-access", label: "Full Access", description: "Execute with your OS privileges, without tool approval." },
+        ]);
+        if (!value) break;
+        const permission = z.enum(["read-only", "ask", "full-access"]).parse(value);
+        if (permission === "full-access" && !this.options.print) {
+          if (await this.ui.choose("Allow unsandboxed commands and writes with your OS privileges?", [{ value: "allow", label: "Enable Full Access" }, { value: "cancel", label: "Cancel" }]) !== "allow") break;
+        }
+        this.broker.reset(); this.permission = permission; session.setActiveToolsByName(this.toolNames());
+        this.ui.message("info", `Permissions: ${permission}. Sandbox: none.`); break;
+      }
+      case "new": case "clear": await this.replaceSession(SessionManager.create(this.cwd, this.sessionDir())); break;
+      case "resume": { const path = await this.resolveSession(argument || undefined, argument === "--last"); if (path) { await inspectSession(path, this.cwd); await this.replaceSession(SessionManager.open(path, this.sessionDir(), this.cwd)); } break; }
+      case "rename": { const title = argument || await this.ui.input("Session name", session.sessionName ?? ""); if (title) session.setSessionName(title); break; }
+      case "fork": {
+        const path = argument ? await this.resolveSession(argument) : session.sessionFile;
+        if (!path || !existsSync(path)) throw new Error("Send a prompt before forking this session.");
+        await inspectSession(path, this.cwd);
+        await this.replaceSession(SessionManager.forkFrom(path, this.cwd, this.sessionDir())); break;
+      }
+      case "compact": await this.runOperation(() => session.compact(argument || undefined)); break;
+      case "copy": if (!this.lastAnswer) throw new Error("No completed answer to copy."); if (!await this.ui.copy(this.lastAnswer)) throw new Error("Clipboard is unavailable."); this.ui.message("info", "Answer copied."); break;
+      case "init": {
+        if (existsSync(join(this.cwd, "AGENTS.md"))) throw new Error("AGENTS.md already exists. It was not overwritten.");
+        await this.run("Inspect this repository and create a concise AGENTS.md with the actual build, test and style conventions. Do not invent commands. Do not modify other files."); break;
+      }
+      case "connect": await this.connect(); break;
+      case "exit": await this.exit(); break;
+      default: this.ui.setDraft(text); throw new Error(`Unknown command /${name}. Use /help.`);
+    }
+    this.refreshStatus();
+  }
+  private async runOperation(operation: () => Promise<unknown>): Promise<void> {
+    this.interrupted = false;
+    this.failure = false;
+    const id = randomUUID(); this.state = { kind: "running", id, startedAt: Date.now() }; this.refreshStatus();
+    const work = (async () => {
+      try { await operation(); }
+      catch (error) { this.failure = true; throw error; }
+      finally {
+        this.state = { kind: "idle", outcome: this.interrupted ? "interrupted" : this.failure ? "failed" : "completed" };
+        this.active = null;
+        this.refreshStatus();
+      }
+    })();
+    this.active = work; await work;
+  }
+  private async connect(): Promise<void> {
+    const provider = await this.ui.input("Provider name", "deepseek"); if (!provider) return;
+    const model = await this.ui.input("Model ID", provider === "deepseek" ? "deepseek-flash" : ""); if (!model) return;
+    const baseUrl = await this.ui.input("OpenAI-compatible base URL", provider === "deepseek" ? "https://api.deepseek.com/v1" : ""); if (!baseUrl) return;
+    const apiKeyEnv = await this.ui.input("API key environment variable name", provider === "deepseek" ? "DEEPSEEK_API_KEY" : "OPENAI_API_KEY"); if (!apiKeyEnv) return;
+    if (!process.env[apiKeyEnv]) throw new Error(`Environment variable ${apiKeyEnv} is not set.`);
+    configureEndpoint({ home: this.home, provider, model, baseUrl, apiKeyEnv });
+    this.config = loadConfig(this.home);
+    await this.runtime?.refresh({ allowNetwork: false });
+    const selected = this.runtime ? await selectModel(this.runtime, `${provider}/${model}`, this.config) : undefined;
+    if (selected) await this.session?.setModel(selected);
+    this.ui.message("info", "Model configured. Credentials are read from the environment. Use a prompt to verify the connection.");
+  }
+}

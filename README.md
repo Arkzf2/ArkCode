@@ -1,0 +1,108 @@
+# ArkCode
+
+ArkCode 是基于 Pi SDK 的终端编码 agent。模型调用、工具循环、会话历史和上下文压缩由 Pi 管理。ArkCode 提供原生 TUI、工具审批、受管命令、输入队列、会话恢复和 Git 分支状态。
+
+## 启动
+
+需要 Node.js 22.19 或更新版本。Windows 使用 PowerShell，macOS 和 Linux 使用 `/bin/sh`。Git 用于显示当前分支。
+
+```powershell
+npm install
+npm run build
+npm start
+```
+
+在开发时运行 `npm run dev`。需要直接使用 `arkcode` 命令时，执行 `npm link`。
+
+```powershell
+arkcode -C "D:\my-project" --model deepseek/deepseek-flash
+arkcode "Inspect this project and fix the failing test"
+arkcode resume --last
+arkcode resume <session-id>
+arkcode fork <session-id>
+```
+
+首次打开目录时选择是否信任。信任后加载该目录及祖先目录的 `AGENTS.md` 文本。ArkCode 不加载项目扩展、插件或 `.pi` 设置。
+
+## 配置模型
+
+设置 `DEEPSEEK_API_KEY` 后，首次启动自动添加 `deepseek/deepseek-flash`。配置中只保存环境变量引用。已有 `models.json` 不会被自动覆盖。
+
+```powershell
+$env:DEEPSEEK_API_KEY = "your-key"
+arkcode --model deepseek/deepseek-flash
+```
+
+也可以在 TUI 使用 `/connect`，或配置其他 OpenAI 兼容端点。
+
+```powershell
+arkcode config --provider local --model my-model --base-url http://localhost:1234/v1 --api-key-env LOCAL_API_KEY
+arkcode models
+arkcode --model local/my-model
+```
+
+`/connect` 询问环境变量名称，不收集密钥。`/model` 选择模型及推理等级。默认配置目录为 `~/.arkcode`，可用 `ARKCODE_HOME` 或 `--home` 指定。
+
+| 文件 | 内容 |
+| --- | --- |
+| `settings.json` | 默认模型、推理等级、权限、可信目录 |
+| `models.json` | Pi 格式的模型及端点配置 |
+| `auth.json` | Pi 的凭据存储 |
+| `sessions/` | Pi JSONL 历史，按真实工作区分组 |
+| `runs/` | 运行结束与中断标记，不保存第二份对话 |
+
+自定义模型配置遵循 [Pi models 文档](https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/docs/models.md)。DeepSeek 默认端点依据 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/)。模型配置属于用户可信配置，Pi 支持的凭据命令也可以执行。
+
+## 权限
+
+本版没有 OS sandbox，`--sandbox` 只接受 `none`。
+
+| 模式 | 实际行为 |
+| --- | --- |
+| Read Only | 仅暴露 read、find、grep、ls，无 shell 或写工具 |
+| Ask for approval | 每次文件写入、编辑或 shell 命令都需要批准 |
+| Full Access | 使用当前用户的 OS 权限执行，不等待工具审批 |
+
+未信任目录默认 Read Only。可通过 `/permissions` 或 `--permissions read-only/ask/full-access` 选择。会话授权绑定完整工具参数和目录。停止、切换权限或切换会话撤销旧审批。文件工具限制在工作区，禁止访问 `.git`、`.arkcode`，拒绝 symlink 越界及读取 `.env`。这不是 OS 隔离；批准的 shell 可以使用当前用户权限访问其他路径。
+
+同一真实工作区只有一个 writer。第二个宿主进入 Read-only viewer，不能运行 agent 或修改历史。历史恢复不重放工具、草稿或队列；中断不会回滚文件。上一宿主在执行期间崩溃时，恢复显示 Execution unconfirmed，需要检查现有文件和残留命令。
+
+强制结束宿主不能保证所有子进程已退出。启动时发现该配置目录下的 active 运行标记后，工作区保持 Read Only，新会话也不能绕过。确认旧命令已结束后，才能手动将对应 `runs/` 标记改为 `interrupted`，补上 `endedAt` 时间戳并去掉 `pid`，然后重启。不同 `--home` 共享 writer 锁，但不共享运行标记；不要用换配置目录绕过恢复检查。
+
+首次执行还未创建会话历史时，带工作区路径的运行标记也会触发上述保护。如果宿主在创建或回收 writer 锁时崩溃，CLI 可能保持 viewer。启动消息给出残留锁文件的完整路径。确认没有进程持有或正在恢复该工作区后，才能手动清理残留锁文件。程序不自动清理无法确认归属的锁。
+
+## 操作
+
+Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交付；Tab 排队下一轮。Ctrl+J 或支持该键位的终端中的 Shift+Enter 换行。粘贴不会发送任务或批准工具。`@path` 和 `@"path with spaces"` 添加文件内容，单个文件最多 128 KiB。
+
+`!command` 执行用户命令，经过相同权限检查，结果加入会话。运行中提交 `!command` 会排队到当前模型循环结束。
+
+| 入口 | 行为 |
+| --- | --- |
+| `/help` | 命令与快捷键 |
+| `/model`、`/connect` | 模型选择、端点配置 |
+| `/permissions`、`/status` | 权限与实际运行配置 |
+| `/new`、`/clear` | 新会话，保留旧历史和工作区文件 |
+| `/resume [id]`、`/rename`、`/fork [id]` | 恢复、重命名、分支 |
+| `/compact` | Pi 上下文压缩，保留原始历史 |
+| `/copy`、`/init` | 复制完整回答、生成 AGENTS.md |
+| `/exit` | 停止执行并退出 |
+
+TUI 使用固定深色主题和六字段底栏。旧 `settings.json` 中的 `theme` 和 `statusline` 可读取，下一次保存时移除。文件差异可在 IDE 或外部 Git 工具中查看。代码审查可直接作为普通任务提交。
+
+Esc 中断 agent；面板中的 Esc 返回。Ctrl+C 运行时中断，空闲时退出。Ctrl+D 在空输入区退出。Ctrl+T 展开工具转录，Ctrl+O 复制最近完整回答，Ctrl+R 搜索提示历史，Ctrl+G 使用 `VISUAL` 或 `EDITOR` 编辑草稿。Ctrl+L 仅清理视图。Shift+Left 编辑未消费队列输入。空输入区双 Esc 编辑上一条提示并创建分支，不回滚文件。
+
+Goal、多代理、MCP、插件、持久 Plan、学习式记忆、云执行和媒体输入后置。已知后置 slash 命令显示不可用，未知命令不会发送给模型。
+
+## 单轮与验证
+
+```powershell
+arkcode --print --read-only "Explain this project"
+arkcode --json --permissions ask --approve "Fix the test and run it"
+npm run check
+npm test
+```
+
+非交互模式默认拒绝需要审批的动作。`--approve` 显式批准这些动作；`--full-access` 使用完整权限。JSON 输出包含模型流、工具事件、审批和最终运行状态。
+
+测试使用本地 OpenAI 兼容服务驱动真实 Pi SDK，并执行真实文件操作、Git 和本机 shell。真实 DeepSeek 调试另见 [验收记录](docs/implementation/VERIFICATION.md)。Windows 已验证子进程树取消；macOS/Linux 实机、不同终端的中文 IME、系统剪贴板和外部编辑器尚未完整验收。

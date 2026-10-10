@@ -1,0 +1,16 @@
+export const slashCommands = [
+  { name: "help", description: "Commands and shortcuts" },
+  { name: "model", description: "Choose model and thinking level" },
+  { name: "connect", description: "Configure a provider" },
+  { name: "permissions", description: "Choose tool permissions" },
+  { name: "status", description: "Session and runtime status" },
+  { name: "new", description: "Start a new session" },
+  { name: "clear", description: "Start a new session" },
+  { name: "resume", description: "Resume a saved session" },
+  { name: "rename", description: "Rename this session" },
+  { name: "fork", description: "Fork this session" },
+  { name: "compact", description: "Compact the conversation" },
+  { name: "copy", description: "Copy the last completed answer" },
+  { name: "init", description: "Create workspace instructions" },
+  { name: "exit", description: "Exit ArkCode" },
+];

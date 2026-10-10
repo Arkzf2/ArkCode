@@ -1,0 +1,6 @@
+docs/
+node_modules/
+dist/
+.arkcode/
+.audit/runtime/
+*.tgz

@@ -1,0 +1,553 @@
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  CombinedAutocompleteProvider,
+  Container,
+  Editor,
+  getNativeClipboard,
+  Input,
+  isKeyRelease,
+  isKeyRepeat,
+  Markdown,
+  matchesKey,
+  ProcessTerminal,
+  SelectList,
+  stripTerminalSequences,
+  Text,
+  TuiMainScreen,
+  wrapTextWithAnsi,
+  type Component,
+  type EditorTheme,
+  type MarkdownTheme,
+  type SelectListTheme,
+  type Terminal,
+  type TuiInputListenerResult,
+} from "@earendil-works/pi-tui";
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  Choice,
+  InputMode,
+  Status,
+  UiActions,
+  UserInterface,
+} from "./domain.js";
+import { slashCommands } from "./commands.js";
+
+type MessageKind = Parameters<UserInterface["message"]>[0];
+type ToolState = Parameters<UserInterface["tool"]>[3];
+type TranscriptEntry =
+  | { kind: "message"; role: MessageKind; text: string; component: Markdown | Text }
+  | { kind: "tool"; id: string; name: string; text: string; state: ToolState; component: Text };
+type Panel =
+  | { kind: "choice"; component: Container; cancel: () => void; select: (index: number) => void }
+  | { kind: "input"; component: Container; cancel: () => void };
+
+export function sanitizeTerminalText(text: string): string {
+  return stripTerminalSequences(text)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
+}
+
+const ansi = (code: number) => (text: string): string => `\x1b[${code}m${text}\x1b[0m`;
+const bold = ansi(1);
+const cyan = ansi(36);
+const green = ansi(32);
+const yellow = ansi(33);
+const red = ansi(31);
+const italic = ansi(3);
+
+function themes(): { editor: EditorTheme; markdown: MarkdownTheme; select: SelectListTheme } {
+  const muted = ansi(90);
+  const select: SelectListTheme = {
+    selectedPrefix: cyan,
+    selectedText: bold,
+    description: muted,
+    scrollInfo: muted,
+    noMatch: muted,
+  };
+  return {
+    select,
+    editor: { borderColor: muted, selectList: select },
+    markdown: {
+      heading: (text) => bold(cyan(text)),
+      link: cyan,
+      linkUrl: muted,
+      code: yellow,
+      codeBlock: green,
+      codeBlockBorder: muted,
+      quote: italic,
+      quoteBorder: muted,
+      hr: muted,
+      listBullet: cyan,
+      bold,
+      italic,
+      strikethrough: ansi(9),
+      underline: ansi(4),
+    },
+  };
+}
+
+class RenderComponent implements Component {
+  constructor(private readonly draw: (width: number) => string[]) {}
+  render(width: number): string[] { return this.draw(width); }
+  invalidate(): void {}
+}
+
+async function clipboardCommand(command: string, args: string[], text: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    child.on("error", () => resolve(false));
+    child.stdin.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+    child.stdin.end(text);
+  });
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    const clipboard = getNativeClipboard();
+    if (clipboard?.setText) {
+      await clipboard.setText(text);
+      return true;
+    }
+  } catch {}
+  if (process.platform === "win32") {
+    return clipboardCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "[Console]::InputEncoding = [Text.UTF8Encoding]::new(); Set-Clipboard -Value ([Console]::In.ReadToEnd())"], text);
+  }
+  if (process.platform === "darwin") return clipboardCommand("pbcopy", [], text);
+  if (await clipboardCommand("wl-copy", [], text)) return true;
+  return clipboardCommand("xclip", ["-selection", "clipboard"], text);
+}
+
+export class TerminalUI implements UserInterface {
+  private readonly tui: TuiMainScreen;
+  private readonly theme = themes();
+  private editor: Editor;
+  private readonly entries: TranscriptEntry[] = [];
+  private readonly tools = new Map<string, Extract<TranscriptEntry, { kind: "tool" }>>();
+  private readonly promptHistory: string[] = [];
+  private activeAssistant: Extract<TranscriptEntry, { kind: "message" }> | null = null;
+  private currentStatus: Status | null = null;
+  private panel: Panel | null = null;
+  private expanded = false;
+  private visibleStart = 0;
+  private pasting = false;
+  private lastKey: { data: string; at: number } | null = null;
+  private lastEscape = 0;
+  private started = false;
+  private externalEditor = false;
+  private timer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly actions: UiActions, terminal: Terminal = new ProcessTerminal()) {
+    this.tui = new TuiMainScreen(terminal, true);
+    this.editor = this.createEditor();
+    this.tui.addInputListener((data) => this.handleKeys(data));
+    this.rebuild();
+  }
+
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+    this.tui.start();
+    this.timer = setInterval(() => {
+      if (this.currentStatus?.state.kind !== "idle") this.tui.requestRender();
+    }, 1000);
+    this.timer.unref();
+  }
+
+  status(value: Status): void {
+    const oldCwd = this.currentStatus?.cwd;
+    this.currentStatus = value;
+    if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands, value.cwd));
+    this.render();
+  }
+
+  message(kind: MessageKind, text: string): void {
+    const cleaned = sanitizeTerminalText(text);
+    this.entries.push({ kind: "message", role: kind, text: cleaned, component: this.messageComponent(kind, cleaned) });
+    this.render();
+  }
+
+  assistantDelta(text: string): void {
+    if (!this.activeAssistant) {
+      this.activeAssistant = { kind: "message", role: "assistant", text: "", component: this.messageComponent("assistant", "") };
+      this.entries.push(this.activeAssistant);
+    }
+    this.activeAssistant.text += text;
+    this.activeAssistant.component.setText(sanitizeTerminalText(this.activeAssistant.text));
+    this.render();
+  }
+
+  assistantEnd(text: string): void {
+    if (this.activeAssistant) {
+      this.activeAssistant.text = text;
+      this.activeAssistant.component.setText(sanitizeTerminalText(text));
+      this.activeAssistant = null;
+      this.render();
+    } else if (text) this.message("assistant", text);
+  }
+
+  tool(id: string, name: string, text: string, state: ToolState): void {
+    let entry = this.tools.get(id);
+    if (!entry) {
+      entry = { kind: "tool", id, name, text, state, component: new Text("", 2, 0) };
+      this.tools.set(id, entry);
+      this.entries.push(entry);
+    }
+    entry.name = sanitizeTerminalText(name);
+    entry.text = sanitizeTerminalText(text);
+    entry.state = state;
+    this.updateTool(entry);
+    this.render();
+  }
+
+  choose(title: string, choices: Choice[]): Promise<string | null> {
+    this.dismiss();
+    if (!choices.length) {
+      this.message("info", `${title}\nNo choices available.`);
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      const list = new SelectList(choices.map((choice) => ({
+        value: choice.value,
+        label: sanitizeTerminalText(choice.label),
+        ...(choice.description ? { description: sanitizeTerminalText(choice.description) } : {}),
+      })), 8, this.theme.select);
+      const component = new Container();
+      component.addChild(new Text(bold(sanitizeTerminalText(title)), 2, 1));
+      component.addChild(list);
+      const finish = (value: string | null): void => {
+        this.closePanel();
+        resolve(value);
+      };
+      list.onSelect = (item) => finish(item.value);
+      list.onCancel = () => finish(null);
+      this.panel = {
+        kind: "choice",
+        component,
+        cancel: () => finish(null),
+        select: (index) => {
+          const choice = choices[index];
+          if (choice) finish(choice.value);
+        },
+      };
+      this.rebuild();
+      this.tui.setFocus(list);
+      this.render();
+    });
+  }
+
+  input(title: string, initial = ""): Promise<string | null> {
+    this.dismiss();
+    return new Promise((resolve) => {
+      const input = new Input();
+      input.setValue(initial);
+      const component = new Container();
+      component.addChild(new Text(bold(sanitizeTerminalText(title)), 2, 1));
+      component.addChild(input);
+      const finish = (value: string | null): void => {
+        this.closePanel();
+        resolve(value);
+      };
+      input.onSubmit = (value) => finish(value);
+      input.onEscape = () => finish(null);
+      this.panel = { kind: "input", component, cancel: () => finish(null) };
+      this.rebuild();
+      this.tui.setFocus(input);
+      this.render();
+    });
+  }
+
+  async approve(request: ApprovalRequest): Promise<ApprovalDecision> {
+    const result = await this.choose(
+      `Approval required\n${request.tool}\n${request.description}\nDirectory ${request.cwd}`,
+      [
+        { value: "once", label: "1. Yes, proceed" },
+        { value: "session", label: "2. Allow this exact operation for the session" },
+        { value: "deny", label: "3. No, continue without running it" },
+      ],
+    );
+    if (result === "once" || result === "session") return result;
+    return "deny";
+  }
+
+  dismiss(): void { this.panel?.cancel(); }
+  draft(): string { return this.editor.getExpandedText(); }
+  setDraft(text: string): void {
+    this.lastKey = null;
+    this.editor.setText(sanitizeTerminalText(text));
+    this.render();
+  }
+
+  clear(): void {
+    this.dismiss();
+    this.entries.length = 0;
+    this.tools.clear();
+    this.activeAssistant = null;
+    this.visibleStart = 0;
+    this.render();
+  }
+
+  copy(text: string): Promise<boolean> { return copyText(text); }
+
+  stop(): void {
+    this.dismiss();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    if (this.started) this.tui.stop();
+    this.started = false;
+  }
+
+  private createEditor(): Editor {
+    const editor = new Editor(this.tui, this.theme.editor, { paddingX: 2, autocompleteMaxVisible: 6 });
+    editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands, this.currentStatus?.cwd ?? process.cwd()));
+    editor.onSubmit = (value) => this.submit(value, this.busy() ? "steer" : "prompt");
+    return editor;
+  }
+
+  private messageComponent(kind: MessageKind, text: string): Markdown | Text {
+    if (kind === "assistant") return new Markdown(text, 2, 1, this.theme.markdown);
+    if (kind === "user") return new Text(`${cyan("> ")}${text}`, 2, 1);
+    return new Text(kind === "error" ? red(text) : ansi(2)(text), 2, 1);
+  }
+
+  private updateTool(entry: Extract<TranscriptEntry, { kind: "tool" }>): void {
+    const label = entry.state === "running" ? yellow("running") : entry.state === "error" ? red("failed") : green("done");
+    const lines = entry.text.split("\n");
+    const output = this.expanded ? entry.text : lines.slice(0, 3).join("\n");
+    const omitted = !this.expanded && lines.length > 3 ? `\n  ... ${lines.length - 3} more lines` : "";
+    entry.component.setText(`${label}  ${bold(entry.name)}${output ? `\n${output}` : ""}${omitted}`);
+  }
+
+  private rebuild(): void {
+    this.tui.clear();
+    this.tui.addChild(new RenderComponent((width) =>
+      new Text(bold(this.currentStatus?.viewer ? "ARKCODE  Saved session" : "ARKCODE"), 2, 1).render(width)));
+    this.tui.addChild(new RenderComponent((width) => {
+      const lines: string[] = [];
+      for (const entry of this.entries.slice(this.visibleStart)) {
+        lines.push(...entry.component.render(width));
+        if (entry.kind === "tool") lines.push("");
+      }
+      return lines;
+    }));
+    this.tui.addChild(new RenderComponent((width) => this.activity(width)));
+    if (this.panel) this.tui.addChild(this.panel.component);
+    this.tui.addChild(this.editor);
+    this.tui.addChild(new RenderComponent((width) => this.statusLines(width)));
+    if (!this.panel) this.tui.setFocus(this.editor);
+  }
+
+  private activity(width: number): string[] {
+    const status = this.currentStatus;
+    if (!status) return [];
+    const rows: string[] = [];
+    if (status.state.kind !== "idle") {
+      const elapsed = Math.floor((Date.now() - status.state.startedAt) / 1000);
+      const currentTool = [...this.tools.values()].findLast((tool) => tool.state === "running");
+      const label = status.state.kind === "awaiting-approval" ? "Awaiting approval" :
+        status.state.kind === "stopping" ? "Stopping" : currentTool ? `Running ${currentTool.name}` : "Working";
+      rows.push(`${label}  ${elapsed}s`);
+    } else if (status.state.outcome === "interrupted") rows.push("Interrupted");
+    else if (status.state.outcome === "failed") rows.push("Failed");
+    if (status.queued.length) rows.push(...status.queued.map(sanitizeTerminalText));
+    return rows.flatMap((row) => wrapTextWithAnsi(ansi(2)(row), Math.max(1, width - 4)).map((line) => `  ${line}`));
+  }
+
+  private statusLines(width: number): string[] {
+    const status = this.currentStatus;
+    if (!status) return [];
+    const fields = [
+      `Model ${status.model}`, `Thinking ${status.thinking}`, `Directory ${status.cwd}`,
+      `Permissions ${status.permission}`, `Branch ${status.branch || "none"}`, `Context ${status.context}`,
+    ].map(sanitizeTerminalText);
+    return fields.join("  |  ").split("\n").flatMap((line) =>
+      wrapTextWithAnsi(ansi(2)(line), Math.max(1, width - 4)).map((row) => `  ${row}`));
+  }
+
+  private closePanel(): void {
+    this.panel = null;
+    this.rebuild();
+    this.render();
+  }
+
+  private busy(): boolean {
+    return this.currentStatus !== null && this.currentStatus.state.kind !== "idle";
+  }
+
+  private submit(value: string, mode: InputMode): void {
+    if (!value.trim()) return;
+    this.editor.addToHistory(value);
+    this.promptHistory.push(value);
+    this.editor.setText("");
+    this.run(async () => {
+      try { await this.actions.submit(value, mode); }
+      catch (error) { if (!this.draft()) this.setDraft(value); throw error; }
+    });
+  }
+
+  private run(action: () => Promise<void>): void {
+    void action().catch((error: unknown) => this.message("error", error instanceof Error ? error.message : String(error)));
+  }
+
+  private handleKeys(data: string): TuiInputListenerResult {
+    if (isKeyRelease(data)) return { consume: true };
+    // Paste payload must never become an approval decision or a global shortcut.
+    if (this.pasting || data.includes("\x1b[200~")) {
+      this.pasting = !data.includes("\x1b[201~");
+      return this.panel?.kind === "choice" ? { consume: true } : undefined;
+    }
+    const now = Date.now();
+    if (!matchesKey(data, "escape")) this.lastEscape = 0;
+    const repeated = isKeyRepeat(data) || (this.lastKey?.data === data && now - this.lastKey.at < 300);
+    this.lastKey = { data, at: now };
+    const decisionKey = matchesKey(data, "enter") || /^[1-9]$/.test(data);
+    if (repeated && (matchesKey(data, "enter") || (this.panel?.kind === "choice" && decisionKey))) return { consume: true };
+    if (this.panel) {
+      if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+        this.dismiss();
+        return { consume: true };
+      }
+      if (/^[1-9]$/.test(data) && this.panel.kind === "choice") {
+        this.panel.select(Number(data) - 1);
+        return { consume: true };
+      }
+      return undefined;
+    }
+    if (matchesKey(data, "ctrl+c")) {
+      this.run(() => this.busy() ? this.actions.interrupt() : this.actions.exit());
+    } else if (matchesKey(data, "ctrl+d") && !this.draft()) {
+      this.run(() => this.actions.exit());
+    } else if (matchesKey(data, "escape")) {
+      if (this.editor.isShowingAutocomplete()) return undefined;
+      if (this.expanded) {
+        this.expanded = false;
+        for (const tool of this.tools.values()) this.updateTool(tool);
+        this.render();
+      } else if (this.busy()) this.run(() => this.actions.interrupt());
+      else if (!this.draft()) {
+        if (now - this.lastEscape < 500) { this.lastEscape = 0; this.run(() => this.actions.editPrevious()); }
+        else this.lastEscape = now;
+      }
+    } else if (matchesKey(data, "tab") && this.busy() && this.draft().trim() && !this.editor.isShowingAutocomplete()) {
+      this.submit(this.draft(), "follow-up");
+    } else if (matchesKey(data, "shift+left")) {
+      this.run(() => this.actions.editPrevious());
+    } else if (matchesKey(data, "ctrl+t")) {
+      this.expanded = !this.expanded;
+      if (this.expanded) this.visibleStart = 0;
+      for (const tool of this.tools.values()) this.updateTool(tool);
+      this.render();
+    } else if (matchesKey(data, "ctrl+o")) {
+      this.run(() => this.actions.submit("/copy", "prompt"));
+    } else if (matchesKey(data, "ctrl+l")) {
+      this.visibleStart = this.entries.length;
+      this.tui.terminal.clearScreen();
+      this.tui.requestRender(true);
+    } else if (matchesKey(data, "ctrl+r")) {
+      this.run(() => this.searchHistory());
+    } else if (matchesKey(data, "ctrl+g")) {
+      this.run(() => this.editExternally());
+    } else if (data === "?" && !this.draft()) {
+      this.message("info", "Enter send / steer    Tab queue follow-up    Ctrl+C interrupt / exit\nCtrl+T tool details    Ctrl+O copy    Ctrl+R history    Ctrl+G editor\nCtrl+L clear view    Shift+Enter newline    Esc cancel    /help commands");
+    } else return undefined;
+    return { consume: true };
+  }
+
+  private async searchHistory(): Promise<void> {
+    const query = await this.input("Search prompt history");
+    if (query === null) return;
+    const matches = [...new Set(this.promptHistory)].reverse().filter((prompt) => prompt.toLowerCase().includes(query.toLowerCase()));
+    const result = await this.choose("Prompt history", matches.map((prompt) => ({ value: prompt, label: prompt.replace(/\n/g, " ") })));
+    if (result !== null) this.setDraft(result);
+  }
+
+  private async editExternally(): Promise<void> {
+    if (this.externalEditor) return;
+    this.externalEditor = true;
+    const draft = this.draft();
+    let directory: string | null = null;
+    try {
+      directory = await mkdtemp(join(tmpdir(), "arkcode-editor-"));
+      const file = join(directory, "prompt.md");
+      await writeFile(file, draft, "utf8");
+      const command = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad.exe" : "vi");
+      this.tui.stop();
+      this.started = false;
+      const code = await new Promise<number | null>((resolve, reject) => {
+        const quoted = process.platform === "win32" ? `"${file}"` : `'${file.replace(/'/g, "'\\''")}'`;
+        const child = spawn(`${command} ${quoted}`, { shell: true, stdio: "inherit" });
+        child.on("error", reject);
+        child.on("close", resolve);
+      });
+      const edited = await readFile(file, "utf8");
+      this.setDraft(edited);
+      if (code !== 0) this.message("error", `External editor exited with ${code ?? "no exit code"}. Draft retained.`);
+    } finally {
+      if (!this.started) {
+        this.started = true;
+        this.tui.start();
+        this.tui.setFocus(this.editor);
+      }
+      this.externalEditor = false;
+      if (directory) {
+        await unlink(join(directory, "prompt.md")).catch(() => {});
+        await rmdir(directory).catch(() => {});
+      }
+      this.render();
+    }
+  }
+
+  private render(): void {
+    if (this.started && !this.externalEditor) this.tui.requestRender();
+  }
+}
+
+export class PlainUI implements UserInterface {
+  private draftText = "";
+  private streamedText = "";
+  constructor(private readonly options: { json: boolean; approve: boolean }) {}
+  status(value: Status): void { this.event("status", value); }
+  message(kind: MessageKind, text: string): void {
+    if (this.options.json) this.event("message", { role: kind, text });
+    else if (kind === "assistant") process.stdout.write(`${sanitizeTerminalText(text)}\n`);
+    else if (kind === "info" || kind === "error") process.stderr.write(`${sanitizeTerminalText(text)}\n`);
+  }
+  assistantDelta(text: string): void {
+    if (this.options.json) this.event("assistant_delta", { text });
+    else {
+      this.streamedText += text;
+      process.stdout.write(sanitizeTerminalText(text));
+    }
+  }
+  assistantEnd(text: string): void {
+    if (this.options.json) this.event("assistant_end", { text });
+    else {
+      const remaining = text.startsWith(this.streamedText) ? text.slice(this.streamedText.length) : "";
+      if (text || this.streamedText) process.stdout.write(`${sanitizeTerminalText(remaining)}\n`);
+      this.streamedText = "";
+    }
+  }
+  tool(id: string, name: string, text: string, state: ToolState): void { this.event("tool", { id, name, text, state }); }
+  choose(_title: string, _choices: Choice[]): Promise<string | null> { return Promise.resolve(null); }
+  input(_title: string, _initial?: string): Promise<string | null> { return Promise.resolve(null); }
+  approve(request: ApprovalRequest): Promise<ApprovalDecision> {
+    const decision = this.options.approve ? "once" : "deny";
+    this.event("approval", { request, decision });
+    if (!this.options.json && decision === "deny") process.stderr.write(`Approval denied for ${sanitizeTerminalText(request.tool)}.\n`);
+    return Promise.resolve(decision);
+  }
+  dismiss(): void {}
+  draft(): string { return this.draftText; }
+  setDraft(text: string): void { this.draftText = text; }
+  clear(): void { this.draftText = ""; this.streamedText = ""; }
+  copy(text: string): Promise<boolean> { return copyText(text); }
+  stop(): void {}
+  private event(type: string, data: object): void {
+    if (this.options.json) process.stdout.write(`${JSON.stringify({ type, ...data })}\n`);
+  }
+}
