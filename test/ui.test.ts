@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { promisify } from "node:util";
 import { test } from "node:test";
@@ -49,6 +52,59 @@ const browserItems: SessionItem[] = [
   { id: "current", path: null, cwd: "D:/ArkCode", title: "Current task", preview: "No messages yet", modified: Date.now(), state: "ready", current: true },
   { id: "other", path: "E:/Other/session.jsonl", cwd: "E:/Other", title: "Other project task", preview: "Review a function", modified: Date.now() - 3_600_000, state: "inactive", current: false },
 ];
+
+test("@ discovers workspace files and directories and Tab completes a file", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "arkcode-mention-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await mkdir(join(cwd, "src"));
+  await writeFile(join(cwd, "src", "unique-target.ts"), "export {};");
+  await writeFile(join(cwd, "notes with space.md"), "Notes");
+  const terminal = new MemoryTerminal(100);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, cwd });
+  ui.start();
+  terminal.press("@");
+  await setTimeout(100);
+  assert.match(terminal.text(), /src\//);
+  terminal.press("s");
+  await setTimeout(100);
+  terminal.press("\t");
+  await setTimeout(100);
+  assert.equal(ui.draft(), "@src/");
+  ui.setDraft("");
+  terminal.press("@");
+  for (const key of "unique-target") terminal.press(key);
+  await setTimeout(100);
+  assert.match(terminal.text(), /unique-target\.ts/);
+  terminal.press("\t");
+  await setTimeout(100);
+  assert.equal(ui.draft(), "@src/unique-target.ts ");
+  ui.setDraft("");
+  for (const key of "@notes") terminal.press(key);
+  await setTimeout(100);
+  terminal.press("\t");
+  await setTimeout(100);
+  assert.equal(ui.draft(), '@"notes with space.md" ');
+});
+
+test("Tab keeps a busy @ draft in the editor while file discovery is pending", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "arkcode-busy-mention-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await writeFile(join(cwd, "target.ts"), "export {};");
+  const submitted: string[] = [];
+  const terminal = new MemoryTerminal();
+  const ui = new TerminalUI({ ...inertActions, async submit(text) { submitted.push(text); } }, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, cwd, state: { kind: "running", id: "run", startedAt: Date.now() } });
+  ui.start();
+  terminal.press("@");
+  terminal.press("\t");
+  await setTimeout(100);
+  assert.deepEqual(submitted, []);
+  assert.equal(ui.draft(), "@target.ts ");
+  assert.match(terminal.text(), /target\.ts/);
+});
 
 test("empty focused composer opens the session center, while draft Left remains an editor key", async (t) => {
   const terminal = new MemoryTerminal(120);

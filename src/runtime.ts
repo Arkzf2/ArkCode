@@ -238,7 +238,20 @@ export class ArkHost {
   private toolNames(): string[] { return this.effectivePermission() === "read-only" ? readTools : [...readTools, ...mutatingTools]; }
   private renderHistory(): void {
     const details = new Map<string, ToolDetails>();
-    for (const message of this.session?.messages ?? []) {
+    for (const entry of this.manager?.getBranch() ?? []) {
+      if (entry.type === "custom_message") {
+        if (!entry.display) continue;
+        if (entry.customType === "arkcode-shell") {
+          const receipt = shellHistorySchema.safeParse(entry.details);
+          if (receipt.success) {
+            const { id, command, output, status, exitCode } = receipt.data;
+            this.ui.tool(id, "shell", cleanOutput(output), status === "completed" ? "done" : "error", { target: cleanOutput(command), ...(exitCode !== null ? { exitCode } : {}) });
+          } else this.ui.message("info", contentText(entry.content));
+        } else this.ui.message("info", contentText(entry.content));
+        continue;
+      }
+      if (entry.type !== "message") continue;
+      const message = entry.message;
       if (message.role === "user") this.ui.message("user", contentText(message.content));
       else if (message.role === "assistant") {
         for (const [index, block] of message.content.entries()) {

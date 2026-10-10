@@ -458,6 +458,18 @@ test("resume and fork preserve conversation history without replaying tools", { 
   assert.ok(f.requests[2]?.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("Create one result")));
 });
 
+test("resuming a compacted session displays messages from before compaction", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused" }));
+  const encoded = Buffer.from(process.platform === "win32" ? f.cwd.toLowerCase() : f.cwd).toString("base64url");
+  const manager = SessionManager.create(f.cwd, join(f.home, "sessions", encoded));
+  manager.appendMessage({ role: "user", content: "The original requirement", timestamp: Date.now() });
+  manager.appendCompaction("Summary of earlier work", null, 100);
+  manager.appendMessage({ role: "user", content: "A later requirement", timestamp: Date.now() });
+  const { ui } = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text),
+    ["The original requirement", "A later requirement"]);
+});
+
 test("a second workspace process is a viewer and cannot mutate sessions", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Owner answer." }));
   const owner = await f.start();

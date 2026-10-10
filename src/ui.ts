@@ -3,7 +3,6 @@ import { mkdtemp, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CombinedAutocompleteProvider,
   Container,
   CURSOR_MARKER,
   Editor,
@@ -43,6 +42,7 @@ import type {
   UserInterface,
 } from "./domain.js";
 import { slashCommands } from "./commands.js";
+import { mentionPrefix, WorkspaceAutocompleteProvider } from "./autocomplete.js";
 
 type MessageKind = Parameters<UserInterface["message"]>[0];
 type ToolState = Parameters<UserInterface["tool"]>[3];
@@ -239,7 +239,7 @@ export class TerminalUI implements UserInterface {
     if (value.state.kind === "idle") {
       for (const entry of this.entries) if (entry.kind === "reasoning") entry.active = false;
     }
-    if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands, value.cwd));
+    if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(value.cwd));
     this.render();
   }
 
@@ -410,7 +410,7 @@ export class TerminalUI implements UserInterface {
 
   private createEditor(): Editor {
     const editor = new ArkEditor(this.tui, this.theme.editor, { paddingX: 4, autocompleteMaxVisible: 6 });
-    editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands, this.currentStatus?.cwd ?? process.cwd()));
+    editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(this.currentStatus?.cwd ?? process.cwd()));
     editor.onSubmit = (value) => this.submit(value, this.busy() ? "steer" : "prompt");
     return editor;
   }
@@ -741,6 +741,11 @@ export class TerminalUI implements UserInterface {
     return this.currentStatus !== null && this.currentStatus.state.kind !== "idle";
   }
 
+  private completingMention(): boolean {
+    const { line, col } = this.editor.getCursor();
+    return mentionPrefix((this.editor.getLines()[line] ?? "").slice(0, col)) !== null;
+  }
+
   private submit(value: string, mode: InputMode): void {
     if (!value.trim()) return;
     this.editor.addToHistory(value);
@@ -795,7 +800,7 @@ export class TerminalUI implements UserInterface {
         if (now - this.lastEscape < 500) { this.lastEscape = 0; this.run(() => this.actions.editPrevious()); }
         else this.lastEscape = now;
       }
-    } else if (matchesKey(data, "tab") && this.busy() && this.draft().trim() && !this.editor.isShowingAutocomplete()) {
+    } else if (matchesKey(data, "tab") && this.busy() && this.draft().trim() && !this.editor.isShowingAutocomplete() && !this.completingMention()) {
       this.submit(this.draft(), "follow-up");
     } else if (matchesKey(data, "shift+left")) {
       this.run(() => this.actions.editPrevious());
