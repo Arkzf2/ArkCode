@@ -131,8 +131,8 @@ test("removed commands are rejected without running the agent, while @ reference
   const f = await fixture(t, () => ({ kind: "text", text: "File reference received." }));
   const { host, ui } = await f.start();
   await host.submit("/help");
-  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /status /new /clear /resume /rename /fork /compact /copy /init /exit");
-  for (const command of ["diff", "review", "ps", "theme", "statusline", "stop", "quit", "mention"]) {
+  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /status /new /resume /rename /fork /compact /copy /init /exit");
+  for (const command of ["diff", "review", "ps", "theme", "statusline", "stop", "quit", "mention", "clear"]) {
     await host.submit(`/${command}`);
     assert.deepEqual(ui.messages.at(-1), { kind: "error", text: `Unknown command /${command}. Use /help.` });
     assert.equal(ui.draft(), `/${command}`);
@@ -431,7 +431,7 @@ test("new sessions cannot bypass the unconfirmed execution permission gate", { t
   assert.equal(f.requests.length, 1);
 });
 
-for (const command of ["/new", "/clear", "/resume --last", "/fork"]) {
+for (const command of ["/new", "/resume --last", "/fork"]) {
   test(`${command} preserves queued drafts while replacing a busy session`, { timeout: 30000 }, async (t) => {
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });

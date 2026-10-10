@@ -401,9 +401,9 @@ export class ArkHost {
     if (!session || !runtime) throw new Error("Session not initialized.");
     const safeCommands = new Set(["help", "status", "copy", "exit"]);
     if (this.lease?.viewer && !safeCommands.has(name)) throw new Error("Read-only viewer. Session mutations are disabled.");
-    const idleCommands = new Set(["new", "clear", "resume", "fork", "compact", "init", "connect"]);
+    const idleCommands = new Set(["new", "resume", "fork", "compact", "init", "connect"]);
     if (this.state.kind !== "idle" && idleCommands.has(name)) {
-      if (!["resume", "fork", "new", "clear"].includes(name)) throw new Error("Wait until the current run finishes.");
+      if (!["resume", "fork", "new"].includes(name)) throw new Error("Wait until the current run finishes.");
       await this.interrupt();
     }
     switch (name) {
@@ -438,7 +438,7 @@ export class ArkHost {
         this.broker.reset(); this.permission = permission; session.setActiveToolsByName(this.toolNames());
         this.ui.message("info", `Permissions: ${permission}. Sandbox: none.`); break;
       }
-      case "new": case "clear": await this.replaceSession(SessionManager.create(this.cwd, this.sessionDir())); break;
+      case "new": await this.replaceSession(SessionManager.create(this.cwd, this.sessionDir())); break;
       case "resume": { const path = await this.resolveSession(argument || undefined, argument === "--last"); if (path) { await inspectSession(path, this.cwd); await this.replaceSession(SessionManager.open(path, this.sessionDir(), this.cwd)); } break; }
       case "rename": { const title = argument || await this.ui.input("Session name", session.sessionName ?? ""); if (title) session.setSessionName(title); break; }
       case "fork": {

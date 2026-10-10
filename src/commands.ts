@@ -5,7 +5,6 @@ export const slashCommands = [
   { name: "permissions", description: "Choose tool permissions" },
   { name: "status", description: "Session and runtime status" },
   { name: "new", description: "Start a new session" },
-  { name: "clear", description: "Start a new session" },
   { name: "resume", description: "Resume a saved session" },
   { name: "rename", description: "Rename this session" },
   { name: "fork", description: "Fork this session" },

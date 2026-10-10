@@ -82,7 +82,7 @@ Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交�
 | `/help` | 命令与快捷键 |
 | `/model`、`/connect` | 模型选择、端点配置 |
 | `/permissions`、`/status` | 权限与实际运行配置 |
-| `/new`、`/clear` | 新会话，保留旧历史和工作区文件 |
+| `/new` | 新会话，保留旧历史和工作区文件 |
 | `/resume [id]`、`/rename`、`/fork [id]` | 恢复、重命名、分支 |
 | `/compact` | Pi 上下文压缩，保留原始历史 |
 | `/copy`、`/init` | 复制完整回答、生成 AGENTS.md |
