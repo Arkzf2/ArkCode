@@ -83,12 +83,14 @@ Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交�
 | `/model`、`/connect` | 模型选择、端点配置 |
 | `/permissions`、`/status` | 权限与实际运行配置 |
 | `/new` | 新会话，保留旧历史和工作区文件 |
-| `/resume [id]`、`/rename`、`/fork [id]` | 恢复、重命名、分支 |
+| `/resume`、`/resume <id>`、`/rename`、`/fork [id]` | 打开会话列表、按当前项目 ID 恢复、重命名、分支 |
 | `/compact` | Pi 上下文压缩，保留原始历史 |
 | `/copy`、`/init` | 复制完整回答、生成 AGENTS.md |
 | `/exit` | 停止执行并退出 |
 
 TUI 遵循原生设计 demo 的 `prism/instrument-deepfield`，使用固定 Prism 配色、完整输入框和六字段底栏。底栏依次显示模型、推理等级、目录、权限、Git 分支和上下文用量。审批与选择面板替换输入框，关闭后恢复草稿。工具显示实际目标与执行状态，默认预览最多三行终端输出，失败命令保留退出码。模型提供的推理内容默认收起。
+
+空闲且输入框为空时按左方向键，或输入 `/resume`，打开跨项目会话列表。Tab/Shift+Tab 切换状态筛选，`g` 按项目或状态分组，`/` 搜索，方向键与 PgUp/PgDn 移动，Enter 打开，`n` 在选中项目新建，Esc 返回。宽终端显示会话详情，窄终端显示单列。列表只把当前进程中实际运行的会话标为 Working 或 Needs you；历史会话标为 Inactive，未确认的运行标记为 Unconfirmed。切换到未信任项目时需要重新选择信任级别，原项目的权限不会自动延续。打开失败会保留原会话与草稿。
 
 旧 `settings.json` 中的 `theme` 和 `statusline` 可读取，下一次保存时移除。文件差异可在 IDE 或外部 Git 工具中查看。代码审查可直接作为普通任务提交。
 

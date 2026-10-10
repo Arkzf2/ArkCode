@@ -33,6 +33,10 @@ import type {
   ApprovalRequest,
   Choice,
   InputMode,
+  SessionBrowserResult,
+  SessionDetails,
+  SessionItem,
+  SessionState,
   Status,
   ToolDetails,
   UiActions,
@@ -49,6 +53,25 @@ type TranscriptEntry =
 type Panel =
   | { kind: "choice"; component: Container; cancel: () => void; select: (index: number) => void }
   | { kind: "input"; component: Container; cancel: () => void };
+type BrowserFilter = "all" | "needs-you" | "working" | "ready" | "inactive";
+interface BrowserState {
+  items: SessionItem[];
+  filter: BrowserFilter;
+  grouping: "project" | "status";
+  selectedId: string | null;
+  scroll: number;
+  query: string;
+  searching: boolean;
+  help: boolean;
+  details: Map<string, SessionDetails>;
+  loading: Set<string>;
+  loadDetails?: (item: SessionItem) => Promise<SessionDetails>;
+  resolve: (result: SessionBrowserResult | null) => void;
+}
+const browserFilters: BrowserFilter[] = ["all", "needs-you", "working", "ready", "inactive"];
+const stateLabel: Record<SessionState, string> = {
+  "needs-you": "Needs you", working: "Working", ready: "Ready", inactive: "Inactive", unconfirmed: "Unconfirmed",
+};
 
 export function sanitizeTerminalText(text: string): string {
   return stripTerminalSequences(text)
@@ -183,6 +206,7 @@ export class TerminalUI implements UserInterface {
   private activeAssistant: Extract<TranscriptEntry, { kind: "message" }> | null = null;
   private currentStatus: Status | null = null;
   private panel: Panel | null = null;
+  private browser: BrowserState | null = null;
   private expanded = false;
   private visibleStart = 0;
   private pasting = false;
@@ -192,7 +216,7 @@ export class TerminalUI implements UserInterface {
   private externalEditor = false;
   private timer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private readonly actions: UiActions, terminal: Terminal = new ProcessTerminal()) {
+  constructor(private readonly actions: UiActions, private readonly terminal: Terminal = new ProcessTerminal()) {
     this.tui = new TuiMainScreen(terminal, true);
     this.editor = this.createEditor();
     this.tui.addInputListener((data) => this.handleKeys(data));
@@ -310,6 +334,18 @@ export class TerminalUI implements UserInterface {
     });
   }
 
+  browseSessions(items: SessionItem[], loadDetails?: (item: SessionItem) => Promise<SessionDetails>): Promise<SessionBrowserResult | null> {
+    if (this.browser) this.finishBrowser(null);
+    return new Promise((resolve) => {
+      this.browser = {
+        items, filter: "all", grouping: "project", selectedId: items.find((item) => item.current)?.id ?? items[0]?.id ?? null,
+        scroll: 0, query: "", searching: false, help: false, details: new Map(), loading: new Set(), loadDetails, resolve,
+      };
+      this.rebuild();
+      this.render();
+    });
+  }
+
   input(title: string, initial = ""): Promise<string | null> {
     this.dismiss();
     return new Promise((resolve) => {
@@ -345,7 +381,7 @@ export class TerminalUI implements UserInterface {
     return "deny";
   }
 
-  dismiss(): void { this.panel?.cancel(); }
+  dismiss(): void { this.panel?.cancel(); if (this.browser) this.finishBrowser(null); }
   draft(): string { return this.editor.getExpandedText(); }
   setDraft(text: string): void {
     this.lastKey = null;
@@ -419,6 +455,10 @@ export class TerminalUI implements UserInterface {
 
   private rebuild(): void {
     this.tui.clear();
+    if (this.browser) {
+      this.tui.addChild(new RenderComponent((width) => this.browserLines(width)));
+      return;
+    }
     this.tui.addChild(new RenderComponent((width) => this.headerLines(width)));
     this.tui.addChild(new RenderComponent((width) => {
       const lines: string[] = [];
@@ -469,6 +509,182 @@ export class TerminalUI implements UserInterface {
     this.tui.addChild(this.panel?.component ?? this.editor);
     this.tui.addChild(new RenderComponent((width) => this.statusLines(width)));
     if (!this.panel) this.tui.setFocus(this.editor);
+  }
+
+  private browserItems(): SessionItem[] {
+    const browser = this.browser;
+    if (!browser) return [];
+    const query = browser.query.trim().toLocaleLowerCase();
+    return browser.items.filter((item) =>
+      (browser.filter === "all" || (browser.filter === "inactive" ? item.state === "inactive" || item.state === "unconfirmed" : item.state === browser.filter)) &&
+      (!query || `${item.title} ${item.cwd} ${item.preview}`.toLocaleLowerCase().includes(query)))
+      .sort((a, b) => {
+        const groupA = browser.grouping === "project" ? a.cwd : stateLabel[a.state];
+        const groupB = browser.grouping === "project" ? b.cwd : stateLabel[b.state];
+        return groupA.localeCompare(groupB) || b.modified - a.modified;
+      });
+  }
+
+  private browserLines(width: number): string[] {
+    const browser = this.browser;
+    if (!browser) return [];
+    const columns = Math.max(1, width);
+    const inner = Math.max(1, columns - 4);
+    const fit = (value: string, size: number) => {
+      const text = truncateToWidth(sanitizeTerminalText(value).replace(/\n/g, " "), Math.max(1, size), "…");
+      return text + " ".repeat(Math.max(0, size - visibleWidth(text)));
+    };
+    const flow = (parts: string[], size: number): string[] => {
+      const lines: string[] = [];
+      let line = "";
+      for (const part of parts) {
+        const candidate = line ? `${line}  ${part}` : part;
+        if (line && visibleWidth(candidate) > size) { lines.push(line); line = part; }
+        else line = candidate;
+      }
+      if (line) lines.push(line);
+      return lines;
+    };
+    const content = this.browserItems();
+    if (!content.some((item) => item.id === browser.selectedId)) browser.selectedId = content[0]?.id ?? null;
+    const selected = content.find((item) => item.id === browser.selectedId);
+    if (selected) this.loadBrowserDetails(selected);
+    const counts = browserFilters.map((filter) => {
+      const count = filter === "all" ? browser.items.length : browser.items.filter((item) => filter === "inactive" ? item.state === "inactive" || item.state === "unconfirmed" : item.state === filter).length;
+      const label = `${filter === "all" ? "All" : stateLabel[filter]} ${count}`;
+      return browser.filter === filter ? bold(neutral(`[${label}]`)) : dim(label);
+    });
+    const narrow = columns < 60;
+    const title = `${narrow ? "Sessions" : "Session command center"}  ${dim(`Group: ${browser.grouping === "project" ? "Project" : "Status"}  g`)}`;
+    const rows = [
+      `  ${truncateToWidth(title, inner, "")}`,
+      ...flow(counts, inner).map((line) => `  ${line}`),
+      `  ${dim("─".repeat(inner))}`,
+    ];
+    const wide = columns >= 90;
+    const detailsWidth = wide ? Math.min(40, Math.max(30, Math.floor(columns * 0.34))) : 0;
+    const listWidth = wide ? columns - detailsWidth - 3 : columns;
+    const footer = browser.searching
+      ? [`  /${browser.query}${CURSOR_MARKER}`]
+      : browser.query ? [`  ${dim(`Search: ${browser.query}`)}`]
+        : flow(["? help", "Esc back", "↑/↓ move", "Enter open", "n new", "/ search"].map((part) => dim(part)), inner).map((line) => `  ${line}`);
+    const bodyHeight = Math.max(1, this.terminal.rows - rows.length - footer.length);
+    const listRows: string[] = [];
+    let selectedRow = -1;
+    if (browser.help) {
+      listRows.push("  Navigate", "  ↑/↓ move   PgUp/PgDn page   Enter open   Esc back", "", "  Sessions", "  n new in selected project", "", "  View", "  Tab/Shift+Tab filter   g group   / search   ? help");
+    } else {
+      listRows.push(narrow ? `  ${dim("Sessions")}` : `  ${dim(fit("Sessions", Math.max(1, listWidth - 20)))}${dim("Status     Updated")}`);
+      let previousGroup = "";
+      for (const item of content) {
+        const group = browser.grouping === "project" ? item.cwd : stateLabel[item.state];
+        if (group !== previousGroup) { listRows.push(`  ${dim(fit(group, listWidth - 4))}`); previousGroup = group; }
+        const status = stateLabel[item.state];
+        const age = item.current ? "now" : this.sessionAge(item.modified);
+        const labelWidth = Math.max(4, listWidth - (narrow ? 5 : 25));
+        const line = narrow
+          ? `  ${item.current ? accent("●") : dim("○")} ${fit(item.title, labelWidth)}`
+          : `  ${item.current ? accent("●") : dim("○")} ${fit(item.title, labelWidth)} ${fit(status, 11)} ${fit(age, 7)}`;
+        if (item.id === browser.selectedId) selectedRow = listRows.length;
+        listRows.push(item.id === browser.selectedId ? `\x1b[1;38;2;231;228;237;48;2;78;65;108m${stripTerminalSequences(line)}\x1b[0m` : line);
+      }
+      if (!content.length) listRows.push(`  ${dim(browser.query ? "No matching sessions" : "No sessions in this filter")}`);
+    }
+    if (selectedRow >= 0) browser.scroll = Math.max(0, Math.min(browser.scroll, selectedRow));
+    if (selectedRow >= browser.scroll + bodyHeight) browser.scroll = selectedRow - bodyHeight + 1;
+    const visible = listRows.slice(browser.scroll, browser.scroll + bodyHeight);
+    const details: string[] = [];
+    if (wide) {
+      details.push(bold(neutral("Session details")), "");
+      if (selected) {
+        const detail = browser.details.get(selected.id);
+        details.push(...wrapTextWithAnsi(neutral(selected.title), detailsWidth - 3).slice(0, 3));
+        details.push(accent(stateLabel[selected.state]), "", dim("Last message"));
+        const latest = detail?.lastMessage ?? (browser.loading.has(selected.id) ? "Loading..." : browser.loadDetails ? "No message preview" : selected.preview);
+        details.push(...wrapTextWithAnsi(neutral(sanitizeTerminalText(latest)), detailsWidth - 3).slice(0, 7));
+        details.push("", dim("Project"));
+        details.push(...wrapTextWithAnsi(directoryText(selected.cwd), detailsWidth - 3).slice(0, 3));
+        if (detail?.model || selected.model) details.push("", dim("Model"), neutral(detail?.model ?? selected.model ?? ""));
+        if (detail?.prompt) details.push("", dim("Prompt"), ...wrapTextWithAnsi(neutral(sanitizeTerminalText(detail.prompt)), detailsWidth - 3).slice(0, 4));
+        if (selected.state === "unconfirmed") details.push("", red("Previous run is unconfirmed"));
+      }
+    }
+    for (let index = 0; index < bodyHeight; index++) {
+      const left = visible[index] ?? "";
+      if (!wide) rows.push(truncateToWidth(left, columns, ""));
+      else rows.push(`${left}${" ".repeat(Math.max(0, listWidth - 1 - visibleWidth(left)))} ${dim("│")} ${truncateToWidth(details[index] ?? "", detailsWidth - 2, "")}`);
+    }
+    rows.push(...footer);
+    return rows.map((row) => truncateToWidth(row, columns, ""));
+  }
+
+  private loadBrowserDetails(item: SessionItem): void {
+    const browser = this.browser;
+    if (!browser || !browser.loadDetails || browser.loading.has(item.id) || browser.details.has(item.id)) return;
+    browser.loading.add(item.id);
+    void browser.loadDetails(item).then((details) => { if (this.browser === browser) browser.details.set(item.id, details); })
+      .catch(() => { if (this.browser === browser) browser.details.set(item.id, {}); })
+      .finally(() => { if (this.browser === browser) { browser.loading.delete(item.id); this.render(); } });
+  }
+
+  private sessionAge(modified: number): string {
+    const seconds = Math.max(0, Math.floor((Date.now() - modified) / 1000));
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
+  }
+
+  private finishBrowser(value: SessionBrowserResult | null): void {
+    const browser = this.browser;
+    if (!browser) return;
+    this.browser = null;
+    this.rebuild();
+    this.render();
+    browser.resolve(value);
+  }
+
+  private browserKey(data: string): TuiInputListenerResult {
+    const browser = this.browser;
+    if (!browser) return { consume: true };
+    if (browser.searching) {
+      if (matchesKey(data, "escape") || matchesKey(data, "enter")) browser.searching = false;
+      else if (matchesKey(data, "backspace")) browser.query = browser.query.slice(0, -1);
+      else if (data.length === 1 && data >= " ") browser.query += data;
+      browser.scroll = 0;
+      this.render();
+      return { consume: true };
+    }
+    if (browser.help) {
+      browser.help = false;
+      this.render();
+      return { consume: true };
+    }
+    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.finishBrowser(null);
+    else if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
+      const delta = matchesKey(data, "tab") ? 1 : -1;
+      browser.filter = browserFilters[(browserFilters.indexOf(browser.filter) + delta + browserFilters.length) % browserFilters.length]!;
+      browser.scroll = 0;
+    } else if (data === "g") { browser.grouping = browser.grouping === "project" ? "status" : "project"; browser.scroll = 0; }
+    else if (data === "/") { browser.searching = true; browser.query = ""; browser.scroll = 0; }
+    else if (data === "?") browser.help = true;
+    else if (matchesKey(data, "up") || matchesKey(data, "down") || matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
+      const items = this.browserItems();
+      const index = items.findIndex((item) => item.id === browser.selectedId);
+      const page = Math.max(1, this.terminal.rows - 8);
+      const delta = matchesKey(data, "up") ? -1 : matchesKey(data, "down") ? 1 : matchesKey(data, "pageUp") ? -page : page;
+      browser.selectedId = items[Math.max(0, Math.min(items.length - 1, index + delta))]?.id ?? null;
+    } else if (matchesKey(data, "enter")) {
+      const items = this.browserItems();
+      const item = items.find((candidate) => candidate.id === browser.selectedId) ?? items[0];
+      if (item) this.finishBrowser({ kind: "open", item });
+    } else if (data === "n") {
+      const items = this.browserItems();
+      const cwd = (items.find((item) => item.id === browser.selectedId) ?? items[0])?.cwd ?? this.currentStatus?.cwd;
+      if (cwd) this.finishBrowser({ kind: "new", cwd });
+    }
+    this.render();
+    return { consume: true };
   }
 
   private exploration(entry: Extract<TranscriptEntry, { kind: "tool" }>): boolean {
@@ -544,8 +760,9 @@ export class TerminalUI implements UserInterface {
     if (isKeyRelease(data)) return { consume: true };
     if (this.pasting || data.includes("\x1b[200~")) {
       this.pasting = !data.includes("\x1b[201~");
-      return this.panel?.kind === "choice" || (!this.panel && this.currentStatus?.state.kind === "stopping") ? { consume: true } : undefined;
+      return this.browser || this.panel?.kind === "choice" || (!this.panel && this.currentStatus?.state.kind === "stopping") ? { consume: true } : undefined;
     }
+    if (this.browser) return this.browserKey(data);
     const now = Date.now();
     if (!matchesKey(data, "escape")) this.lastEscape = 0;
     const repeated = isKeyRepeat(data) || (this.lastKey?.data === data && now - this.lastKey.at < 300);
@@ -582,6 +799,8 @@ export class TerminalUI implements UserInterface {
       this.submit(this.draft(), "follow-up");
     } else if (matchesKey(data, "shift+left")) {
       this.run(() => this.actions.editPrevious());
+    } else if (matchesKey(data, "left") && this.currentStatus?.state.kind === "idle" && this.editor.focused && !this.draft() && !this.editor.isShowingAutocomplete()) {
+      this.run(() => this.actions.browseSessions());
     } else if (matchesKey(data, "ctrl+t")) {
       this.expanded = !this.expanded;
       if (this.expanded) this.visibleStart = 0;
@@ -597,7 +816,7 @@ export class TerminalUI implements UserInterface {
     } else if (matchesKey(data, "ctrl+g")) {
       this.run(() => this.editExternally());
     } else if (data === "?" && !this.draft()) {
-      this.message("info", "Enter send / steer    Tab queue follow-up    Ctrl+C interrupt / exit\nCtrl+T tool details    Ctrl+O copy    Ctrl+R history    Ctrl+G editor\nCtrl+L clear view    Shift+Enter newline    Esc cancel    /help commands");
+      this.message("info", "Enter send / steer    Tab queue follow-up    Left sessions    Ctrl+C interrupt / exit\nCtrl+T tool details    Ctrl+O copy    Ctrl+R history    Ctrl+G editor\nCtrl+L clear view    Shift+Enter newline    Esc cancel    /help commands");
     } else return undefined;
     return { consume: true };
   }

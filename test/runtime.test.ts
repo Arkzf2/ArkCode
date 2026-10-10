@@ -6,11 +6,12 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import { z } from "zod";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { parseCli } from "../src/args.js";
 import { ArkHost } from "../src/runtime.js";
 import { ApprovalBroker } from "../src/approval.js";
-import { inspectSession, writeRunMarker } from "../src/storage.js";
-import type { ApprovalDecision, ApprovalRequest, Choice, Permission, Status, ToolDetails, UserInterface } from "../src/domain.js";
+import { inspectSession, WorkspaceLease, writeRunMarker } from "../src/storage.js";
+import type { ApprovalDecision, ApprovalRequest, Choice, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/domain.js";
 
 const requestSchema = z.object({
   model: z.string(),
@@ -133,6 +134,102 @@ async function fixture(t: TestContext, respond: (request: ModelRequest, index: n
   const sessions = async () => (await readdir(join(home, "sessions"), { recursive: true })).filter((path) => path.endsWith(".jsonl")).map((path) => join(home, "sessions", path));
   return { cwd, home, requests, start, sessions };
 }
+
+test("session browser retains the current Agent and draft after a failed cross-project open", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Current answer." }));
+  const other = join(f.home, "other-project");
+  await mkdir(other);
+  const encoded = Buffer.from(process.platform === "win32" ? other.toLowerCase() : other).toString("base64url");
+  const dir = join(f.home, "sessions", encoded);
+  const sound = SessionManager.create(other, dir);
+  sound.appendMessage({ role: "user", content: "Sound history", timestamp: Date.now() });
+  const soundFile = sound.getSessionFile() ?? assert.fail("Test session was not persisted.");
+  const original = await readFile(soundFile, "utf8");
+  class BrowserUI extends RecordingUI {
+    corrupt = true;
+    calls = 0;
+    seen: SessionItem[] = [];
+    async choose(): Promise<string> { return "read-only"; }
+    async browseSessions(items: SessionItem[], details?: (item: SessionItem) => Promise<SessionDetails>): Promise<SessionBrowserResult | null> {
+      this.calls++;
+      this.seen = items;
+      const item = items.find((candidate) => candidate.id === sound.getSessionId());
+      assert.ok(item);
+      if (!this.corrupt) {
+        const detail = await details?.(item);
+        assert.equal(detail?.lastMessage, "Sound history");
+        assert.equal(detail?.prompt, "Sound history");
+      }
+      if (this.corrupt) await writeFile(soundFile, `${original}{broken tail`);
+      return { kind: "open", item };
+    }
+  }
+  const ui = new BrowserUI();
+  const { host } = await f.start(ui);
+  ui.setDraft("Preserve this draft");
+  await Promise.all([host.browseSessions(), host.browseSessions()]);
+  assert.equal(ui.calls, 1);
+  assert.equal(host.cwd, f.cwd);
+  assert.equal(ui.draft(), "Preserve this draft");
+  assert.match(ui.messages.at(-1)?.text ?? "", /Invalid session line/);
+  assert.ok(ui.seen.some((item) => item.current && item.title === "Untitled session"));
+  await writeFile(soundFile, original);
+  ui.corrupt = false;
+  await host.browseSessions();
+  assert.equal(host.cwd, other);
+  assert.equal(ui.draft(), "Preserve this draft");
+  assert.ok(ui.messages.some((item) => item.kind === "user" && item.text === "Sound history"));
+  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+});
+
+test("session center new creates in the selected project with a fresh workspace lease", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused" }));
+  const other = join(f.home, "another-project");
+  await mkdir(other);
+  const encoded = Buffer.from(process.platform === "win32" ? other.toLowerCase() : other).toString("base64url");
+  const saved = SessionManager.create(other, join(f.home, "sessions", encoded));
+  saved.appendMessage({ role: "user", content: "Earlier task", timestamp: Date.now() });
+  class NewUI extends RecordingUI {
+    async choose(): Promise<string> { return "read-only"; }
+    async browseSessions(items: SessionItem[]): Promise<SessionBrowserResult | null> {
+      assert.ok(items.some((item) => item.cwd === other && item.path));
+      return { kind: "new", cwd: other };
+    }
+  }
+  const ui = new NewUI();
+  const { host } = await f.start(ui);
+  ui.setDraft("Keep writing here");
+  await host.browseSessions();
+  assert.equal(host.cwd, other);
+  assert.equal(ui.draft(), "Keep writing here");
+  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(ui.messages.some((entry) => entry.kind === "user" && entry.text === "Earlier task"), false);
+});
+
+test("cancelling cross-project trust keeps the current session and releases the target lease", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused" }));
+  const other = join(f.home, "cancelled-project");
+  await mkdir(other);
+  const encoded = Buffer.from(process.platform === "win32" ? other.toLowerCase() : other).toString("base64url");
+  const saved = SessionManager.create(other, join(f.home, "sessions", encoded));
+  saved.appendMessage({ role: "user", content: "Previous work", timestamp: Date.now() });
+  class CancelUI extends RecordingUI {
+    async browseSessions(items: SessionItem[]): Promise<SessionBrowserResult | null> {
+      const item = items.find((entry) => entry.id === saved.getSessionId());
+      assert.ok(item);
+      return { kind: "open", item };
+    }
+  }
+  const ui = new CancelUI();
+  const { host } = await f.start(ui);
+  ui.setDraft("Current draft");
+  await host.browseSessions();
+  assert.equal(host.cwd, f.cwd);
+  assert.equal(ui.draft(), "Current draft");
+  const lease = await WorkspaceLease.acquire(other, f.home);
+  try { assert.equal(lease.viewer, false); }
+  finally { await lease.release(); }
+});
 
 test("removed commands are rejected without running the agent, while @ references still work", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "File reference received." }));

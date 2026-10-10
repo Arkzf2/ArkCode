@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createModelRuntime, createResources, loadConfig, saveConfig, selectModel } from "../src/config.js";
-import { inspectSession, readRunMarker, recoverRunMarker, WorkspaceLease, writeRunMarker } from "../src/storage.js";
+import { inspectSession, listArkSessions, readRunMarker, recoverRunMarker, WorkspaceLease, writeRunMarker } from "../src/storage.js";
 
 test("settings persist defaults and reject unknown permission values", async () => {
   const home = await mkdtemp(join(tmpdir(), "arkcode-config-"));
@@ -129,11 +129,29 @@ test("real Pi session JSONL is inspected before open and malformed tails are rej
     assert.equal(inspection.id, manager.getSessionId());
     assert.equal(inspection.messages, 1);
     assert.equal(inspection.name, "Inspection test");
+    assert.equal(inspection.lastMessage, "Review the project.");
+    assert.equal(inspection.prompt, "Review the project.");
     const before = await readFile(file, "utf8");
     await appendFile(file, '{"type":"message"');
     await assert.rejects(inspectSession(file, root), /Invalid session line/);
     assert.equal(await readFile(file, "utf8"), `${before}{"type":"message"`);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("ArkCode discovers saved sessions across one-level project directories", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-browser-"));
+  try {
+    for (const name of ["one", "two"]) {
+      const cwd = join(home, name);
+      await mkdir(cwd);
+      const encoded = Buffer.from(process.platform === "win32" ? cwd.toLowerCase() : cwd).toString("base64url");
+      const manager = SessionManager.create(cwd, join(home, "sessions", encoded));
+      manager.appendMessage({ role: "user", content: `Prompt from ${name}`, timestamp: Date.now() });
+    }
+    const sessions = await listArkSessions(home);
+    assert.equal(sessions.length, 2);
+    assert.deepEqual(sessions.map((session) => session.firstMessage).sort(), ["Prompt from one", "Prompt from two"]);
+  } finally { await rm(home, { recursive: true, force: true }); }
 });
 
 test("DeepSeek configuration references the environment and selects Flash without a model network request", async () => {

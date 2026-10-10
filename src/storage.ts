@@ -3,6 +3,7 @@ import { mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFi
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
+import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 
 const leaseSchema = z.object({ pid: z.number().int().positive(), token: z.string().uuid(), cwd: z.string(), createdAt: z.number() });
 
@@ -17,6 +18,15 @@ export function processAlive(pid: number): boolean {
 
 function missing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+export async function listArkSessions(home: string): Promise<SessionInfo[]> {
+  const root = join(home, "sessions");
+  let directories;
+  try { directories = await readdir(root, { withFileTypes: true }); }
+  catch (error) { if (missing(error)) return []; throw error; }
+  const groups = await Promise.all(directories.filter((entry) => entry.isDirectory()).map((entry) => SessionManager.listAll(join(root, entry.name))));
+  return groups.flat().sort((a, b) => b.modified.getTime() - a.modified.getTime());
 }
 
 async function readLease(path: string): Promise<z.infer<typeof leaseSchema> | null> {
@@ -146,6 +156,9 @@ export interface SessionInspection {
   messages: number;
   interrupted: boolean;
   name?: string;
+  lastMessage?: string;
+  prompt?: string;
+  model?: string;
 }
 
 export async function inspectSession(path: string, expectedCwd?: string): Promise<SessionInspection> {
@@ -166,6 +179,9 @@ export async function inspectSession(path: string, expectedCwd?: string): Promis
   let messages = 0;
   let interrupted = false;
   let name: string | undefined;
+  let lastMessage: string | undefined;
+  let prompt: string | undefined;
+  let model: string | undefined;
   for (let index = 1; index < lines.length; index++) {
     const line = lines[index];
     if (!line || Buffer.byteLength(line) > 4 * 1024 * 1024) throw new Error(`Invalid session line ${index + 1}.`);
@@ -187,13 +203,24 @@ export async function inspectSession(path: string, expectedCwd?: string): Promis
     leaf = leaf.parentId === null ? undefined : entries.get(leaf.parentId);
   }
   for (const entry of branch) {
+    if (entry.type === "model_change") model = `${entry.provider}/${entry.modelId}`;
     if (entry.type !== "message") continue;
+    if (entry.message.role === "user" || entry.message.role === "assistant") {
+      const content = entry.message.content;
+      const value = typeof content === "string" ? content : content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+      if (value) {
+        lastMessage = value.slice(0, 2048);
+        if (entry.message.role === "user" && !prompt) prompt = value.slice(0, 2048);
+      }
+      if (entry.message.role === "assistant") model = `${entry.message.provider}/${entry.message.model}`;
+    }
     if (entry.message.role === "assistant") {
       interrupted = entry.message.stopReason === "aborted" || entry.message.stopReason === "pending";
       for (const block of entry.message.content) if (block.type === "toolCall") pendingTools.add(block.id);
     } else if (entry.message.role === "toolResult") pendingTools.delete(entry.message.toolCallId);
   }
-  return { id: header.id, cwd: header.cwd, entries: ids.size, messages, interrupted: interrupted || pendingTools.size > 0, ...(name === undefined ? {} : { name }) };
+  return { id: header.id, cwd: header.cwd, entries: ids.size, messages, interrupted: interrupted || pendingTools.size > 0,
+    ...(name === undefined ? {} : { name }), ...(lastMessage ? { lastMessage } : {}), ...(prompt ? { prompt } : {}), ...(model ? { model } : {}) };
 }
 
 const runBase = { runId: z.string().min(1), startedAt: z.number().finite(), cwd: z.string().min(1).optional() };

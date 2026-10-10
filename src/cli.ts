@@ -41,6 +41,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     interrupt: async () => { await host?.interrupt(); },
     exit: async () => { await host?.exit(); },
     editPrevious: async () => { await host?.editPrevious(); },
+    browseSessions: async () => { await host?.browseSessions(); },
   });
   host = new ArkHost(options, ui);
   const close = () => { void host?.exit().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; }); };

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import {
   createAgentSession, SessionManager, SettingsManager,
@@ -10,11 +10,11 @@ import {
 import { ApprovalBroker } from "./approval.js";
 import { slashCommands } from "./commands.js";
 import { createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig } from "./config.js";
-import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, readRunMarker, writeRunMarker } from "./storage.js";
+import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, listArkSessions, readRunMarker, writeRunMarker } from "./storage.js";
 import { ManagedShell, createTools, cleanOutput, workspacePath } from "./tools.js";
 import { getBranch } from "./review.js";
 import type { CliOptions } from "./args.js";
-import type { ApprovalRequest, InputMode, Permission, RunState, ToolDetails, UserInterface } from "./domain.js";
+import type { ApprovalRequest, InputMode, Permission, RunState, SessionItem, ToolDetails, UserInterface } from "./domain.js";
 
 export function contentText(content: unknown): string {
   if (typeof content === "string") return cleanOutput(content);
@@ -85,6 +85,7 @@ export class ArkHost {
   private lastAnswer = "";
   private storageFailed = false;
   private executionUnconfirmed = false;
+  private browsing = false;
   private responseId = "";
   readonly home: string;
   cwd: string;
@@ -132,7 +133,7 @@ export class ArkHost {
       }
     }
     let manager = SessionManager.create(this.cwd, this.sessionDir());
-    if (this.options.command === "resume" || this.options.command === "fork") {
+    if ((this.options.command === "resume" && (this.options.target || this.options.last)) || this.options.command === "fork") {
       const path = await this.resolveSession(this.options.target, this.options.last);
       if (!path) throw new Error("No saved session found in this workspace.");
       await inspectSession(path, this.cwd);
@@ -147,11 +148,12 @@ export class ArkHost {
       : "Read-only viewer. Another ArkCode process owns this workspace. Session mutations and agent execution are disabled.");
     if (!this.session?.model) this.ui.message("info", "No model configured. Use /connect, or set a provider API key and open /model.");
     this.refreshStatus();
+    if (this.options.command === "resume" && !this.options.target && !this.options.last) await this.browseSessions();
   }
 
   private samePath(a: string, b: string): boolean { return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b; }
-  private sessionDir(): string {
-    const encoded = Buffer.from(process.platform === "win32" ? this.cwd.toLowerCase() : this.cwd).toString("base64url");
+  private sessionDir(cwd = this.cwd): string {
+    const encoded = Buffer.from(process.platform === "win32" ? cwd.toLowerCase() : cwd).toString("base64url");
     return join(this.home, "sessions", encoded);
   }
   private effectivePermission(): Permission { return this.lease?.viewer ? "read-only" : this.permission; }
@@ -169,39 +171,60 @@ export class ArkHost {
       state: this.state, queued: [...this.queued, ...this.localQueue.map((input) => `Queued shell: ${input}`)], viewer: this.lease?.viewer ?? false,
     });
   }
-  private async replaceSession(manager: SessionManager, initial = false): Promise<void> {
+  private async replaceSession(manager: SessionManager, initial = false, target?: {
+    cwd: string; lease: WorkspaceLease; shell: ManagedShell; trusted: boolean; permission: Permission; branch: string; executionUnconfirmed: boolean;
+  }): Promise<void> {
     const runtime = this.runtime;
     if (!runtime) throw new Error("Model runtime is not initialized.");
-    this.unsubscribe?.();
-    this.session?.dispose();
-    this.broker.reset();
-    if (this.lease?.viewer) {
+    const cwd = target?.cwd ?? this.cwd;
+    const lease = target?.lease ?? this.lease;
+    const shell = target?.shell ?? this.shell;
+    const trusted = target?.trusted ?? this.trusted;
+    const permission = target?.permission ?? this.permission;
+    if (lease?.viewer) {
       const header = manager.getHeader();
-      manager = SessionManager.inMemory(this.cwd, undefined, header ? [header, ...manager.getEntries()] : undefined);
+      manager = SessionManager.inMemory(cwd, undefined, header ? [header, ...manager.getEntries()] : undefined);
     }
-    this.manager = manager;
     const explicitModel = initial && this.options.model ? await selectModel(runtime, this.options.model, this.config) : undefined;
     const model = manager.getEntries().some((entry) => entry.type === "message") ? explicitModel : explicitModel ?? await selectModel(runtime, undefined, this.config);
     const { session, modelFallbackMessage } = await createAgentSession({
-      cwd: this.cwd, agentDir: this.home, modelRuntime: runtime, model,
+      cwd, agentDir: this.home, modelRuntime: runtime, model,
       thinkingLevel: initial ? this.options.thinking : undefined,
       sessionManager: manager,
       settingsManager: SettingsManager.inMemory({ defaultProvider: this.config.provider, defaultModel: this.config.model,
         defaultThinkingLevel: this.config.thinking, retry: { enabled: true, maxRetries: 2 }, compaction: { enabled: true },
         cacheWarming: "off",
       }),
-      resourceLoader: createResources(this.cwd, this.trusted),
-      tools: this.toolNames(), customTools: createTools({ cwd: this.cwd, shell: this.shell, authorize: (request) => readTools.includes(request.tool) ? Promise.resolve(true) : this.broker.authorize(request) }),
+      resourceLoader: createResources(cwd, trusted),
+      tools: lease?.viewer || permission === "read-only" ? readTools : [...readTools, ...mutatingTools],
+      customTools: createTools({ cwd, shell, authorize: (request) => readTools.includes(request.tool) ? Promise.resolve(true) : this.broker.authorize(request) }),
     });
+    let marker;
+    try { marker = await readRunMarker(this.home, session.sessionId); }
+    catch (error) { session.dispose(); throw error; }
+    const oldLease = this.lease;
+    this.unsubscribe?.();
+    this.session?.dispose();
+    this.broker.reset();
+    if (target) {
+      this.cwd = cwd;
+      this.lease = lease;
+      this.shell = shell;
+      this.trusted = trusted;
+      this.permission = permission;
+      this.branch = target.branch;
+      this.executionUnconfirmed = target.executionUnconfirmed;
+    }
+    this.manager = manager;
     this.session = session;
     this.unsubscribe = session.subscribe((event) => this.event(event));
     this.lastAnswer = "";
+    this.state = { kind: "idle", outcome: null };
     const draft = this.ui.draft();
     this.ui.clear();
     this.renderHistory();
     this.ui.setDraft(draft);
     if (modelFallbackMessage) this.ui.message("info", modelFallbackMessage);
-    const marker = await readRunMarker(this.home, session.sessionId);
     if (marker?.status === "active") {
       this.ui.message("error", "Execution unconfirmed. The previous process ended during a run. Existing files remain. No tool or queued input has been replayed. Inspect the workspace and submit a new instruction.");
       this.state = { kind: "idle", outcome: "interrupted" };
@@ -210,6 +233,7 @@ export class ArkHost {
       session.setActiveToolsByName(readTools);
     }
     this.refreshStatus();
+    if (target && oldLease !== lease) await oldLease?.release();
   }
   private toolNames(): string[] { return this.effectivePermission() === "read-only" ? readTools : [...readTools, ...mutatingTools]; }
   private renderHistory(): void {
@@ -406,6 +430,102 @@ export class ArkHost {
   }
   get outcome(): string | null { return this.state.kind === "idle" ? this.state.outcome : null; }
 
+  private async sessionItems(): Promise<SessionItem[]> {
+    const saved = await listArkSessions(this.home);
+    const currentId = this.session?.sessionId;
+    const currentState = this.state.kind === "awaiting-approval" ? "needs-you" : this.state.kind === "idle" ? "ready" : "working";
+    const items: SessionItem[] = await Promise.all(saved.map(async (entry) => {
+      const current = entry.id === currentId && this.samePath(entry.cwd, this.cwd);
+      const marker = current ? null : await readRunMarker(this.home, entry.id);
+      return {
+        id: entry.id, path: entry.path, cwd: entry.cwd,
+        title: entry.name || entry.firstMessage.replace(/\s+/g, " ").slice(0, 100) || "Untitled session",
+        preview: entry.firstMessage,
+        modified: entry.modified.getTime(),
+        state: current ? currentState : marker?.status === "active" ? "unconfirmed" : "inactive",
+        current,
+        ...(current && this.session?.model ? { model: `${this.session.model.provider}/${this.session.model.id}` } : {}),
+      };
+    }));
+    if (this.session && !items.some((item) => item.current)) {
+      const firstPrompt = this.session.messages.find((message) => message.role === "user");
+      items.unshift({
+        id: this.session.sessionId, path: this.session.sessionFile ?? null, cwd: this.cwd,
+        title: this.session.sessionName || (firstPrompt ? contentText(firstPrompt.content).replace(/\s+/g, " ").slice(0, 100) : "Untitled session"),
+        preview: firstPrompt ? contentText(firstPrompt.content) : "No messages yet",
+        modified: Date.now(), state: currentState, current: true,
+        ...(this.session.model ? { model: `${this.session.model.provider}/${this.session.model.id}` } : {}),
+      });
+    }
+    return items;
+  }
+
+  async browseSessions(): Promise<void> {
+    if (this.closing || this.browsing) return;
+    this.browsing = true;
+    try {
+      if (this.state.kind !== "idle") await this.interrupt();
+      const items = await this.sessionItems();
+      const selection = this.ui.browseSessions
+        ? await this.ui.browseSessions(items, async (item) => {
+          if (!item.path) return { prompt: item.preview, model: item.model };
+          const inspection = await inspectSession(item.path);
+          return { lastMessage: inspection.lastMessage, prompt: inspection.prompt, model: inspection.model ?? item.model };
+        })
+        : await this.ui.choose("Sessions", items.map((item) => ({ value: item.id, label: item.title, description: item.cwd })))
+          .then((id) => id ? { kind: "open" as const, item: items.find((item) => item.id === id)! } : null);
+      if (!selection) return;
+      if (selection.kind === "open" && selection.item.current) return;
+      if (this.state.kind !== "idle") await this.interrupt();
+      const targetCwd = await realpath(selection.kind === "new" ? selection.cwd : selection.item.cwd);
+      const sameWorkspace = this.samePath(targetCwd, this.cwd);
+      const dir = this.sessionDir(targetCwd);
+      if (selection.kind === "open") {
+        if (!selection.item.path) throw new Error("This session has no saved history yet.");
+        const actualFile = await realpath(selection.item.path);
+        const actualDir = await realpath(dir);
+        if (!this.samePath(dirname(actualFile), actualDir)) throw new Error("Session file is outside its project history directory.");
+        await inspectSession(selection.item.path, targetCwd);
+      }
+      if (sameWorkspace) {
+        const manager = selection.kind === "new" ? SessionManager.create(this.cwd, dir) : SessionManager.open(selection.item.path!, dir, this.cwd);
+        await this.replaceSession(manager);
+        return;
+      }
+      const lease = await WorkspaceLease.acquire(targetCwd, this.home);
+      try {
+        const trusted = this.config.trustedWorkspaces.some((path) => this.samePath(path, lease.canonicalCwd));
+        let allowInstructions = trusted;
+        if (!trusted && !this.options.print) {
+          const choice = await this.ui.choose(`Trust workspace ${lease.canonicalCwd}?`, [
+            { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Commands still require approval." },
+            { value: "read-only", label: "Continue Read Only", description: "No shell or writing tools. Project instructions are not loaded." },
+          ]);
+          if (choice === null) return;
+          allowInstructions = choice === "trust";
+        }
+        let permission: Permission = allowInstructions ? this.options.permission ?? this.config.permission : "read-only";
+        const executionUnconfirmed = !lease.viewer && await hasActiveWorkspaceRun(this.home, lease.canonicalCwd);
+        if (executionUnconfirmed) permission = "read-only";
+        const manager = selection.kind === "new"
+          ? SessionManager.create(lease.canonicalCwd, this.sessionDir(lease.canonicalCwd))
+          : SessionManager.open(selection.item.path!, this.sessionDir(lease.canonicalCwd), lease.canonicalCwd);
+        await this.replaceSession(manager, false, {
+          cwd: lease.canonicalCwd, lease, shell: new ManagedShell(lease.canonicalCwd), trusted: allowInstructions,
+          permission, branch: await getBranch(lease.canonicalCwd), executionUnconfirmed,
+        });
+        if (allowInstructions && !trusted) {
+          this.config.trustedWorkspaces = [...new Set([...this.config.trustedWorkspaces, lease.canonicalCwd])];
+          saveConfig(this.home, this.config);
+        }
+      } finally {
+        if (this.lease !== lease) await lease.release();
+      }
+    } catch (error) {
+      this.ui.message("error", error instanceof Error ? error.message : String(error));
+    } finally { this.browsing = false; }
+  }
+
   private async resolveSession(target?: string, last = false): Promise<string | null> {
     const sessions = await SessionManager.list(this.cwd, this.sessionDir());
     if (last) return sessions[0]?.path ?? null;
@@ -444,7 +564,7 @@ export class ArkHost {
     const session = this.session;
     const runtime = this.runtime;
     if (!session || !runtime) throw new Error("Session not initialized.");
-    const safeCommands = new Set(["help", "status", "copy", "exit"]);
+    const safeCommands = new Set(["help", "status", "copy", "exit", "resume"]);
     if (this.lease?.viewer && !safeCommands.has(name)) throw new Error("Read-only viewer. Session mutations are disabled.");
     const idleCommands = new Set(["new", "resume", "fork", "compact", "init", "connect"]);
     if (this.state.kind !== "idle" && idleCommands.has(name)) {
@@ -452,7 +572,7 @@ export class ArkHost {
       await this.interrupt();
     }
     switch (name) {
-      case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Ctrl+C interrupts or exits when idle. Esc interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
+      case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Left opens sessions from the empty idle composer. Ctrl+C interrupts or exits when idle. Esc interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
       case "status": this.ui.message("info", `Sandbox: none\nPermissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
       case "model": {
         await runtime.refresh({ allowNetwork: false });
@@ -484,7 +604,11 @@ export class ArkHost {
         this.ui.message("info", `Permissions: ${permission}. Sandbox: none.`); break;
       }
       case "new": await this.replaceSession(SessionManager.create(this.cwd, this.sessionDir())); break;
-      case "resume": { const path = await this.resolveSession(argument || undefined, argument === "--last"); if (path) { await inspectSession(path, this.cwd); await this.replaceSession(SessionManager.open(path, this.sessionDir(), this.cwd)); } break; }
+      case "resume": {
+        if (!argument) await this.browseSessions();
+        else { const path = await this.resolveSession(argument, argument === "--last"); if (path) { await inspectSession(path, this.cwd); await this.replaceSession(SessionManager.open(path, this.sessionDir(), this.cwd)); } }
+        break;
+      }
       case "rename": { const title = argument || await this.ui.input("Session name", session.sessionName ?? ""); if (title) session.setSessionName(title); break; }
       case "fork": {
         const path = argument ? await this.resolveSession(argument) : session.sessionFile;

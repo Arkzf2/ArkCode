@@ -4,7 +4,7 @@ import { setTimeout } from "node:timers/promises";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { stripTerminalSequences, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
-import type { Status, UiActions } from "../src/domain.js";
+import type { SessionBrowserResult, SessionItem, Status, UiActions } from "../src/domain.js";
 import { sanitizeTerminalText, TerminalUI } from "../src/ui.js";
 
 class MemoryTerminal implements Terminal {
@@ -42,8 +42,120 @@ const idle: Status = {
   viewer: false,
 };
 const inertActions: UiActions = {
-  async submit() {}, async interrupt() {}, async exit() {}, async editPrevious() {},
+  async submit() {}, async interrupt() {}, async exit() {}, async editPrevious() {}, async browseSessions() {},
 };
+
+const browserItems: SessionItem[] = [
+  { id: "current", path: null, cwd: "D:/ArkCode", title: "Current task", preview: "No messages yet", modified: Date.now(), state: "ready", current: true },
+  { id: "other", path: "E:/Other/session.jsonl", cwd: "E:/Other", title: "Other project task", preview: "Review a function", modified: Date.now() - 3_600_000, state: "inactive", current: false },
+];
+
+test("empty focused composer opens the session center, while draft Left remains an editor key", async (t) => {
+  const terminal = new MemoryTerminal(120);
+  const selected: Array<SessionBrowserResult | null> = [];
+  let ui: TerminalUI;
+  ui = new TerminalUI({ ...inertActions, async browseSessions() { selected.push(await ui.browseSessions(browserItems)); } }, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.start();
+  ui.setDraft("keep this draft");
+  terminal.press("\x1b[D");
+  await setTimeout(20);
+  assert.doesNotMatch(terminal.text(), /Session command center/);
+  ui.setDraft("");
+  ui.status({ ...idle, state: { kind: "running", id: "run", startedAt: Date.now() } });
+  terminal.press("\x1b[D");
+  await setTimeout(20);
+  assert.doesNotMatch(terminal.text(), /Session command center/);
+  ui.status(idle);
+  terminal.press("\x1b[D");
+  await setTimeout(40);
+  assert.match(terminal.text(), /Session command center/);
+  assert.match(terminal.text(), /Session details/);
+  terminal.press("\x1b[200~n\r\x1b[201~");
+  assert.deepEqual(selected, []);
+  terminal.press("\t");
+  await setTimeout(20);
+  assert.match(terminal.text(), /Inactive 1/);
+  terminal.press("\x1b");
+  await setTimeout(20);
+  assert.deepEqual(selected, [null]);
+  assert.equal(ui.draft(), "");
+});
+
+test("Left cannot browse before host startup has published an idle status", async (t) => {
+  const terminal = new MemoryTerminal();
+  let opens = 0;
+  const ui = new TerminalUI({ ...inertActions, async browseSessions() { opens++; } }, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  terminal.press("\x1b[D");
+  await setTimeout(20);
+  assert.equal(opens, 0);
+  ui.status(idle);
+  terminal.press("\x1b[D");
+  await setTimeout(20);
+  assert.equal(opens, 1);
+});
+
+test("session center searches, groups, and creates in the selected project", async (t) => {
+  const terminal = new MemoryTerminal(72);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle); ui.start();
+  const selection = ui.browseSessions(browserItems);
+  terminal.press("/");
+  for (const key of "Other") terminal.press(key);
+  terminal.press("\r");
+  terminal.press("g");
+  await setTimeout(30);
+  assert.match(terminal.text(), /Group: Status/);
+  assert.match(terminal.text(), /Other project task/);
+  terminal.press("n");
+  assert.deepEqual(await selection, { kind: "new", cwd: "E:/Other" });
+  assert.equal(ui.draft(), "");
+});
+
+test("wide session details load the selected saved history lazily", async (t) => {
+  const terminal = new MemoryTerminal(120);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle); ui.start();
+  const loaded: string[] = [];
+  const selection = ui.browseSessions(browserItems, async (item) => {
+    loaded.push(item.id);
+    return { lastMessage: `Last answer for ${item.id}`, prompt: "Initial prompt", model: "fixture/test" };
+  });
+  await setTimeout(25);
+  assert.deepEqual(loaded, ["current"]);
+  terminal.press("\x1b[B");
+  await setTimeout(100);
+  assert.deepEqual(loaded, ["current", "other"]);
+  assert.match(terminal.text(), /Last answer for other/);
+  assert.match(terminal.text(), /fixture\/test/);
+  assert.match(terminal.text(), /Initial prompt/);
+  terminal.press("\x1b");
+  assert.equal(await selection, null);
+});
+
+test("narrow session center keeps complete titles, filters, and commands visible", async (t) => {
+  const terminal = new MemoryTerminal(40);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle); ui.start();
+  const selection = ui.browseSessions(browserItems);
+  await setTimeout(50);
+  const frame = terminal.text();
+  assert.match(frame, /Current task/);
+  assert.match(frame, /Other project task/);
+  assert.match(frame, /Inactive 1/);
+  assert.match(frame, /n new/);
+  const currentRow = frame.split(/\r?\n/).find((line) => line.includes("Current task"));
+  assert.ok(currentRow);
+  assert.doesNotMatch(currentRow, /Ready|now/);
+  terminal.press("\x1b");
+  assert.equal(await selection, null);
+});
 
 test("editor submits idle prompts, busy steering and queued follow-ups", (t) => {
   const delivered: { text: string; mode: string }[] = [];

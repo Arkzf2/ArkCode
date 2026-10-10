@@ -58,4 +58,5 @@ Usage: arkcode [options] [prompt]
 No OS sandbox. Ask confirms every write and command. Untrusted directories
 start Read Only unless you explicitly choose a permission preset.
 Use DEEPSEEK_API_KEY with --model deepseek/deepseek-flash.
+In the TUI, press Left on an empty idle composer or use /resume to browse sessions.
 `;

@@ -16,6 +16,20 @@ export interface ApprovalRequest {
 export type ApprovalDecision = "once" | "session" | "deny";
 export interface Choice { value: string; label: string; description?: string }
 export interface ToolDetails { target?: string; exitCode?: number }
+export type SessionState = "needs-you" | "working" | "ready" | "inactive" | "unconfirmed";
+export interface SessionItem {
+  id: string;
+  path: string | null;
+  cwd: string;
+  title: string;
+  preview: string;
+  modified: number;
+  state: SessionState;
+  current: boolean;
+  model?: string;
+}
+export interface SessionDetails { lastMessage?: string; prompt?: string; model?: string }
+export type SessionBrowserResult = { kind: "open"; item: SessionItem } | { kind: "new"; cwd: string };
 export interface Status {
   model: string;
   thinking: string;
@@ -35,6 +49,7 @@ export interface UserInterface {
   reasoning(id: string, text: string, active: boolean): void;
   tool(id: string, name: string, text: string, state: "running" | "done" | "error", details?: ToolDetails): void;
   choose(title: string, choices: Choice[]): Promise<string | null>;
+  browseSessions?(sessions: SessionItem[], details?: (item: SessionItem) => Promise<SessionDetails>): Promise<SessionBrowserResult | null>;
   input(title: string, initial?: string): Promise<string | null>;
   approve(request: ApprovalRequest): Promise<ApprovalDecision>;
   dismiss(): void;
@@ -49,4 +64,5 @@ export interface UiActions {
   interrupt(): Promise<void>;
   exit(): Promise<void>;
   editPrevious(): Promise<void>;
+  browseSessions(): Promise<void>;
 }
