@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, realpath, rm, appendFile, writeFile, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,8 +9,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createModelRuntime, createResources, loadConfig, saveConfig, selectModel } from "../src/config.js";
-import { configureEndpoint } from "../src/runtime.js";
+import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel } from "../src/config.js";
 import { inspectSession, listArkSessions, readRunMarker, recoverRunMarker, WorkspaceLease, writeRunMarker } from "../src/storage.js";
 
 test("settings persist defaults and reject unknown permission values", async () => {
@@ -155,19 +155,14 @@ test("ArkCode discovers saved sessions across one-level project directories", as
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
-test("DeepSeek configuration references the environment and selects Flash without a model network request", async () => {
+test("startup does not create or prefer a DeepSeek endpoint", async () => {
   const home = await mkdtemp(join(tmpdir(), "arkcode-model-"));
   const original = process.env.DEEPSEEK_API_KEY;
   process.env.DEEPSEEK_API_KEY = "arkcode-test-key-not-secret";
   try {
     const runtime = await createModelRuntime(home);
-    const source = await readFile(join(home, "models.json"), "utf8");
-    assert.match(source, /\$\{DEEPSEEK_API_KEY\}/);
-    assert.equal(source.includes("arkcode-test-key-not-secret"), false);
-    const selected = await selectModel(runtime);
-    assert.equal(selected?.provider, "deepseek");
-    assert.equal(selected?.id, "deepseek-flash");
-    assert.deepEqual(selected?.input, ["text", "image"]);
+    await assert.rejects(readFile(join(home, "models.json"), "utf8"), /ENOENT/);
+    assert.equal(runtime.getModel("deepseek", "deepseek-flash")?.input.includes("image"), true);
     await assert.rejects(selectModel(runtime, "does-not-exist"), /Unknown model/);
   } finally {
     if (original === undefined) delete process.env.DEEPSEEK_API_KEY;
@@ -195,17 +190,17 @@ test("existing ArkCode DeepSeek configuration keeps Pi's image-capable model met
   }
 });
 
-test("DeepSeek configuration created by /connect retains image input", async () => {
-  const home = await mkdtemp(join(tmpdir(), "arkcode-deepseek-connect-"));
+test("selecting a built-in model keeps Pi metadata and leaves models.json untouched", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-builtin-"));
   const original = process.env.DEEPSEEK_API_KEY;
   process.env.DEEPSEEK_API_KEY = "arkcode-test-key-not-secret";
   try {
-    await writeFile(join(home, "models.json"), JSON.stringify({ providers: { deepseek: {
-      baseUrl: "https://api.deepseek.com/v1", api: "openai-completions", apiKey: "${DEEPSEEK_API_KEY}",
-      models: [{ id: "deepseek-flash" }],
-    } } }));
     const runtime = await createModelRuntime(home);
-    assert.deepEqual((await selectModel(runtime, "deepseek/deepseek-flash"))?.input, ["text", "image"]);
+    const builtin = runtime.getModel("deepseek", "deepseek-flash");
+    const selected = await configureConnection(home, runtime, { kind: "builtin", provider: "deepseek", model: "deepseek-flash" });
+    assert.deepEqual(selected, builtin);
+    await assert.rejects(readFile(join(home, "models.json"), "utf8"), /ENOENT/);
+    assert.deepEqual([loadConfig(home).provider, loadConfig(home).model], ["deepseek", "deepseek-flash"]);
   } finally {
     if (original === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = original;
@@ -234,17 +229,107 @@ test("explicit custom model input is not changed by DeepSeek legacy migration", 
   }
 });
 
-test("configuring the official DeepSeek endpoint uses Pi's built-in model capabilities", async () => {
-  const home = await mkdtemp(join(tmpdir(), "arkcode-deepseek-endpoint-"));
-  const original = process.env.DEEPSEEK_API_KEY;
-  process.env.DEEPSEEK_API_KEY = "arkcode-test-key-not-secret";
+test("custom endpoints preserve JSONC comments and describe all model capabilities", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-custom-endpoint-"));
+  const original = process.env.ARKCODE_TEST_KEY;
+  process.env.ARKCODE_TEST_KEY = "arkcode-test-key-not-secret";
   try {
-    configureEndpoint({ home, provider: "deepseek", model: "deepseek-flash", baseUrl: "https://api.deepseek.com/v1", apiKeyEnv: "DEEPSEEK_API_KEY" });
+    const path = join(home, "models.json");
+    await writeFile(path, '{\n  // retained comment\n  "providers": { "another": { "baseUrl": "http://localhost:9999/v1", "api": "openai-completions", "apiKey": "dummy", "models": [{"id":"other"}] },\n    "my-endpoint": { "baseUrl": "https://example.com/v1", "api": "openai-responses", "apiKey": "${ARKCODE_TEST_KEY}", "models": [\n      // existing model comment\n      {"id":"vision", // model field comment\n       "samplingParams": {"temperature": 0.2}}\n    ] }\n  }\n}\n');
     const runtime = await createModelRuntime(home);
-    assert.deepEqual((await selectModel(runtime, "deepseek/deepseek-flash"))?.input, ["text", "image"]);
+    const model = await configureConnection(home, runtime, { kind: "custom", provider: "my-endpoint", model: "vision", name: "Vision",
+      baseUrl: "https://example.com/v1", api: "openai-responses", input: "image", reasoning: true,
+      contextWindow: 65536, maxTokens: 4096, apiKeyEnv: "ARKCODE_TEST_KEY" });
+    assert.equal(model.api, "openai-responses");
+    assert.deepEqual(model.input, ["text", "image"]);
+    assert.equal(model.contextWindow, 65536);
+    assert.equal(model.maxTokens, 4096);
+    assert.equal(model.reasoning, true);
+    const source = await readFile(path, "utf8");
+    assert.match(source, /retained comment/);
+    assert.match(source, /existing model comment/);
+    assert.match(source, /model field comment/);
+    assert.match(source, /"another"/);
+    assert.match(source, /"temperature": 0.2/);
+    assert.equal(source.includes("arkcode-test-key-not-secret"), false);
+    assert.deepEqual([loadConfig(home).provider, loadConfig(home).model], ["my-endpoint", "vision"]);
   } finally {
-    if (original === undefined) delete process.env.DEEPSEEK_API_KEY;
-    else process.env.DEEPSEEK_API_KEY = original;
+    if (original === undefined) delete process.env.ARKCODE_TEST_KEY;
+    else process.env.ARKCODE_TEST_KEY = original;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("invalid custom endpoint leaves configuration unchanged", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-invalid-endpoint-"));
+  try {
+    const path = join(home, "models.json");
+    const source = '{ // keep me\n "providers": {} }\n';
+    await writeFile(path, source);
+    const runtime = await createModelRuntime(home);
+    await assert.rejects(configureConnection(home, runtime, { kind: "custom", provider: "local", model: "bad", name: "Bad",
+      baseUrl: "https://example.com", api: "anthropic-messages", input: "text", reasoning: false,
+      contextWindow: 4096, maxTokens: 8192 }), /Max tokens cannot exceed/);
+    assert.equal(await readFile(path, "utf8"), source);
+    await assert.rejects(readFile(join(home, "settings.json"), "utf8"), /ENOENT/);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("custom provider ID cannot reroute previously configured models", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-endpoint-conflict-"));
+  try {
+    const path = join(home, "models.json");
+    const source = '{ "providers": { "custom": { "baseUrl": "https://first.example/v1", "api": "openai-completions", "apiKey": "dummy", "models": [{ "id": "first" }] } } }';
+    await writeFile(path, source);
+    const runtime = await createModelRuntime(home);
+    await assert.rejects(configureConnection(home, runtime, { kind: "custom", provider: "custom", model: "second", name: "Second",
+      baseUrl: "https://second.example/v1", api: "openai-responses", input: "text", reasoning: false,
+      contextWindow: 32768, maxTokens: 2048 }), /different endpoint or API/);
+    assert.equal(await readFile(path, "utf8"), source);
+    await assert.rejects(readFile(join(home, "settings.json"), "utf8"), /ENOENT/);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("custom provider API key is stored through Pi and enables the model", async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-custom-auth-"));
+  try {
+    const runtime = await createModelRuntime(home);
+    const selected = await configureConnection(home, runtime, { kind: "custom", provider: "custom-auth", model: "vision", name: "Vision",
+      baseUrl: "https://example.com", api: "anthropic-messages", input: "image", reasoning: false,
+      contextWindow: 32768, maxTokens: 2048 }, "private-test-key");
+    assert.equal(selected.api, "anthropic-messages");
+    assert.equal((await selectModel(runtime, "custom-auth/vision"))?.id, "vision");
+    assert.equal((await readFile(join(home, "auth.json"), "utf8")).includes("private-test-key"), true);
+    assert.equal((await readFile(join(home, "models.json"), "utf8")).includes("private-test-key"), false);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("custom API choices use Pi's three distinct HTTP transports", { timeout: 30000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-api-transports-"));
+  const paths: string[] = [];
+  const server = createServer((request, response) => {
+    paths.push(request.url ?? "");
+    response.writeHead(401, { "content-type": "application/json" });
+    response.end('{"error":"fixture rejection"}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const runtime = await createModelRuntime(home);
+    const protocols = ["openai-completions", "openai-responses", "anthropic-messages"] as const;
+    for (const api of protocols) {
+      const model = await configureConnection(home, runtime, { kind: "custom", provider: `fixture-${api}`, model: "sample", name: "Sample",
+        baseUrl: `http://127.0.0.1:${address.port}${api === "anthropic-messages" ? "" : "/v1"}`, api, input: "text", reasoning: false,
+        contextWindow: 8192, maxTokens: 512 }, "fixture-key");
+      try {
+        await runtime.completeSimple(model, { messages: [{ role: "user", content: "ping", timestamp: Date.now() }] }, { signal: AbortSignal.timeout(3000) });
+      } catch {}
+    }
+    assert.deepEqual(paths, ["/v1/chat/completions", "/v1/responses", "/v1/messages?beta=true"]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     await rm(home, { recursive: true, force: true });
   }
 });

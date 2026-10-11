@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
   createAgentSession, SessionManager, SettingsManager,
   type AgentSession, type AgentSessionEvent, type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { ApprovalBroker } from "./approval.js";
 import { slashCommands } from "./commands.js";
-import { createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig } from "./config.js";
+import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig, type ConnectionRequest } from "./config.js";
 import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, listArkSessions, readRunMarker, writeRunMarker } from "./storage.js";
 import { ManagedShell, createTools, cleanOutput, workspacePath } from "./tools.js";
 import { getBranch } from "./review.js";
@@ -28,7 +29,6 @@ export function contentText(content: unknown): string {
 const unsupported = new Set(["goal", "agent", "mcp", "plugins", "memories", "plan", "cloud"]);
 const mutatingTools = ["write", "edit", "bash"];
 const readTools = ["read", "grep", "find", "ls"];
-const modelsDocument = z.object({ providers: z.record(z.string(), z.record(z.string(), z.unknown())).default({}) }).passthrough();
 const toolTargetSchema = z.object({ path: z.string().optional(), command: z.string().optional(), pattern: z.string().optional() });
 const toolResultSchema = z.object({ exitCode: z.number().nullable().optional() });
 const shellHistorySchema = z.object({ id: z.string(), command: z.string(), exitCode: z.number().nullable(), status: z.enum(["running", "completed", "failed", "cancelled"]), output: z.string() });
@@ -43,29 +43,6 @@ function toolDetails(args: unknown): ToolDetails | undefined {
 function toolResultDetails(value: unknown): ToolDetails | undefined {
   const result = toolResultSchema.safeParse(value);
   return result.success && typeof result.data.exitCode === "number" ? { exitCode: result.data.exitCode } : undefined;
-}
-
-export function configureEndpoint(options: { home: string; provider: string; model: string; baseUrl?: string; apiKeyEnv?: string }): void {
-  const path = join(options.home, "models.json");
-  mkdirSync(options.home, { recursive: true });
-  const document = modelsDocument.parse(existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {});
-  if (options.apiKeyEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.apiKeyEnv)) throw new Error("Invalid API key environment variable name.");
-  if (options.baseUrl) {
-    const url = new URL(options.baseUrl);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Use an HTTP(S) endpoint without embedded credentials.");
-    const provider = {
-      ...document.providers[options.provider], baseUrl: options.baseUrl, api: "openai-completions",
-      ...(options.apiKeyEnv ? { apiKey: "${" + options.apiKeyEnv + "}" } : {}),
-      models: [{ id: options.model }],
-    };
-    document.providers[options.provider] = options.provider === "deepseek" && options.model === "deepseek-flash"
-      && /^https:\/\/api\.deepseek\.com(?:\/v1)?\/?$/.test(options.baseUrl)
-      ? { ...provider, models: [] }
-      : provider;
-    writeFileSync(path, JSON.stringify(document, null, 2) + "\n", { mode: 0o600 });
-  }
-  const config = loadConfig(options.home);
-  saveConfig(options.home, { ...config, provider: options.provider, model: options.model });
 }
 
 export class ArkHost {
@@ -191,7 +168,22 @@ export class ArkHost {
       manager = SessionManager.inMemory(cwd, undefined, header ? [header, ...manager.getEntries()] : undefined);
     }
     const explicitModel = initial && this.options.model ? await selectModel(runtime, this.options.model, this.config) : undefined;
-    const model = manager.getEntries().some((entry) => entry.type === "message") ? explicitModel : explicitModel ?? await selectModel(runtime, undefined, this.config);
+    const hasHistory = manager.getEntries().some((entry) => entry.type === "message");
+    let model = hasHistory ? explicitModel : explicitModel ?? await selectModel(runtime, undefined, this.config);
+    if (!hasHistory && !model) {
+      if (this.options.print) throw new Error("Select a model with --model or arkcode config before running in print mode.");
+      const available = await runtime.getAvailable();
+      if (available.length) {
+        const selected = await this.ui.choose("Select a model", available.map((item) => ({ value: `${item.provider}/${item.id}`, label: `${item.provider}/${item.id}`, description: item.name })));
+        if (!selected) throw new Error("Model selection cancelled.");
+        model = await selectModel(runtime, selected, this.config);
+        if (model) {
+          this.config.provider = model.provider;
+          this.config.model = model.id;
+          saveConfig(this.home, this.config);
+        }
+      }
+    }
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd, agentDir: this.home, modelRuntime: runtime, model,
       thinkingLevel: initial ? this.options.thinking : undefined,
@@ -652,16 +644,93 @@ export class ArkHost {
     this.active = work; await work;
   }
   private async connect(): Promise<void> {
-    const provider = await this.ui.input("Provider name", "deepseek"); if (!provider) return;
-    const model = await this.ui.input("Model ID", provider === "deepseek" ? "deepseek-flash" : ""); if (!model) return;
-    const baseUrl = await this.ui.input("OpenAI-compatible base URL", provider === "deepseek" ? "https://api.deepseek.com/v1" : ""); if (!baseUrl) return;
-    const apiKeyEnv = await this.ui.input("API key environment variable name", provider === "deepseek" ? "DEEPSEEK_API_KEY" : "OPENAI_API_KEY"); if (!apiKeyEnv) return;
-    if (!process.env[apiKeyEnv]) throw new Error(`Environment variable ${apiKeyEnv} is not set.`);
-    configureEndpoint({ home: this.home, provider, model, baseUrl, apiKeyEnv });
+    const runtime = this.runtime;
+    if (!runtime) throw new Error("Model runtime is not initialized.");
+    const kind = await this.ui.choose("Connect model", [
+      { value: "builtin", label: "Pi provider", description: "Use Pi's model catalog and capabilities" },
+      { value: "custom", label: "Custom endpoint", description: "Define the API and model capabilities" },
+    ]);
+    if (!kind) return;
+    let request: ConnectionRequest;
+    let key: string | null | undefined;
+    if (kind === "builtin") {
+      const provider = await this.ui.choose("Provider", builtinProviders().map((item) => ({ value: item.id, label: item.id })));
+      if (!provider) return;
+      const auth = runtime.getProvider(provider)?.auth;
+      const credential = await this.ui.choose("Credentials", [
+        { value: "existing", label: "Existing credentials or environment" },
+        ...(auth?.apiKey?.login ? [{ value: "api_key", label: "Enter API key" }] : []),
+        ...(auth?.oauth ? [{ value: "oauth", label: "Sign in with provider" }] : []),
+      ]);
+      if (!credential) return;
+      if (credential === "api_key" || credential === "oauth") {
+        await runtime.login(provider, credential, {
+          prompt: async (prompt) => {
+            const value = prompt.type === "select"
+              ? await this.ui.choose(prompt.message, prompt.options.map((option) => ({ value: option.id, label: option.label, description: option.description })))
+              : prompt.type === "secret"
+                ? await this.ui.secret(prompt.message)
+                : await this.ui.input(prompt.message);
+            if (value === null) throw new Error("Provider sign-in cancelled.");
+            return value;
+          },
+          notify: (event) => {
+            if (event.type === "auth_url") this.ui.message("info", `${event.instructions ?? "Open this URL to sign in:"}\n${event.url}`);
+            else if (event.type === "device_code") this.ui.message("info", `Open ${event.verificationUri} and enter code ${event.userCode}.`);
+            else if (event.type === "info" || event.type === "progress") this.ui.message("info", event.message);
+          },
+        });
+      }
+      if (!runtime.hasConfiguredAuth(provider)) throw new Error(`No credentials configured for ${provider}.`);
+      if (!runtime.getModels(provider).length) {
+        const result = await runtime.refresh({ providers: [provider], allowNetwork: true, signal: AbortSignal.timeout(15000) });
+        const error = result.errors.get(provider);
+        if (error) throw error;
+      }
+      const models = await runtime.getAvailable(provider);
+      if (!models.length) throw new Error(`No available models for ${provider} with these credentials.`);
+      const model = await this.ui.choose("Model", models.map((item) => ({ value: item.id, label: item.name, description: item.id })));
+      if (!model) return;
+      request = { kind: "builtin", provider, model };
+    } else {
+      const provider = await this.ui.input("Custom provider ID"); if (!provider) return;
+      const api = await this.ui.choose("API protocol", [
+        { value: "openai-completions", label: "OpenAI Chat Completions" },
+        { value: "openai-responses", label: "OpenAI Responses" },
+        { value: "anthropic-messages", label: "Anthropic Messages" },
+      ]);
+      if (api !== "openai-completions" && api !== "openai-responses" && api !== "anthropic-messages") return;
+      const baseUrl = await this.ui.input(api === "anthropic-messages" ? "API root URL (Pi appends /v1/messages)" : "API base URL"); if (!baseUrl) return;
+      const model = await this.ui.input("Model ID"); if (!model) return;
+      const name = await this.ui.input("Model name", model); if (!name) return;
+      const input = await this.ui.choose("Model input", [{ value: "text", label: "Text" }, { value: "image", label: "Text and image" }]);
+      if (input !== "text" && input !== "image") return;
+      const reasoning = await this.ui.choose("Reasoning", [{ value: "false", label: "No" }, { value: "true", label: "Yes" }]);
+      if (!reasoning) return;
+      const contextWindowText = await this.ui.input("Context window (tokens)"); if (contextWindowText === null) return;
+      const maxTokensText = await this.ui.input("Maximum output tokens"); if (maxTokensText === null) return;
+      const contextWindow = Number(contextWindowText);
+      const maxTokens = Number(maxTokensText);
+      request = { kind: "custom", provider, api, baseUrl, model, name, input, reasoning: reasoning === "true", contextWindow, maxTokens };
+      const credential = await this.ui.choose("Credentials", [
+        { value: "existing", label: "Existing credentials or environment" },
+        { value: "key", label: "Enter API key", description: "Stored in Pi auth.json" },
+        { value: "env", label: "Environment variable" },
+      ]);
+      if (!credential) return;
+      if (credential === "env") {
+        const apiKeyEnv = await this.ui.input("API key environment variable name");
+        if (!apiKeyEnv) return;
+        request = { ...request, apiKeyEnv };
+      }
+      if (credential === "key") {
+        key = await this.ui.secret("API key");
+        if (!key) return;
+      }
+    }
+    const model = await configureConnection(this.home, runtime, request, key ?? undefined);
     this.config = loadConfig(this.home);
-    await this.runtime?.refresh({ allowNetwork: false });
-    const selected = this.runtime ? await selectModel(this.runtime, `${provider}/${model}`, this.config) : undefined;
-    if (selected) await this.session?.setModel(selected);
-    this.ui.message("info", "Model configured. Credentials are read from the environment. Use a prompt to verify the connection.");
+    await this.session?.setModel(model);
+    this.ui.message("info", `Configured ${model.provider}/${model.id}.`);
   }
 }

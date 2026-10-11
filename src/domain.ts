@@ -51,6 +51,7 @@ export interface UserInterface {
   choose(title: string, choices: Choice[]): Promise<string | null>;
   browseSessions?(sessions: SessionItem[], details?: (item: SessionItem) => Promise<SessionDetails>): Promise<SessionBrowserResult | null>;
   input(title: string, initial?: string): Promise<string | null>;
+  secret(title: string): Promise<string | null>;
   approve(request: ApprovalRequest): Promise<ApprovalDecision>;
   dismiss(): void;
   draft(): string;

@@ -70,6 +70,7 @@ class RecordingUI implements UserInterface {
   tool(_id: string, name: string, text: string, state: "running" | "done" | "error", details?: ToolDetails): void { this.tools.push({ name, text, state, details }); }
   async choose(_title: string, _choices: Choice[]): Promise<string | null> { return null; }
   async input(_title: string, _initial?: string): Promise<string | null> { return null; }
+  async secret(_title: string): Promise<string | null> { return null; }
   approve(request: ApprovalRequest): Promise<ApprovalDecision> { this.approvals.push(request); return this.decision(request); }
   dismiss(): void { this.dismissed = true; }
   draft(): string { return this.draftText; }
@@ -164,6 +165,89 @@ async function fixture(t: TestContext, respond: (request: ModelRequest, index: n
   const sessions = async () => (await readdir(join(home, "sessions"), { recursive: true })).filter((path) => path.endsWith(".jsonl")).map((path) => join(home, "sessions", path));
   return { cwd, home, requests, start, sessions };
 }
+
+test("/connect chooses a Pi provider, credentials, then an available catalog model", async (t) => {
+  const original = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "fixture-builtin-key";
+  t.after(() => { if (original === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = original; });
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  const titles: string[] = [];
+  class ConnectUI extends RecordingUI {
+    override async choose(title: string, choices: Choice[]): Promise<string | null> {
+      titles.push(title);
+      const value = title === "Connect model" ? "builtin" : title === "Provider" ? "openai" : title === "Credentials" ? "existing" : "gpt-4.1";
+      assert.ok(choices.some((choice) => choice.value === value));
+      return value;
+    }
+  }
+  const { host, ui } = await f.start(new ConnectUI());
+  await host.submit("/connect");
+  assert.deepEqual(titles, ["Connect model", "Provider", "Credentials", "Model"]);
+  assert.equal(ui.statuses.at(-1)?.model, "openai/gpt-4.1");
+  assert.equal(JSON.parse(await readFile(join(f.home, "settings.json"), "utf8")).model, "gpt-4.1");
+});
+
+test("/connect creates a custom endpoint and switches the active session model", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  const source = JSON.parse(await readFile(join(f.home, "models.json"), "utf8"));
+  const baseUrl = source.providers.fixture.baseUrl as string;
+  class ConnectUI extends RecordingUI {
+    override async choose(title: string, choices: Choice[]): Promise<string | null> {
+      const value = title === "Connect model" ? "custom" : title === "API protocol" ? "openai-completions"
+        : title === "Model input" ? "text" : title === "Reasoning" ? "false" : "key";
+      assert.ok(choices.some((choice) => choice.value === value));
+      return value;
+    }
+    override async input(title: string): Promise<string> {
+      if (title === "Custom provider ID") return "custom-fixture";
+      if (title === "API base URL") return baseUrl;
+      if (title === "Model ID" || title === "Model name") return "sample";
+      if (title === "Context window (tokens)") return "32768";
+      if (title === "Maximum output tokens") return "2048";
+      assert.fail(`Unexpected input: ${title}`);
+    }
+    override async secret(): Promise<string> { return "fixture-key"; }
+  }
+  const { host, ui } = await f.start(new ConnectUI());
+  await host.submit("/connect");
+  assert.equal(ui.statuses.at(-1)?.model, "custom-fixture/sample");
+  assert.equal(JSON.parse(await readFile(join(f.home, "settings.json"), "utf8")).model, "sample");
+  assert.equal(JSON.parse(await readFile(join(f.home, "models.json"), "utf8")).providers["custom-fixture"].apiKey, undefined);
+  assert.equal((await readFile(join(f.home, "auth.json"), "utf8")).includes("fixture-key"), true);
+});
+
+test("a new session asks for a model instead of letting Pi silently choose one", async (t) => {
+  const original = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "fixture-builtin-key";
+  t.after(() => { if (original === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = original; });
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  await writeFile(join(f.home, "settings.json"), JSON.stringify({ thinking: "off", trustedWorkspaces: [f.cwd] }));
+  class ModelUI extends RecordingUI {
+    choices = 0;
+    override async choose(title: string, choices: Choice[]): Promise<string | null> {
+      assert.equal(title, "Select a model");
+      assert.ok(choices.length > 1);
+      this.choices++;
+      return "fixture/test";
+    }
+  }
+  const ui = new ModelUI();
+  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--permissions", "full-access"]), ui);
+  t.after(() => host.exit());
+  await host.start();
+  assert.equal(ui.choices, 1);
+  assert.equal(ui.statuses.at(-1)?.model, "fixture/test");
+  assert.equal(JSON.parse(await readFile(join(f.home, "settings.json"), "utf8")).model, "test");
+});
+
+test("print mode without an explicit or saved model stops before creating a session", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  await writeFile(join(f.home, "settings.json"), JSON.stringify({ thinking: "off", trustedWorkspaces: [f.cwd] }));
+  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--print", "--permissions", "full-access"]), new RecordingUI());
+  t.after(() => host.exit());
+  await assert.rejects(host.start(), /Select a model with --model or arkcode config/);
+  assert.equal((await readdir(join(f.home, "sessions"), { recursive: true }).catch(() => [])).filter((name) => name.endsWith(".jsonl")).length, 0);
+});
 
 test("session browser retains the current Agent and draft after a failed cross-project open", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Current answer." }));

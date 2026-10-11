@@ -305,6 +305,20 @@ test("picker cancellation restores draft and input panels accept atomic paste", 
   assert.equal(ui.draft(), "keep this task");
 });
 
+test("API key input masks terminal output while returning the entered value", async (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  const secret = ui.secret("API key");
+  terminal.press("private-test-key");
+  terminal.press("\x1b[D");
+  terminal.press("X");
+  assert.equal(terminal.output.includes("private-test-key"), false);
+  terminal.press("\r");
+  assert.equal(await secret, "private-test-keXy");
+});
+
 test("multiline paste inserts draft without sending", (t) => {
   const delivered: string[] = [];
   const terminal = new MemoryTerminal();

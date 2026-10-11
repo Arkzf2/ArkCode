@@ -44,6 +44,19 @@ import type {
 import { slashCommands } from "./commands.js";
 import { mentionPrefix, WorkspaceAutocompleteProvider } from "./autocomplete.js";
 
+class SecretInput extends Input {
+  override render(width: number): string[] {
+    const rendered = super.render(width)[0] ?? "";
+    const marker = rendered.indexOf(CURSOR_MARKER);
+    const column = marker < 0 ? width : visibleWidth(rendered.slice(0, marker));
+    const visible = "*".repeat(Math.min([...this.getValue()].length, Math.max(0, width - 1)));
+    const cursor = Math.min(column, visible.length);
+    const char = visible[cursor] ?? " ";
+    const line = visible.slice(0, cursor) + (this.focused ? CURSOR_MARKER : "") + `\x1b[7m${char}\x1b[27m` + visible.slice(cursor + (cursor < visible.length ? 1 : 0));
+    return [line + " ".repeat(Math.max(0, width - visible.length - (cursor === visible.length ? 1 : 0)))];
+  }
+}
+
 type MessageKind = Parameters<UserInterface["message"]>[0];
 type ToolState = Parameters<UserInterface["tool"]>[3];
 type TranscriptEntry =
@@ -359,6 +372,24 @@ export class TerminalUI implements UserInterface {
         this.closePanel();
         resolve(value);
       };
+      input.onSubmit = (value) => finish(value);
+      input.onEscape = () => finish(null);
+      this.panel = { kind: "input", component, cancel: () => finish(null) };
+      this.rebuild();
+      this.tui.setFocus(input);
+      this.render();
+    });
+  }
+
+  secret(title: string): Promise<string | null> {
+    this.dismiss();
+    return new Promise((resolve) => {
+      const input = new SecretInput();
+      const component = new Container();
+      component.addChild(new Text(bold(sanitizeTerminalText(title)), 2, 1));
+      component.addChild(input);
+      component.addChild(new Text(dim("Enter confirm · Esc cancel"), 2, 1));
+      const finish = (value: string | null): void => { this.closePanel(); resolve(value); };
       input.onSubmit = (value) => finish(value);
       input.onEscape = () => finish(null);
       this.panel = { kind: "input", component, cancel: () => finish(null) };
@@ -906,6 +937,7 @@ export class PlainUI implements UserInterface {
   }
   choose(_title: string, _choices: Choice[]): Promise<string | null> { return Promise.resolve(null); }
   input(_title: string, _initial?: string): Promise<string | null> { return Promise.resolve(null); }
+  secret(_title: string): Promise<string | null> { return Promise.resolve(null); }
   approve(request: ApprovalRequest): Promise<ApprovalDecision> {
     const decision = this.options.approve ? "once" : "deny";
     this.event("approval", { request, decision });

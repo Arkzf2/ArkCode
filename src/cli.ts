@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseCli, HELP } from "./args.js";
-import { ArkHost, configureEndpoint } from "./runtime.js";
-import { createModelRuntime } from "./config.js";
+import { ArkHost } from "./runtime.js";
+import { configureConnection, createModelRuntime, type ConnectionRequest } from "./config.js";
 import { PlainUI, TerminalUI } from "./ui.js";
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
@@ -9,9 +9,24 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (options.help) { process.stdout.write(HELP); return; }
   if (options.version) { process.stdout.write("0.1.0\n"); return; }
   if (options.command === "config") {
-    if (!options.provider || !options.model) throw new Error("Use arkcode config --provider NAME --model ID [--base-url URL --api-key-env NAME].");
-    configureEndpoint({ home: options.home, provider: options.provider, model: options.model, baseUrl: options.baseUrl, apiKeyEnv: options.apiKeyEnv });
-    process.stdout.write(`Model configured in ${options.home}. Credentials are read from the environment.\n`);
+    if (!options.provider || !options.model) throw new Error("Use arkcode config --provider NAME --model ID.");
+    const custom = Boolean(options.baseUrl || options.api || options.contextWindow || options.maxTokens || options.input || options.reasoning || options.name);
+    if (!custom && options.apiKeyEnv) throw new Error("--api-key-env applies only to a custom endpoint. Pi built-in providers use their own environment variable or stored credentials.");
+    let request: ConnectionRequest;
+    if (custom) {
+      if (!options.baseUrl || !options.api || !options.contextWindow || !options.maxTokens || !options.input || !options.reasoning) {
+        throw new Error("Custom endpoints require --base-url, --api, --context-window, --max-tokens, --input, and --reasoning.");
+      }
+      if (options.api !== "openai-completions" && options.api !== "openai-responses" && options.api !== "anthropic-messages") throw new Error("Unsupported API protocol.");
+      if (options.input !== "text" && options.input !== "image") throw new Error("Input must be text or image.");
+      if (options.reasoning !== "true" && options.reasoning !== "false") throw new Error("Reasoning must be true or false.");
+      request = { kind: "custom", provider: options.provider, model: options.model, name: options.name ?? options.model,
+        baseUrl: options.baseUrl, api: options.api, input: options.input, reasoning: options.reasoning === "true",
+        contextWindow: Number(options.contextWindow), maxTokens: Number(options.maxTokens), apiKeyEnv: options.apiKeyEnv };
+    } else request = { kind: "builtin", provider: options.provider, model: options.model };
+    const runtime = await createModelRuntime(options.home);
+    await configureConnection(options.home, runtime, request);
+    process.stdout.write(`Configured ${options.provider}/${options.model} in ${options.home}.\n`);
     return;
   }
   if (options.command === "models") {

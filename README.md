@@ -15,7 +15,7 @@ npm start
 在开发时运行 `npm run dev`。需要直接使用 `arkcode` 命令时，执行 `npm link`。
 
 ```powershell
-arkcode -C "D:\my-project" --model deepseek/deepseek-flash
+arkcode -C "D:\my-project" --model openai/gpt-4.1
 arkcode "Inspect this project and fix the failing test"
 arkcode resume --last
 arkcode resume <session-id>
@@ -26,22 +26,24 @@ arkcode fork <session-id>
 
 ## 配置模型
 
-设置 `DEEPSEEK_API_KEY` 后，首次启动自动添加 `deepseek/deepseek-flash`。配置中只保存环境变量引用。已有 `models.json` 不会被自动覆盖。
+在 TUI 中使用 `/connect` 选择 Pi 内置供应商和模型。Pi 提供模型的图片能力、上下文长度等元数据。可在 TUI 中输入 API key，密钥由 Pi 保存到 `auth.json`，也可以通过供应商环境变量提供密钥。
 
 ```powershell
-$env:DEEPSEEK_API_KEY = "your-key"
-arkcode --model deepseek/deepseek-flash
+$env:OPENAI_API_KEY = "your-key"
+arkcode config --provider openai --model gpt-4.1
 ```
 
-也可以在 TUI 使用 `/connect`，或配置其他 OpenAI 兼容端点。
+自定义端点需要明确指定协议和模型能力。支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
+Anthropic Messages 的 base URL 使用 API 根地址，Pi 会追加 `/v1/messages`。
 
 ```powershell
-arkcode config --provider local --model my-model --base-url http://localhost:1234/v1 --api-key-env LOCAL_API_KEY
+arkcode config --provider local --model my-model --base-url http://localhost:1234/v1 --api openai-completions --context-window 32768 --max-tokens 4096 --input text --reasoning false --api-key-env LOCAL_API_KEY
 arkcode models
 arkcode --model local/my-model
 ```
 
-`/connect` 询问环境变量名称，不收集密钥。`/model` 选择模型及推理等级。默认配置目录为 `~/.arkcode`，可用 `ARKCODE_HOME` 或 `--home` 指定。
+`/connect` 可以使用现有凭据、环境变量，或输入隐藏显示的 API key。`/model` 选择模型及推理等级。默认配置目录为 `~/.arkcode`，可用 `ARKCODE_HOME` 或 `--home` 指定。
+首次交互启动会要求从可用模型中选择一个，并保存为默认模型。`--print` 模式需要 `--model` 或已保存的默认模型。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -51,7 +53,7 @@ arkcode --model local/my-model
 | `sessions/` | Pi JSONL 历史，按真实工作区分组 |
 | `runs/` | 运行结束与中断标记，不保存第二份对话 |
 
-自定义模型配置遵循 [Pi models 文档](https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/docs/models.md)。DeepSeek 默认端点依据 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/)。模型配置属于用户可信配置，Pi 支持的凭据命令也可以执行。
+自定义模型配置遵循 [Pi models 文档](https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/docs/models.md)。模型配置属于用户可信配置，Pi 支持的凭据命令也可以执行。
 
 ## 权限
 
