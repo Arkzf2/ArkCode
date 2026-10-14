@@ -1,5 +1,5 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createExtensionRuntime, ModelRuntime, type LoadExtensionsResult, type ResourceLoader } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -21,6 +21,7 @@ export const arkConfigSchema = z.object({
   thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).default("medium"),
   permission: configuredPermissionSchema.default("always-ask"),
   trustedWorkspaces: z.array(z.string().min(1)).default([]),
+  projectDocMaxBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(32 * 1024),
 }).strict();
 export type ArkConfig = z.infer<typeof arkConfigSchema>;
 const modelId = z.string().trim().min(1);
@@ -203,49 +204,19 @@ export async function configureConnection(home: string, runtime: ModelRuntime, r
   return model;
 }
 
-export function readInstructions(cwd: string): Array<{ path: string; content: string }> {
-  const directories: string[] = [];
-  let current = resolve(cwd);
-  while (true) {
-    directories.unshift(current);
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  const files: Array<{ path: string; content: string }> = [];
-  let remaining = 128 * 1024;
-  for (const directory of directories) {
-    const path = join(directory, "AGENTS.md");
-    if (!existsSync(path) || remaining <= 0) continue;
-    const descriptor = openSync(path, "r");
-    try {
-      const limit = Math.min(64 * 1024, remaining);
-      const buffer = Buffer.alloc(limit + 1);
-      const count = readSync(descriptor, buffer, 0, buffer.length, 0);
-      const content = buffer.subarray(0, Math.min(count, limit)).toString("utf8").replace(/^\uFEFF/, "");
-      files.push({ path, content: content + (count > limit ? "\n[Instructions truncated at the ArkCode size limit.]" : "") });
-      remaining -= Math.min(count, limit);
-    } finally {
-      closeSync(descriptor);
-    }
-  }
-  return files;
-}
-
-export function createResources(cwd: string, trusted: boolean, hostExtensions?: LoadExtensionsResult): ResourceLoader {
-  let agentsFiles = trusted ? readInstructions(cwd) : [];
+export function createResources(hostExtensions?: LoadExtensionsResult): ResourceLoader {
   const extensions = hostExtensions ?? { extensions: [], errors: [], runtime: createExtensionRuntime() };
   return {
     getExtensions: () => extensions,
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles }),
+    getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () => SYSTEM_PROMPT,
     getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
     getAppendSystemPromptSources: () => [],
     extendResources: () => {},
-    reload: async () => { agentsFiles = trusted ? readInstructions(cwd) : []; },
+    reload: async () => {},
   };
 }

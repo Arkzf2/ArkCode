@@ -22,7 +22,7 @@ arkcode resume <session-id>
 arkcode fork <session-id>
 ```
 
-首次打开目录时选择是否信任。信任后加载该目录及祖先目录的 `AGENTS.md` 文本。ArkCode 不加载项目扩展、插件或 `.pi` 设置。
+首次打开目录时选择是否信任。全局配置目录的 `AGENTS.md` 始终加载；信任后加载 Git 根到 workspace 的祖先规则，以及 workspace 内递归发现的 `AGENTS.md`。没有 Git 根时只加载 workspace 及其子目录。ArkCode 不加载项目扩展、插件或 `.pi` 设置。
 
 ## 配置模型
 
@@ -47,7 +47,8 @@ arkcode --model local/my-model
 
 | 文件 | 内容 |
 | --- | --- |
-| `settings.json` | 默认模型、推理等级、权限、可信目录 |
+| `settings.json` | 默认模型、推理等级、权限、可信目录、项目指令总字节预算 |
+| `AGENTS.md` | 全局工作规则，不受项目目录信任状态影响 |
 | `models.json` | Pi 格式的模型及端点配置 |
 | `auth.json` | Pi 的凭据存储 |
 | `sessions/` | Pi JSONL 历史，按真实工作区分组 |
@@ -65,7 +66,7 @@ arkcode --model local/my-model
 
 六个工具 `Read`、`Write`、`Edit`、`Grep`、`Glob`、`Bash` 在所有模式中常驻，权限切换不会改变工具 schema。原 `find` 改名为 `Glob`，原 `ls` 工具删除；目录列表使用 Bash。Windows 默认执行 PowerShell，因此 `Bash` 是工具名，实际 shell 由环境上下文提供。Always Ask 也允许独立的 `Get-ChildItem`；重定向、管道、命令替换和串联命令不属于列表豁免。
 
-未信任目录跳过 AGENTS.md，默认 Always Ask；显式 CLI 权限仍生效。可通过 `/permissions` 或 `--permissions always-ask/ask-when-needed/never-ask` 选择。旧 `ask`、`full-access` 和 `--full-access` 仍映射到相应新模式；旧 `read-only` 配置及 `--read-only` 会报错，要求明确选择新模式。
+未信任目录跳过项目 AGENTS.md，保留全局规则，默认 Always Ask；显式 CLI 权限仍生效。可通过 `/permissions` 或 `--permissions always-ask/ask-when-needed/never-ask` 选择。旧 `ask`、`full-access` 和 `--full-access` 仍映射到相应新模式；旧 `read-only` 配置及 `--read-only` 会报错，要求明确选择新模式。
 
 Ask When Needed 采用 Kimi 的普通动作自动批准、有限高危规则优先询问的机制。规则覆盖关机/重启、磁盘格式化、写入设备的 `dd`、递归强制删除等，并检查命令包装、命令替换与嵌套 shell。无通配、变量和 `..` 的 `/tmp`、`/temp` 删除目标有例外。PowerShell 使用原生 AST，增加对应 Windows 命令规则。POSIX 使用 `bash-parser` 在独立解析进程中检查；超时、解析失败及尚不支持的 heredoc 视为无法分析，在 Ask When Needed 中自动允许，在 Always Ask 中询问。它不检查任意脚本或所有副作用，例如 `git push`、`git reset --hard` 和 Python 脚本不会仅因该有限规则要求批准。
 
@@ -81,7 +82,9 @@ Ask When Needed 采用 Kimi 的普通动作自动批准、有限高危规则优�
 
 完整机制、刷新规则和实现入口见 [静态与动态上下文说明](CONTEXT.md)。
 
-静态 system prompt 定义任务范围、工具使用、保留用户改动、遵守拒绝、验证和沟通要求。动态信息不写入此静态文本。每次对话模型请求准备时，包括工具续跑，宿主读取工作目录、平台/OS、实际 shell、日期/时区、Git 分支、执行恢复状态和可信的祖先 AGENTS.md。
+静态 system prompt 定义任务范围、工具使用、保留用户改动、遵守拒绝、验证和沟通要求。动态信息不写入此静态文本。每次对话模型请求准备时，包括工具续跑，宿主读取工作目录、平台/OS、实际 shell、日期/时区、Git 分支、执行恢复状态、全局 AGENTS.md 和可信项目的 AGENTS.md。
+
+项目规则按 Git 根到 workspace 的祖先顺序加载，再按目录名排序深度优先扫描 workspace 子目录。每份规则只约束所在目录及后代，更具体规则在其范围内优先，同级目录规则互不影响。仅识别 `AGENTS.md`，不读取 override 或备用名称。项目文件共享默认 32 KiB 的原始内容预算，可在 `settings.json` 设置 `"projectDocMaxBytes": 65536`；全局文件全量读取且不占项目预算。空文件跳过，超限文件保留前缀并提示，预算耗尽后停止。递归不进入 `.git`，目录链接只在 workspace 内跟随，并按真实路径去重以避免循环。详见 [上下文机制说明](CONTEXT.md)。
 
 首次注入完整上下文，随后仅在值变化时追加差量；跨日只追加新日期，AGENTS.md 修改或删除时追加当前指令集合的替换声明。消息转换为 `user` role，并以隐藏消息保存到 Pi 历史，TUI 转录与恢复视图不显示。权限模式不写入动态上下文，审批由工具执行入口处理。
 

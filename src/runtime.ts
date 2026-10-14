@@ -13,7 +13,7 @@ import { slashCommands } from "./commands.js";
 import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig, type ConnectionRequest } from "./config.js";
 import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, listArkSessions, readRunMarker, writeRunMarker } from "./storage.js";
 import { ManagedShell, createTools, cleanOutput, workspacePath, TOOL_NAMES, READ_TOOL_NAMES } from "./tools.js";
-import { compactionTracking, installDynamicContext, withoutProjectSystem } from "./context.js";
+import { compactionTracking, installDynamicContext } from "./context.js";
 import { parsePermission, permissionLabels } from "./permissions.js";
 import { getBranch } from "./review.js";
 import { displayUserText, prepareMentions } from "./mentions.js";
@@ -90,7 +90,7 @@ export class ArkHost {
     if (!this.trusted && !this.options.print && !this.options.trust) {
       const choice = await this.ui.choose(`Trust workspace ${this.cwd}?`, [
         { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Tool approval follows the selected mode." },
-        { value: "continue", label: "Continue without project instructions", description: "Skip AGENTS.md and default to Always Ask." },
+        { value: "continue", label: "Continue without project instructions", description: "Skip project AGENTS.md and default to Always Ask." },
       ]);
       if (choice === "trust") this.options.trust = true;
     }
@@ -202,11 +202,12 @@ export class ArkHost {
         defaultThinkingLevel: this.config.thinking, retry: { enabled: true, maxRetries: 2 }, compaction: { enabled: true },
         cacheWarming: "off",
       }),
-      resourceLoader: withoutProjectSystem(createResources(cwd, trusted, extensionLoader.getExtensions())),
+      resourceLoader: createResources(extensionLoader.getExtensions()),
       tools: TOOL_NAMES,
       customTools: createTools({ cwd, shell, authorize: (request) => this.authorizeTool(request) }),
     });
-    installDynamicContext(session, { cwd, shell: shell.executable, trusted,
+    installDynamicContext(session, { cwd, home: this.home, shell: shell.executable, trusted, projectDocMaxBytes: this.config.projectDocMaxBytes,
+      onWarning: (message) => this.ui.message("info", cleanOutput(message)),
       executionBlocked: () => this.executionUnconfirmed || this.storageFailed || Boolean(this.lease?.viewer),
     });
     let marker;
@@ -507,7 +508,7 @@ export class ArkHost {
         if (!trusted && !this.options.print) {
           const choice = await this.ui.choose(`Trust workspace ${lease.canonicalCwd}?`, [
             { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Tool approval follows the selected mode." },
-            { value: "continue", label: "Continue without project instructions", description: "Skip AGENTS.md and default to Always Ask." },
+            { value: "continue", label: "Continue without project instructions", description: "Skip project AGENTS.md and default to Always Ask." },
           ]);
           if (choice === null) return;
           allowInstructions = choice === "trust";

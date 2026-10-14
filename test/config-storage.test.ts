@@ -23,7 +23,7 @@ test("settings persist defaults and reject unknown permission values", async () 
     assert.equal(loadConfig(home).permission, "ask-when-needed");
     await writeFile(join(home, "settings.json"), JSON.stringify({ permission: "ask", theme: "light", statusline: "expanded" }));
     const migrated = loadConfig(home);
-    assert.deepEqual(migrated, { permission: "always-ask", thinking: "medium", trustedWorkspaces: [] });
+    assert.deepEqual(migrated, { permission: "always-ask", thinking: "medium", trustedWorkspaces: [], projectDocMaxBytes: 32 * 1024 });
     saveConfig(home, migrated);
     assert.deepEqual(JSON.parse(await readFile(join(home, "settings.json"), "utf8")), migrated);
     await writeFile(join(home, "settings.json"), JSON.stringify({ permission: "ask", unexpected: true }));
@@ -50,7 +50,7 @@ test("permission migration maps legacy approval aliases but never silently upgra
   assert.throws(() => parseCli(["--sandbox", "none"]), /Unknown option/);
 });
 
-test("resources read bounded trusted ancestor instructions and never discover extensions", async () => {
+test("resources leave instructions out of the system prompt and never discover extensions", async () => {
   const root = await mkdtemp(join(tmpdir(), "arkcode-resources-"));
   const cwd = join(root, "nested");
   await mkdir(join(cwd, ".pi", "extensions"), { recursive: true });
@@ -58,15 +58,13 @@ test("resources read bounded trusted ancestor instructions and never discover ex
     await writeFile(join(root, "AGENTS.md"), "Use focused edits.");
     await writeFile(join(cwd, "AGENTS.md"), "x".repeat(70 * 1024));
     await writeFile(join(cwd, ".pi", "extensions", "bad.ts"), "throw new Error('must not execute');");
-    const untrusted = createResources(cwd, false);
-    assert.deepEqual(untrusted.getAgentsFiles().agentsFiles, []);
-    await untrusted.reload();
-    const trusted = createResources(cwd, true);
-    const instructions = trusted.getAgentsFiles().agentsFiles;
-    assert.equal(instructions.find((file) => file.path === join(root, "AGENTS.md"))?.content, "Use focused edits.");
-    assert.match(instructions.find((file) => file.path === join(cwd, "AGENTS.md"))?.content ?? "", /Instructions truncated/);
-    assert.deepEqual(trusted.getExtensions().extensions, []);
-    assert.deepEqual(trusted.getSkills().skills, []);
+    const resources = createResources();
+    assert.deepEqual(resources.getAgentsFiles().agentsFiles, []);
+    await resources.reload();
+    assert.deepEqual(resources.getAgentsFiles().agentsFiles, []);
+    assert.ok(!resources.getSystemPrompt()?.includes("Use focused edits."));
+    assert.deepEqual(resources.getExtensions().extensions, []);
+    assert.deepEqual(resources.getSkills().skills, []);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

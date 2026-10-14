@@ -68,7 +68,7 @@ Usage: arkcode [options] [prompt]
 Six tools remain available in every approval mode.
 Always Ask allows reading/search and plain ls; other actions need approval.
 Ask When Needed allows ordinary actions and asks for known dangerous commands.
-Never Ask runs without tool approval. Untrusted directories skip AGENTS.md.
+Never Ask runs without tool approval. Untrusted directories skip project AGENTS.md; global instructions still apply.
 Use /connect to configure a Pi provider or custom endpoint.
 Print mode requires --model or a saved default model.
 In the TUI, press Left on an empty idle composer or use /resume to browse sessions.

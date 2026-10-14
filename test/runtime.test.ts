@@ -24,6 +24,37 @@ const requestSchema = z.object({
 type ModelRequest = z.infer<typeof requestSchema>;
 type Reply = { kind: "text"; text: string; thinking?: string } | { kind: "tool"; name: string; arguments: object };
 
+test("global and recursive workspace rules reach the model as hidden scoped user context", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  await writeFile(join(f.home, "AGENTS.md"), "Global shared rule.");
+  await mkdir(join(f.cwd, "child"));
+  await writeFile(join(f.cwd, "child", "AGENTS.md"), "Scoped child rule.");
+  const { host, ui } = await f.start();
+  await host.submit("Inspect the workspace.");
+  const request = f.requests[0];
+  assert.ok(request);
+  const userContext = request.messages.filter((message) => message.role === "user").map((message) => JSON.stringify(message.content)).join("\n");
+  assert.match(userContext, /Global shared rule/);
+  assert.match(userContext, /Scoped child rule/);
+  assert.match(userContext, /sibling directory rules do not apply to each other/);
+  assert.doesNotMatch(JSON.stringify(request.messages.filter((message) => message.role === "system")), /Global shared rule|Scoped child rule/);
+  assert.ok(ui.messages.every((message) => !/Global shared rule|Scoped child rule/.test(message.text)));
+  await host.submit("Inspect again.");
+  assert.equal(f.requests[1]?.messages.filter((message) => JSON.stringify(message.content).includes("Global shared rule")).length, 1);
+});
+
+test("untrusted runtime keeps global instructions but omits workspace instructions", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  await writeFile(join(f.home, "settings.json"), JSON.stringify({ provider: "fixture", model: "test", thinking: "off", trustedWorkspaces: [] }));
+  await writeFile(join(f.home, "AGENTS.md"), "Trusted global rule.");
+  await writeFile(join(f.cwd, "AGENTS.md"), "Untrusted project rule.");
+  const { host } = await f.start();
+  await host.submit("Inspect the workspace.");
+  const context = JSON.stringify(f.requests[0]?.messages);
+  assert.match(context, /Trusted global rule/);
+  assert.doesNotMatch(context, /Untrusted project rule/);
+});
+
 function pngChunk(type: string, data: Buffer): Buffer {
   const body = Buffer.concat([Buffer.from(type), data]);
   let crc = 0xffffffff;

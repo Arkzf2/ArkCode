@@ -10,7 +10,7 @@
 | Pi 工作目录段 | 当前会话的 cwd | SDK 添加的 system prompt `cwd` 段 | 创建或替换会话时确定 |
 | 工具声明 | Read、Write、Edit、Grep、Glob、Bash 的名称、描述及参数 schema | 请求的工具声明，由 Pi 管理 | 同一工作区、相同 shell 下保持常驻；权限切换不改变声明 |
 | 对话历史 | 用户输入、模型回答、工具调用及结果、compact 摘要 | Pi 会话历史的有效投影 | 随对话追加，compact 可改变模型可见的历史 |
-| 动态上下文 | 环境信息及可信 AGENTS.md | 内部隐藏 custom 消息，发送前转换为 user role | 每次对话模型请求准备时检查，仅有变化时追加 |
+| 动态上下文 | 环境信息、全局 AGENTS.md 及可信项目 AGENTS.md | 内部隐藏 custom 消息，发送前转换为 user role | 每次对话模型请求准备时检查，仅有变化时追加 |
 
 “静态”指行为文本不随日期、权限模式和 AGENTS.md 改写。当前 SDK 仍会添加 cwd 段，因此不同工作区的完整 system prompt 可以不同。
 
@@ -24,7 +24,7 @@
 - 工具使用：Read 读取文件，Grep 搜索内容，Glob 搜索文件名，Edit 精确替换，Write 新建或完整覆盖，Bash 执行实际宿主 shell；宿主处理工具审批，模型尊重拒绝和任务边界。
 - 证据与沟通：依据工具结果判断成功、失败和中断，执行相关验证，使用用户语言汇报；识别动态上下文更新的替换语义，不把 compact 摘要作为当前环境事实的权威来源。
 
-`createResources()` 提供这段文本。运行时通过 `withoutProjectSystem()` 将 SDK 的 `getAgentsFiles()` 结果置空，避免 AGENTS.md 同时进入 system prompt。动态机制另行读取可信项目指令。
+`createResources()` 提供这段文本，其 `getAgentsFiles()` 始终返回空集合，避免 AGENTS.md 同时进入 system prompt。动态机制通过独立的 `InstructionsLoader` 读取全局与可信项目指令。
 
 ## 动态环境字段
 
@@ -47,11 +47,23 @@
 
 ## AGENTS.md 的读取与替换
 
-可信工作区在每次对话请求准备时调用 `readInstructions(cwd)`，从文件系统根目录到 cwd，依次读取这些目录下的 AGENTS.md。每个文件最多读取 64 KiB，合计最多 128 KiB；超出单文件限额时附加截断说明。未信任工作区的指令集合为空。
+每个会话持有一个 `InstructionsLoader`，在每次对话请求准备时重新发现和读取。只识别 `AGENTS.md`，不读取 `AGENTS.override.md` 或备用文件名。workspace 使用会话 cwd，Bash 中临时 `cd` 不会改变它。
 
-自动扫描只覆盖 cwd 及其祖先，不扫描所有子目录。模型进入更具体的目录处理文件时，仍需检查该目录适用的项目指令，静态 prompt 已包含这一要求。
+加载顺序如下：
 
-AGENTS.md 的路径、内容或集合变化时，宿主追加整个当前指令集合，并声明它替换此前宿主提供的项目指令。删除某个文件后，该来源不会继续出现在新集合中；集合为空时明确说明没有可信项目指令。旧消息仍在历史中，模型依据替换声明使用当前版本。
+1. 全局配置目录的 `AGENTS.md`，默认 `~/.arkcode/AGENTS.md`，遵循 `--home` 和 `ARKCODE_HOME`。全量读取、去除首尾空白，即使 workspace 未信任也加载。
+2. 对可信 workspace，从 cwd 向上寻找最近包含 `.git` 的目录。`.git` 可以是目录或 Git worktree 使用的文件。找到后，按 Git 根到 cwd 顺序读取各级 AGENTS.md；不越过 Git 根。找不到时仅从 cwd 开始，项目外父目录不会加载。父目录 Git 标记检查失败不阻止 workspace 自身规则加载。
+3. 深度优先递归 workspace 的子目录，每级目录名使用稳定的字典序。先父目录、后子目录；不扫描 workspace 外 Git 祖先的其他分支。
+
+项目文件共享 `settings.json` 的 `projectDocMaxBytes`，默认 32768 字节，可设为 0 禁用项目指令。没有单文件独立额度；全局文件和 XML 包装不消耗该预算。超限文件保留剩余预算允许的字节前缀，发出一次宿主提示，后续文件停止加载。按字节截断可能切到 UTF-8 字符中间，此时使用替换字符。空白文件不进入指令集合，也不消耗预算；非普通文件跳过。读取项目文件时最多读取剩余预算加一个探测字节，不将整个大文件读入内存。
+
+每份项目规则在动态消息中标注所在目录的 `scope`，只作用于该目录和后代。冲突时更具体的规则优先，同级目录规则互不影响。全局规则使用 `kind="global"` 和 `scope="all workspaces"`，作为所有项目的默认规则。
+
+递归不进入 `.git` 元数据目录。文件符号链接允许读取；目录链接仅在真实目标位于 workspace 内时跟随，并按真实目录路径去重，避免循环或加载工作区外的目录树。递归规则的 scope 使用真实目录路径，因此先遇到目录别名也不会让实际目标目录失去规则。不存在的文件或扫描期间消失的目录跳过。其他项目发现或读取错误会省略此次整个项目指令集合并提示，不发送部分集合或继续使用旧项目规则。全局读取失败会保留当前加载器最后一次成功值并提示；确认删除、变为空白或非文件时清除全局规则。持续相同的问题只提示一次，恢复后再次出现会重新提示。
+
+全局优先、项目共享预算、空文件和信任处理参照本地 Codex 实现。workspace 子树递归、限制目录链接不逃出 workspace、使用有界文件读取是 ArkCode 的扩展；Codex 自身的自动发现只覆盖 Git 根到 cwd 的祖先路径。即使递归发现，预算耗尽或读取失败仍可能让更深的指令无法自动注入，模型处理对应目录时需检查适用的指令文件。
+
+AGENTS.md 的路径、内容、作用范围或集合变化时，宿主追加整个当前集合，并声明它替换此前宿主提供的项目及全局指令。删除某个文件后，该来源不会继续出现在新集合中；集合为空时明确说明没有可信项目指令。旧消息仍在历史中，模型依据替换声明使用当前版本。
 
 指令内容与环境值均进行 XML 文本转义，避免原文中的标签破坏宿主生成的外层结构。
 
@@ -73,8 +85,8 @@ AGENTS.md 的路径、内容或集合变化时，宿主追加整个当前指令�
 <execution>available</execution>
 </environment_context>
 <project_instructions>
-These replace all previously supplied project instructions. Earlier sources omitted below no longer apply. More specific directory instructions apply within their scope.
-<instructions path="D:\ArkCode\AGENTS.md">
+These replace all previously supplied project instructions, including global instructions. Earlier sources omitted below no longer apply. Global instructions apply to all workspaces. Each project file applies only to its scope directory and descendants. More specific directory instructions take precedence on conflicts within their scope; sibling directory rules do not apply to each other.
+<instructions kind="project" path="D:\ArkCode\AGENTS.md" scope="D:\ArkCode">
 项目指令内容
 </instructions>
 </project_instructions>
@@ -119,7 +131,7 @@ role: custom
 customType: arkcode-context
 display: false
 content: 本次完整或差量文本
-details: { version: 1, kind: full | diff, snapshot: 完整当前快照 }
+details: { version: 2, kind: full | diff, snapshot: 完整当前快照 }
 ```
 
 Pi 的消息转换器将该 custom 消息转换为供应商请求中的 `user` role，只发送 `content`。`details` 中的完整快照用于宿主恢复基线，不作为额外 prompt 发送给模型。XML 标签只是文本结构，不会将消息提升为 system 权限。
@@ -144,6 +156,8 @@ Pi 的消息转换器将该 custom 消息转换为供应商请求中的 `user` r
 
 `contextUpdate()` 只相信模型当前有效历史中的 `arkcode-context` 消息及通过 schema 验证的元数据。它从完整 `full` 消息建立基线，然后接受其后的 `diff` 快照；如果只剩差量而没有完整锚点，必须重新注入完整内容。
 
+版本 2 的指令快照包含全局/项目类别和项目目录作用范围。旧版本 1 不作为差量基线，恢复旧会话后首次请求会注入完整的当前上下文。
+
 因此，compact 后即使宿主知道先前快照，也不会假定模型仍拥有完整环境和项目指令。完整锚点被压缩掉时补回 full；锚点仍保留且值未变时不重复追加。compact 摘要中的旧环境信息不会建立基线。失败的 compact 不会仅因尝试过压缩而清空基线。
 
 另外，`compactionTracking` 在摘要生成前补充大写 Read/Write/Edit 的文件操作记录，使六工具改名后仍能保留读取和修改的文件列表。
@@ -166,11 +180,13 @@ compact 会重组有效历史，因此完整对话前缀不再保持。新工作
 | 文件 | 职责 |
 | --- | --- |
 | `src/prompt.ts` | 静态行为文本 |
-| `src/config.ts` | 资源加载与有大小限制的 AGENTS.md 扫描 |
+| `src/config.ts` | 配置校验、项目指令预算与静态资源加载 |
+| `src/instructions.ts` | 全局、Git 祖先及 workspace 递归规则发现、字节预算、错误恢复 |
 | `src/context.ts` | 快照 schema、完整/差量渲染、隐藏持久消息、请求注入和 compact 文件跟踪 |
 | `src/runtime.ts` | 会话安装、隐藏历史过滤、执行恢复限制 |
 | `src/tools.ts`、`src/approval.ts` | 六工具声明及执行时审批 |
 | `test/context.test.ts` | 跨日、差量、完整锚点丢失与取消行为 |
+| `test/instructions.test.ts` | 规则顺序、递归作用域、大小、信任、链接、读取失败、配置和删除刷新 |
 | `test/runtime.test.ts` | 本地模型请求中的 user role、前缀一致性、隐藏历史、AGENTS.md 修改/删除、恢复/fork/新会话、手动/自动 compact |
 
 相关实现已通过类型检查、构建和本地测试服务驱动的请求验证。测试未调用外部模型，也不证明模型一定遵守项目指令替换声明；宿主权限和工具限制仍由代码执行。

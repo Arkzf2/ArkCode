@@ -1,7 +1,7 @@
 import { release, type as osType } from "node:os";
 import { z } from "zod";
-import type { AgentSession, ExtensionFactory, ResourceLoader } from "@earendil-works/pi-coding-agent";
-import { readInstructions } from "./config.js";
+import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { InstructionsLoader, instructionSchema } from "./instructions.js";
 import { getBranch } from "./review.js";
 
 export const CONTEXT_MESSAGE = "arkcode-context";
@@ -10,8 +10,8 @@ const environmentSchema = z.object({
   current_date: z.string(), timezone: z.string(), git_branch: z.string(),
   execution: z.enum(["available", "inspection-only"]),
 });
-const snapshotSchema = z.object({ environment: environmentSchema, agents: z.array(z.object({ path: z.string(), content: z.string() })) });
-const disclosureSchema = z.object({ version: z.literal(1), kind: z.enum(["full", "diff"]), snapshot: snapshotSchema });
+const snapshotSchema = z.object({ environment: environmentSchema, agents: z.array(instructionSchema) });
+const disclosureSchema = z.object({ version: z.literal(2), kind: z.enum(["full", "diff"]), snapshot: snapshotSchema });
 export type ContextSnapshot = z.infer<typeof snapshotSchema>;
 type CustomMessage = Extract<AgentSession["messages"][number], { role: "custom" }>;
 
@@ -22,8 +22,8 @@ function renderEnvironment(environment: Partial<ContextSnapshot["environment"]>)
 }
 
 function renderAgents(agents: ContextSnapshot["agents"]): string {
-  const files = agents.map((file) => `<instructions path="${xml(file.path)}">\n${xml(file.content)}\n</instructions>`).join("\n");
-  return `<project_instructions>\nThese replace all previously supplied project instructions. Earlier sources omitted below no longer apply. More specific directory instructions apply within their scope.\n${files || "No trusted project instructions apply."}\n</project_instructions>`;
+  const files = agents.map((file) => `<instructions kind="${file.kind}" path="${xml(file.path)}" scope="${xml(file.kind === "global" ? "all workspaces" : file.scope)}">\n${xml(file.content)}\n</instructions>`).join("\n");
+  return `<project_instructions>\nThese replace all previously supplied project instructions, including global instructions. Earlier sources omitted below no longer apply. Global instructions apply to all workspaces. Each project file applies only to its scope directory and descendants. More specific directory instructions take precedence on conflicts within their scope; sibling directory rules do not apply to each other.\n${files || "No trusted project instructions apply."}\n</project_instructions>`;
 }
 
 export function renderFull(snapshot: ContextSnapshot): string {
@@ -49,15 +49,17 @@ export function contextUpdate(messages: AgentSession["messages"], snapshot: Cont
   const content = previous ? renderDiff(previous, snapshot) : renderFull(snapshot);
   if (!content) return undefined;
   return { role: "custom", customType: CONTEXT_MESSAGE, content, display: false, timestamp: Date.now(),
-    details: { version: 1, kind: previous ? "diff" : "full", snapshot } };
+    details: { version: 2, kind: previous ? "diff" : "full", snapshot } };
 }
 
 export function installDynamicContext(session: AgentSession, options: {
-  cwd: string; shell: string; trusted: boolean; executionBlocked: () => boolean;
+  cwd: string; home: string; shell: string; trusted: boolean; projectDocMaxBytes: number; executionBlocked: () => boolean;
+  onWarning?: (message: string) => void;
   now?: () => Date; timezone?: () => string;
 }): void {
   const prior = session.agent.prepareRequest;
   const os = `${osType()} ${release()}`;
+  const instructions = new InstructionsLoader({ ...options, onWarning: options.onWarning ?? (() => {}) });
   session.agent.prepareRequest = async (request, signal) => {
     signal?.throwIfAborted();
     const prepared = await prior?.(request, signal);
@@ -69,7 +71,7 @@ export function installDynamicContext(session: AgentSession, options: {
         current_date: new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(options.now?.() ?? new Date()),
         timezone, git_branch: await getBranch(options.cwd), execution: options.executionBlocked() ? "inspection-only" : "available",
       },
-      agents: options.trusted ? readInstructions(options.cwd) : [],
+      agents: await instructions.load(signal),
     };
     signal?.throwIfAborted();
     const message = contextUpdate(context.messages, snapshot);
@@ -100,7 +102,3 @@ export const compactionTracking: ExtensionFactory = (pi) => {
     }
   });
 };
-
-export function withoutProjectSystem(resources: ResourceLoader): ResourceLoader {
-  return { ...resources, getAgentsFiles: () => ({ agentsFiles: [] }) };
-}
