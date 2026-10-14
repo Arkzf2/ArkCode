@@ -5,14 +5,16 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
-  createAgentSession, SessionManager, SettingsManager,
+  createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type AgentSession, type AgentSessionEvent, type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { ApprovalBroker } from "./approval.js";
 import { slashCommands } from "./commands.js";
 import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig, type ConnectionRequest } from "./config.js";
 import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, listArkSessions, readRunMarker, writeRunMarker } from "./storage.js";
-import { ManagedShell, createTools, cleanOutput, workspacePath } from "./tools.js";
+import { ManagedShell, createTools, cleanOutput, workspacePath, TOOL_NAMES, READ_TOOL_NAMES } from "./tools.js";
+import { compactionTracking, installDynamicContext, withoutProjectSystem } from "./context.js";
+import { parsePermission, permissionLabels } from "./permissions.js";
 import { getBranch } from "./review.js";
 import { displayUserText, prepareMentions } from "./mentions.js";
 import type { CliOptions } from "./args.js";
@@ -27,8 +29,6 @@ export function contentText(content: unknown): string {
 }
 
 const unsupported = new Set(["goal", "agent", "mcp", "plugins", "memories", "plan", "cloud"]);
-const mutatingTools = ["write", "edit", "bash"];
-const readTools = ["read", "grep", "find", "ls"];
 const toolTargetSchema = z.object({ path: z.string().optional(), command: z.string().optional(), pattern: z.string().optional() });
 const toolResultSchema = z.object({ exitCode: z.number().nullable().optional() });
 const shellHistorySchema = z.object({ id: z.string(), command: z.string(), exitCode: z.number().nullable(), status: z.enum(["running", "completed", "failed", "cancelled"]), output: z.string() });
@@ -89,8 +89,8 @@ export class ArkHost {
     this.trusted = this.config.trustedWorkspaces.some((path) => this.samePath(path, this.cwd));
     if (!this.trusted && !this.options.print && !this.options.trust) {
       const choice = await this.ui.choose(`Trust workspace ${this.cwd}?`, [
-        { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Commands still require approval." },
-        { value: "read-only", label: "Continue Read Only", description: "No shell or writing tools. Project instructions are not loaded." },
+        { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Tool approval follows the selected mode." },
+        { value: "continue", label: "Continue without project instructions", description: "Skip AGENTS.md and default to Always Ask." },
       ]);
       if (choice === "trust") this.options.trust = true;
     }
@@ -99,18 +99,16 @@ export class ArkHost {
       this.config.trustedWorkspaces = [...new Set([...this.config.trustedWorkspaces, this.cwd])];
       saveConfig(this.home, this.config);
     }
-    if (!this.trusted && !this.options.permission) this.permission = "read-only";
+    if (!this.trusted && !this.options.permission) this.permission = "always-ask";
     this.runtime = await createModelRuntime(this.home);
     if (!this.lease.viewer) {
       if (await hasActiveWorkspaceRun(this.home, this.cwd)) {
         this.executionUnconfirmed = true;
-        this.permission = "read-only";
       }
       for (const saved of await SessionManager.list(this.cwd, this.sessionDir())) {
         const marker = await readRunMarker(this.home, saved.id);
         if (marker?.status !== "active") continue;
         this.executionUnconfirmed = true;
-        this.permission = "read-only";
         break;
       }
     }
@@ -123,8 +121,7 @@ export class ArkHost {
       manager = this.options.command === "fork" ? SessionManager.forkFrom(path, this.cwd, this.sessionDir()) : SessionManager.open(path, this.sessionDir(), this.cwd);
     }
     await this.replaceSession(manager, true);
-    this.ui.message("info", "Sandbox: none. Approved commands run with your OS privileges.");
-    if (this.executionUnconfirmed && this.state.kind === "idle" && this.state.outcome !== "interrupted") this.ui.message("error", `Execution unconfirmed. This workspace remains Read Only. Inspect files and terminate any orphaned commands before resolving active run markers in ${join(this.home, "runs")}. No tools will be replayed.`);
+    if (this.executionUnconfirmed && this.state.kind === "idle" && this.state.outcome !== "interrupted") this.ui.message("error", `Execution unconfirmed. This workspace is limited to inspection. Inspect files and terminate any orphaned commands before resolving active run markers in ${join(this.home, "runs")}. No tools will be replayed.`);
     if (this.lease.viewer) this.ui.message("info", this.lease.viewerReason
       ? `Read-only viewer. ${this.lease.viewerReason} Session mutations and agent execution are disabled.`
       : "Read-only viewer. Another ArkCode process owns this workspace. Session mutations and agent execution are disabled.");
@@ -138,7 +135,12 @@ export class ArkHost {
     const encoded = Buffer.from(process.platform === "win32" ? cwd.toLowerCase() : cwd).toString("base64url");
     return join(this.home, "sessions", encoded);
   }
-  private effectivePermission(): Permission { return this.lease?.viewer ? "read-only" : this.permission; }
+  private effectivePermission(): Permission { return this.permission; }
+  private async authorizeTool(request: ApprovalRequest): Promise<boolean> {
+    if (this.lease?.viewer || this.storageFailed || this.interrupted || this.state.kind === "stopping") return false;
+    if (this.executionUnconfirmed && !READ_TOOL_NAMES.includes(request.tool)) return false;
+    return this.broker.authorize(request);
+  }
   private approvalChanged(request: ApprovalRequest | null): void {
     if (this.state.kind === "idle" || this.state.kind === "stopping") return;
     this.state = request ? { ...this.state, kind: "awaiting-approval", request } : { kind: "running", id: this.state.id, startedAt: this.state.startedAt };
@@ -151,6 +153,7 @@ export class ArkHost {
       permission: this.effectivePermission(), branch: this.branch,
       context: usage?.percent === null || usage?.percent === undefined ? "Context unknown" : `${usage.percent.toFixed(1)}% used`,
       state: this.state, queued: [...this.queued, ...this.localQueue.map((input) => `Queued shell: ${input}`)], viewer: this.lease?.viewer ?? false,
+      executionBlocked: this.executionUnconfirmed || this.storageFailed,
     });
   }
   private async replaceSession(manager: SessionManager, initial = false, target?: {
@@ -184,6 +187,13 @@ export class ArkHost {
         }
       }
     }
+    const extensionLoader = new DefaultResourceLoader({
+      cwd, agentDir: this.home, settingsManager: SettingsManager.inMemory({}),
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      extensionFactories: [{ name: "arkcode-file-tracking", hidden: true, factory: compactionTracking }],
+    });
+    await extensionLoader.reload();
+    if (extensionLoader.getExtensions().errors.length) throw new Error("Cannot initialize ArkCode file tracking.");
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd, agentDir: this.home, modelRuntime: runtime, model,
       thinkingLevel: initial ? this.options.thinking : undefined,
@@ -192,9 +202,12 @@ export class ArkHost {
         defaultThinkingLevel: this.config.thinking, retry: { enabled: true, maxRetries: 2 }, compaction: { enabled: true },
         cacheWarming: "off",
       }),
-      resourceLoader: createResources(cwd, trusted),
-      tools: lease?.viewer || permission === "read-only" ? readTools : [...readTools, ...mutatingTools],
-      customTools: createTools({ cwd, shell, authorize: (request) => readTools.includes(request.tool) ? Promise.resolve(true) : this.broker.authorize(request) }),
+      resourceLoader: withoutProjectSystem(createResources(cwd, trusted, extensionLoader.getExtensions())),
+      tools: TOOL_NAMES,
+      customTools: createTools({ cwd, shell, authorize: (request) => this.authorizeTool(request) }),
+    });
+    installDynamicContext(session, { cwd, shell: shell.executable, trusted,
+      executionBlocked: () => this.executionUnconfirmed || this.storageFailed || Boolean(this.lease?.viewer),
     });
     let marker;
     try { marker = await readRunMarker(this.home, session.sessionId); }
@@ -225,14 +238,11 @@ export class ArkHost {
     if (marker?.status === "active") {
       this.ui.message("error", "Execution unconfirmed. The previous process ended during a run. Existing files remain. No tool or queued input has been replayed. Inspect the workspace and submit a new instruction.");
       this.state = { kind: "idle", outcome: "interrupted" };
-      this.permission = "read-only";
       this.executionUnconfirmed = true;
-      session.setActiveToolsByName(readTools);
     }
     this.refreshStatus();
     if (target && oldLease !== lease) await oldLease?.release();
   }
-  private toolNames(): string[] { return this.effectivePermission() === "read-only" ? readTools : [...readTools, ...mutatingTools]; }
   private renderHistory(): void {
     const details = new Map<string, ToolDetails>();
     for (const entry of this.manager?.getBranch() ?? []) {
@@ -325,7 +335,6 @@ export class ArkHost {
       if (text.startsWith("/")) { await this.command(text); return; }
       if (this.lease?.viewer) throw new Error("Read-only viewer cannot run an agent or modify a session.");
       if (this.storageFailed) throw new Error("History not saved. Restart after resolving the storage error.");
-      if (this.executionUnconfirmed && this.effectivePermission() !== "read-only") throw new Error("Execution unconfirmed. Inspect the previous run before enabling writes.");
       const session = this.session;
       if (!session?.model) throw new Error("No model configured. Use /connect or /model.");
       if (this.state.kind === "stopping") throw new Error("Stopping. Wait for process cleanup.");
@@ -350,7 +359,6 @@ export class ArkHost {
     const runId = randomUUID();
     const startedAt = Date.now();
     this.failure = false; this.interrupted = false;
-    session.setActiveToolsByName(this.toolNames());
     this.state = { kind: "running", id: runId, startedAt };
     this.refreshStatus();
     const work = (async () => {
@@ -369,7 +377,6 @@ export class ArkHost {
         while (!this.interrupted && this.localQueue.length) {
           const next = this.localQueue.shift();
           if (!next) break;
-          session.setActiveToolsByName(this.toolNames());
           this.refreshStatus();
           await this.userShell(next.slice(1).trim(), randomUUID());
           await session.waitForIdle();
@@ -379,14 +386,13 @@ export class ArkHost {
       } finally {
         this.broker.cancel();
         await this.shell.stopAll();
-        session.setActiveToolsByName(this.toolNames());
         const outcome = this.interrupted ? "interrupted" : this.failure ? "failed" : "completed";
         try {
           if (session.sessionFile && existsSync(session.sessionFile)) await inspectSession(session.sessionFile, this.cwd);
           else if (session.messages.length > 0) throw new Error("Session file is missing.");
           if (!this.executionUnconfirmed) await writeRunMarker(this.home, session.sessionId, { status: this.interrupted ? "interrupted" : "completed", runId, startedAt, endedAt: Date.now(), cwd: this.cwd });
         } catch (error) {
-          this.storageFailed = true; this.permission = "read-only";
+          this.storageFailed = true;
           this.ui.message("error", `History not saved. ${cleanOutput(error instanceof Error ? error.message : String(error))}`);
         }
         this.state = { kind: "idle", outcome: this.storageFailed ? "failed" : outcome };
@@ -400,7 +406,9 @@ export class ArkHost {
   }
   private async userShell(command: string, id: string): Promise<void> {
     if (!command) throw new Error("Use ! followed by a shell command.");
-    if (!await this.broker.authorize({ id, tool: "bash", cwd: this.cwd, description: command })) throw new Error("Shell command denied.");
+    if (!await this.authorizeTool({ id, tool: "Bash", cwd: this.cwd, description: command,
+      invocation: { kind: "shell", command, shell: this.shell.executable },
+    })) throw new Error("Shell command denied.");
     if (this.interrupted) return;
     const receipt = await this.shell.execute(command, undefined, (value) => this.ui.tool(value.id, "shell", value.output, "running", { target: cleanOutput(command) }));
     this.ui.tool(receipt.id, "shell", receipt.output + `\nExit code: ${receipt.exitCode ?? "unknown"}`, receipt.status === "completed" ? "done" : "error", { target: cleanOutput(command), ...(receipt.exitCode !== null ? { exitCode: receipt.exitCode } : {}) });
@@ -498,15 +506,14 @@ export class ArkHost {
         let allowInstructions = trusted;
         if (!trusted && !this.options.print) {
           const choice = await this.ui.choose(`Trust workspace ${lease.canonicalCwd}?`, [
-            { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Commands still require approval." },
-            { value: "read-only", label: "Continue Read Only", description: "No shell or writing tools. Project instructions are not loaded." },
+            { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Tool approval follows the selected mode." },
+            { value: "continue", label: "Continue without project instructions", description: "Skip AGENTS.md and default to Always Ask." },
           ]);
           if (choice === null) return;
           allowInstructions = choice === "trust";
         }
-        let permission: Permission = allowInstructions ? this.options.permission ?? this.config.permission : "read-only";
+        const permission: Permission = this.options.permission ?? (allowInstructions ? this.config.permission : "always-ask");
         const executionUnconfirmed = !lease.viewer && await hasActiveWorkspaceRun(this.home, lease.canonicalCwd);
-        if (executionUnconfirmed) permission = "read-only";
         const manager = selection.kind === "new"
           ? SessionManager.create(lease.canonicalCwd, this.sessionDir(lease.canonicalCwd))
           : SessionManager.open(selection.item.path!, this.sessionDir(lease.canonicalCwd), lease.canonicalCwd);
@@ -573,7 +580,7 @@ export class ArkHost {
     }
     switch (name) {
       case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Left opens sessions from the empty idle composer. Ctrl+C interrupts or exits when idle. Esc interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
-      case "status": this.ui.message("info", `Sandbox: none\nPermissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
+      case "status": this.ui.message("info", `Permissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
       case "model": {
         await runtime.refresh({ allowNetwork: false });
         const models = await runtime.getAvailable();
@@ -589,19 +596,16 @@ export class ArkHost {
         saveConfig(this.home, this.config); break;
       }
       case "permissions": {
-        if (this.executionUnconfirmed) throw new Error("Execution unconfirmed. This host remains Read Only. Inspect the workspace and terminate any orphaned commands before restarting with a new session.");
-        const value = argument || await this.ui.choose("Permissions | Sandbox: none", [
-          { value: "read-only", label: "Read Only", description: "File reading and search only. No shell or writing tools." },
-          { value: "ask", label: "Ask for approval", description: "Confirm every write and command. No OS isolation." },
-          { value: "full-access", label: "Full Access", description: "Execute with your OS privileges, without tool approval." },
+        if (this.executionUnconfirmed) throw new Error("Execution unconfirmed. This host is limited to inspection. Inspect the workspace and terminate any orphaned commands before restarting with a new session.");
+        const value = argument || await this.ui.choose("Permissions", [
+          { value: "always-ask", label: "Always Ask", description: "Allow reading, search and plain ls; approve other actions." },
+          { value: "ask-when-needed", label: "Ask When Needed", description: "Allow ordinary actions; approve known dangerous commands." },
+          { value: "never-ask", label: "Never Ask", description: "Full access without tool approval." },
         ]);
         if (!value) break;
-        const permission = z.enum(["read-only", "ask", "full-access"]).parse(value);
-        if (permission === "full-access" && !this.options.print) {
-          if (await this.ui.choose("Allow unsandboxed commands and writes with your OS privileges?", [{ value: "allow", label: "Enable Full Access" }, { value: "cancel", label: "Cancel" }]) !== "allow") break;
-        }
-        this.broker.reset(); this.permission = permission; session.setActiveToolsByName(this.toolNames());
-        this.ui.message("info", `Permissions: ${permission}. Sandbox: none.`); break;
+        const permission = parsePermission(value);
+        this.broker.reset(); this.permission = permission;
+        this.ui.message("info", `Permissions: ${permissionLabels[permission]}.`); break;
       }
       case "new": await this.replaceSession(SessionManager.create(this.cwd, this.sessionDir())); break;
       case "resume": {

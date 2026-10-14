@@ -11,18 +11,19 @@ import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel } from "../src/config.js";
 import { inspectSession, listArkSessions, readRunMarker, recoverRunMarker, WorkspaceLease, writeRunMarker } from "../src/storage.js";
+import { parseCli } from "../src/args.js";
 
 test("settings persist defaults and reject unknown permission values", async () => {
   const home = await mkdtemp(join(tmpdir(), "arkcode-config-"));
   try {
     const defaults = loadConfig(home);
-    assert.equal(defaults.permission, "ask");
+    assert.equal(defaults.permission, "always-ask");
     assert.deepEqual(defaults.trustedWorkspaces, []);
-    saveConfig(home, { ...defaults, permission: "read-only" });
-    assert.equal(loadConfig(home).permission, "read-only");
+    saveConfig(home, { ...defaults, permission: "ask-when-needed" });
+    assert.equal(loadConfig(home).permission, "ask-when-needed");
     await writeFile(join(home, "settings.json"), JSON.stringify({ permission: "ask", theme: "light", statusline: "expanded" }));
     const migrated = loadConfig(home);
-    assert.deepEqual(migrated, { permission: "ask", thinking: "medium", trustedWorkspaces: [] });
+    assert.deepEqual(migrated, { permission: "always-ask", thinking: "medium", trustedWorkspaces: [] });
     saveConfig(home, migrated);
     assert.deepEqual(JSON.parse(await readFile(join(home, "settings.json"), "utf8")), migrated);
     await writeFile(join(home, "settings.json"), JSON.stringify({ permission: "ask", unexpected: true }));
@@ -30,6 +31,23 @@ test("settings persist defaults and reject unknown permission values", async () 
     await writeFile(join(home, "settings.json"), JSON.stringify({ permission: "unsafe" }));
     assert.throws(() => loadConfig(home), /Cannot load ArkCode settings/);
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("permission migration maps legacy approval aliases but never silently upgrades Read Only", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "arkcode-permissions-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  for (const [legacy, current] of [["ask", "always-ask"], ["full-access", "never-ask"]]) {
+    await writeFile(join(home, "settings.json"), JSON.stringify({ permission: legacy }));
+    assert.equal(loadConfig(home).permission, current);
+    assert.equal(parseCli(["--permissions", legacy ?? ""]).permission, current);
+  }
+  for (const permission of ["always-ask", "ask-when-needed", "never-ask"]) assert.equal(parseCli(["--permissions", permission]).permission, permission);
+  assert.equal(parseCli(["--full-access"]).permission, "never-ask");
+  await writeFile(join(home, "settings.json"), JSON.stringify({ permission: "read-only" }));
+  assert.throws(() => loadConfig(home), /Read Only has been removed/);
+  assert.throws(() => parseCli(["--read-only"]), /Read Only has been removed/);
+  assert.throws(() => parseCli(["--permissions", "read-only"]), /Read Only has been removed/);
+  assert.throws(() => parseCli(["--sandbox", "none"]), /Unknown option/);
 });
 
 test("resources read bounded trusted ancestor instructions and never discover extensions", async () => {

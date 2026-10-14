@@ -4,12 +4,16 @@ import { mkdir, open, readdir, realpath, stat, writeFile } from "node:fs/promise
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Type, type Static, type TSchema } from "typebox";
 import { minimatch } from "minimatch";
+import { z } from "zod";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ApprovalRequest } from "./domain.js";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 128 * 1024;
 const SKIP_DIRECTORIES = new Set([".git", ".arkcode", "node_modules"]);
+export const TOOL_NAMES = ["Read", "Write", "Edit", "Grep", "Glob", "Bash"];
+export const READ_TOOL_NAMES = ["Read", "Grep", "Glob"];
+const invocationSchema = z.union([z.object({ command: z.string() }), z.object({ path: z.string() })]);
 
 export function cleanOutput(text: string): string {
   return text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
@@ -229,14 +233,17 @@ export function createTools(options: {
   const check = async (id: string, tool: string, description: string, params: unknown, signal?: AbortSignal) => {
     signal?.throwIfAborted();
     const exactDescription = `${description}\nArguments:\n${JSON.stringify(params)}`;
-    if (!await authorize({ id, tool, description: exactDescription, cwd })) throw new Error("Tool execution denied.");
+    const args = invocationSchema.safeParse(params);
+    const invocation: ApprovalRequest["invocation"] = !args.success ? undefined : "command" in args.data
+      ? { kind: "shell", command: args.data.command, shell: shell.executable }
+      : { kind: "file", path: args.data.path };
+    if (!await authorize({ id, tool, description: exactDescription, cwd, invocation })) throw new Error("Tool execution denied.");
     signal?.throwIfAborted();
   };
-  const pathSchema = Type.Object({ path: Type.Optional(Type.String()) });
-  const read = define("read", "Read workspace text files with one-based offset and bounded line count.", Type.Object({
+  const read = define("Read", "Read workspace text files with one-based offset and bounded line count.", Type.Object({
     path: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })),
   }), async (id, params, signal) => {
-    await check(id, "read", params.path, params, signal);
+    await check(id, "Read", params.path, params, signal);
     const path = await workspacePath(cwd, params.path);
     const lines = (await readText(path)).split(/\r?\n/);
     const start = (params.offset ?? 1) - 1;
@@ -246,10 +253,10 @@ export function createTools(options: {
     if (start + selected.length < lines.length) text += `\n[Continue with offset ${start + selected.length + 1}; ${lines.length} total lines]`;
     return result(text);
   });
-  const write = define("write", "Create or overwrite a workspace text file.", Type.Object({ path: Type.String(), content: Type.String() }), async (id, params, signal) => {
+  const write = define("Write", "Create or overwrite a workspace text file.", Type.Object({ path: Type.String(), content: Type.String() }), async (id, params, signal) => {
     if (Buffer.byteLength(params.content) > MAX_FILE_BYTES) throw new Error("Content exceeds the 2 MiB text limit.");
     await workspacePath(cwd, params.path, true);
-    await check(id, "write", `Write ${params.path}`, params, signal);
+    await check(id, "Write", `Write ${params.path}`, params, signal);
     const path = await workspacePath(cwd, params.path, true);
     await mkdir(dirname(path), { recursive: true });
     signal?.throwIfAborted();
@@ -257,11 +264,11 @@ export function createTools(options: {
     await writeFile(path, params.content, "utf8");
     return result(`Wrote ${params.path}`);
   });
-  const edit = define("edit", "Replace one exact, unique text occurrence in a workspace file.", Type.Object({
+  const edit = define("Edit", "Replace one exact, unique text occurrence in a workspace file.", Type.Object({
     path: Type.String(), oldText: Type.String({ minLength: 1 }), newText: Type.String(),
   }), async (id, params, signal) => {
     await workspacePath(cwd, params.path, true);
-    await check(id, "edit", `Edit ${params.path}`, params, signal);
+    await check(id, "Edit", `Edit ${params.path}`, params, signal);
     const path = await workspacePath(cwd, params.path, true);
     const text = await readText(path);
     const index = text.indexOf(params.oldText);
@@ -273,12 +280,6 @@ export function createTools(options: {
     await workspacePath(cwd, params.path, true);
     await writeFile(path, updated, "utf8");
     return result(`Edited ${params.path}`);
-  });
-  const ls = define("ls", "List workspace directory entries.", pathSchema, async (id, params, signal) => {
-    await check(id, "ls", params.path ?? ".", params, signal);
-    const entries = await readdir(await workspacePath(cwd, params.path ?? "."), { withFileTypes: true });
-    return result(entries.filter((entry) => !SKIP_DIRECTORIES.has(entry.name)).slice(0, 1000)
-      .map((entry) => entry.name + (entry.isDirectory() ? "/" : entry.isSymbolicLink() ? " [symlink]" : "")).join("\n"));
   });
   const collect = async (path: string, signal?: AbortSignal): Promise<string[]> => {
     const files: string[] = [];
@@ -297,15 +298,15 @@ export function createTools(options: {
     else files.push(validated);
     return files;
   };
-  const find = define("find", "Find workspace files by glob pattern, excluding dependency and metadata directories.", Type.Object({ pattern: Type.String(), path: Type.Optional(Type.String()) }), async (id, params, signal) => {
-    await check(id, "find", params.pattern, params, signal);
+  const find = define("Glob", "Find workspace files by glob pattern, excluding dependency and metadata directories.", Type.Object({ pattern: Type.String(), path: Type.Optional(Type.String()) }), async (id, params, signal) => {
+    await check(id, "Glob", params.pattern, params, signal);
     const files = await collect(params.path ?? ".", signal);
     const matches = files.map((path) => relative(cwd, path).split(sep).join("/"))
       .filter((path) => minimatch(path, params.pattern, { matchBase: true, dot: true, nocase: process.platform === "win32" }));
     return result(matches.slice(0, 500).join("\n") + (matches.length > 500 || files.length >= 10000 ? "\n[Search truncated]" : ""));
   });
-  const grep = define("grep", "Search workspace text files using a regular expression; returns file and line locations.", Type.Object({ pattern: Type.String(), path: Type.Optional(Type.String()), ignoreCase: Type.Optional(Type.Boolean()) }), async (id, params, signal) => {
-    await check(id, "grep", params.pattern, params, signal);
+  const grep = define("Grep", "Search workspace text files using a regular expression; returns file and line locations.", Type.Object({ pattern: Type.String(), path: Type.Optional(Type.String()), ignoreCase: Type.Optional(Type.Boolean()) }), async (id, params, signal) => {
+    await check(id, "Grep", params.pattern, params, signal);
     const pattern = new RegExp(params.pattern, params.ignoreCase ? "i" : "");
     const files = await collect(params.path ?? ".", signal);
     const matches: string[] = [];
@@ -327,8 +328,8 @@ export function createTools(options: {
     }
     return result(matches.join("\n") + (skipped ? `\n[Skipped ${skipped} binary, large, protected or unreadable files]` : "") + (files.length >= 10000 ? "\n[File traversal truncated]" : ""));
   });
-  const bash = define("bash", `Run a command in ${shell.executable}. This is an unsandboxed native shell, not necessarily Bash.`, Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 1, maximum: 600 })) }), async (id, params, signal, update) => {
-    await check(id, "bash", `${shell.executable}\n${params.command}`, params, signal);
+  const bash = define("Bash", `Run a command in ${shell.executable} with your OS privileges. Commands are not limited to the workspace restrictions of the file tools.`, Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 1, maximum: 600 })) }), async (id, params, signal, update) => {
+    await check(id, "Bash", `${shell.executable}\n${params.command}`, params, signal);
     const controller = new AbortController();
     const abort = () => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
@@ -343,5 +344,5 @@ export function createTools(options: {
       signal?.removeEventListener("abort", abort);
     }
   });
-  return [read, write, edit, grep, find, ls, bash];
+  return [read, write, edit, grep, find, bash];
 }

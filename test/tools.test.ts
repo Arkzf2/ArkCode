@@ -49,17 +49,17 @@ test("file tools preserve exact edits and reject duplicate or denied writes", as
       assert.ok(tool);
       return executeTool(tool, "call", params);
     };
-    await call("write", { path: "source.txt", content: "first\nsecond\n" });
-    await call("edit", { path: "source.txt", oldText: "second", newText: "changed" });
+    await call("Write", { path: "source.txt", content: "first\nsecond\n" });
+    await call("Edit", { path: "source.txt", oldText: "second", newText: "changed" });
     assert.equal(await readFile(join(files.cwd, "source.txt"), "utf8"), "first\nchanged\n");
-    const read = await call("read", { path: "source.txt", offset: 2, limit: 1 });
+    const read = await call("Read", { path: "source.txt", offset: 2, limit: 1 });
     assert.deepEqual(read, { content: [{ type: "text", text: "2: changed\n[Continue with offset 3; 3 total lines]" }], details: {} });
-    await call("write", { path: "repeat.txt", content: "same same" });
-    await assert.rejects(call("edit", { path: "repeat.txt", oldText: "same", newText: "other" }), /more than once/);
+    await call("Write", { path: "repeat.txt", content: "same same" });
+    await assert.rejects(call("Edit", { path: "repeat.txt", oldText: "same", newText: "other" }), /more than once/);
     await assert.rejects(workspacePath(files.cwd, "../outside.txt"), /limited/);
-    await assert.rejects(call("write", { path: ".git/config", content: "bad" }), /Protected/);
-    await assert.rejects(call("write", { path: ".GIT/config", content: "bad" }), /Protected/);
-    const denied = createTools({ cwd: files.cwd, shell, authorize: async () => false }).find((tool) => tool.name === "write");
+    await assert.rejects(call("Write", { path: ".git/config", content: "bad" }), /Protected/);
+    await assert.rejects(call("Write", { path: ".GIT/config", content: "bad" }), /Protected/);
+    const denied = createTools({ cwd: files.cwd, shell, authorize: async () => false }).find((tool) => tool.name === "Write");
     assert.ok(denied);
     await assert.rejects(executeTool(denied, "denied", { path: "blocked.txt", content: "bad" }), /denied/);
     await assert.rejects(readFile(join(files.cwd, "blocked.txt")), /ENOENT/);
@@ -87,7 +87,7 @@ test("find supports globstar, character classes and brace alternatives", async (
     await writeFile(join(files.cwd, "src", "a.ts"), "export const a = 1;");
     await writeFile(join(files.cwd, "src", "b.js"), "export const b = 1;");
     await writeFile(join(files.cwd, "src", "c.txt"), "text");
-    const find = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "find");
+    const find = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Glob");
     assert.ok(find);
     const output = await executeTool(find, "glob", { pattern: "**/[ab].{ts,js}" });
     assert.deepEqual(output, { content: [{ type: "text", text: "src/a.ts\nsrc/b.js" }], details: {} });
@@ -100,8 +100,8 @@ test("approval requests identify exact write content and shell timeout", async (
   const requests: ApprovalRequest[] = [];
   try {
     const tools = createTools({ cwd: files.cwd, shell, authorize: async (request) => { requests.push(request); return false; } });
-    const write = tools.find((tool) => tool.name === "write");
-    const bash = tools.find((tool) => tool.name === "bash");
+    const write = tools.find((tool) => tool.name === "Write");
+    const bash = tools.find((tool) => tool.name === "Bash");
     assert.ok(write);
     assert.ok(bash);
     await assert.rejects(executeTool(write, "first", { path: "file.txt", content: "first" }), /denied/);
@@ -140,7 +140,7 @@ test("bash timeout and nonzero exit report a failed tool result", { timeout: 150
   const files = await fixture();
   const shell = new ManagedShell(files.cwd);
   try {
-    const bash = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "bash");
+    const bash = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Bash");
     assert.ok(bash);
     const failedReceipt = z.object({ isError: z.literal(true), content: z.array(z.object({ type: z.literal("text"), text: z.string() })), details: z.object({ exitCode: z.number().nullable(), status: z.string() }) });
     const failure = failedReceipt.parse(await executeTool(bash, "failure", { command: "node -e \"process.exit(9)\"" }));

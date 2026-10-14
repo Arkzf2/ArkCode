@@ -1,0 +1,106 @@
+import { release, type as osType } from "node:os";
+import { z } from "zod";
+import type { AgentSession, ExtensionFactory, ResourceLoader } from "@earendil-works/pi-coding-agent";
+import { readInstructions } from "./config.js";
+import { getBranch } from "./review.js";
+
+export const CONTEXT_MESSAGE = "arkcode-context";
+const environmentSchema = z.object({
+  cwd: z.string(), platform: z.string(), os: z.string(), shell: z.string(),
+  current_date: z.string(), timezone: z.string(), git_branch: z.string(),
+  execution: z.enum(["available", "inspection-only"]),
+});
+const snapshotSchema = z.object({ environment: environmentSchema, agents: z.array(z.object({ path: z.string(), content: z.string() })) });
+const disclosureSchema = z.object({ version: z.literal(1), kind: z.enum(["full", "diff"]), snapshot: snapshotSchema });
+export type ContextSnapshot = z.infer<typeof snapshotSchema>;
+type CustomMessage = Extract<AgentSession["messages"][number], { role: "custom" }>;
+
+function xml(text: string): string { return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); }
+
+function renderEnvironment(environment: Partial<ContextSnapshot["environment"]>): string {
+  return `<environment_context>\n${Object.entries(environment).map(([key, value]) => `<${key}>${xml(value)}</${key}>`).join("\n")}\n</environment_context>`;
+}
+
+function renderAgents(agents: ContextSnapshot["agents"]): string {
+  const files = agents.map((file) => `<instructions path="${xml(file.path)}">\n${xml(file.content)}\n</instructions>`).join("\n");
+  return `<project_instructions>\nThese replace all previously supplied project instructions. Earlier sources omitted below no longer apply. More specific directory instructions apply within their scope.\n${files || "No trusted project instructions apply."}\n</project_instructions>`;
+}
+
+export function renderFull(snapshot: ContextSnapshot): string {
+  return `${renderEnvironment(snapshot.environment)}\n${renderAgents(snapshot.agents)}`;
+}
+
+export function renderDiff(previous: ContextSnapshot, current: ContextSnapshot): string | undefined {
+  const environment = Object.fromEntries(Object.entries(current.environment).filter(([key, value]) => Reflect.get(previous.environment, key) !== value));
+  const parts: string[] = [];
+  if (Object.keys(environment).length) parts.push(renderEnvironment(environment));
+  if (JSON.stringify(previous.agents) !== JSON.stringify(current.agents)) parts.push(renderAgents(current.agents));
+  return parts.length ? parts.join("\n") : undefined;
+}
+
+export function contextUpdate(messages: AgentSession["messages"], snapshot: ContextSnapshot): CustomMessage | undefined {
+  let previous: ContextSnapshot | undefined;
+  for (const message of messages) {
+    if (message.role !== "custom" || message.customType !== CONTEXT_MESSAGE) continue;
+    const parsed = disclosureSchema.safeParse(message.details);
+    if (!parsed.success) continue;
+    if (parsed.data.kind === "full" || previous) previous = parsed.data.snapshot;
+  }
+  const content = previous ? renderDiff(previous, snapshot) : renderFull(snapshot);
+  if (!content) return undefined;
+  return { role: "custom", customType: CONTEXT_MESSAGE, content, display: false, timestamp: Date.now(),
+    details: { version: 1, kind: previous ? "diff" : "full", snapshot } };
+}
+
+export function installDynamicContext(session: AgentSession, options: {
+  cwd: string; shell: string; trusted: boolean; executionBlocked: () => boolean;
+  now?: () => Date; timezone?: () => string;
+}): void {
+  const prior = session.agent.prepareRequest;
+  const os = `${osType()} ${release()}`;
+  session.agent.prepareRequest = async (request, signal) => {
+    signal?.throwIfAborted();
+    const prepared = await prior?.(request, signal);
+    const context = prepared?.context ?? request.context;
+    const timezone = options.timezone?.() ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+    const snapshot: ContextSnapshot = {
+      environment: {
+        cwd: options.cwd, platform: process.platform, os, shell: options.shell,
+        current_date: new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(options.now?.() ?? new Date()),
+        timezone, git_branch: await getBranch(options.cwd), execution: options.executionBlocked() ? "inspection-only" : "available",
+      },
+      agents: options.trusted ? readInstructions(options.cwd) : [],
+    };
+    signal?.throwIfAborted();
+    const message = contextUpdate(context.messages, snapshot);
+    if (!message) return prepared ?? undefined;
+    // Append to both durable history and the live request. No UI lifecycle event is emitted.
+    const id = session.sessionManager.appendCustomMessageEntry(message.customType, message.content, false, message.details);
+    const entry = session.sessionManager.getEntry(id);
+    if (entry) message.timestamp = new Date(entry.timestamp).getTime();
+    const messages = [...context.messages, message];
+    session.agent.state.messages = messages;
+    return { ...prepared, context: { ...context, messages } };
+  };
+}
+
+export const compactionTracking: ExtensionFactory = (pi) => {
+  pi.on("session_before_compact", (event) => {
+    const { fileOps, messagesToSummarize, turnPrefixMessages } = event.preparation;
+    for (const message of [...messagesToSummarize, ...turnPrefixMessages]) {
+      if (message.role !== "assistant") continue;
+      for (const block of message.content) {
+        if (block.type !== "toolCall") continue;
+        const path = z.object({ path: z.string() }).safeParse(block.arguments);
+        if (!path.success) continue;
+        if (block.name === "Read") fileOps.read.add(path.data.path);
+        else if (block.name === "Write") fileOps.written.add(path.data.path);
+        else if (block.name === "Edit") fileOps.edited.add(path.data.path);
+      }
+    }
+  });
+};
+
+export function withoutProjectSystem(resources: ResourceLoader): ResourceLoader {
+  return { ...resources, getAgentsFiles: () => ({ agentsFiles: [] }) };
+}

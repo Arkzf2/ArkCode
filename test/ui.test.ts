@@ -37,7 +37,7 @@ const idle: Status = {
   model: "deepseek/deepseek-chat",
   thinking: "medium",
   cwd: "D:/ArkCode/a-long-directory-name",
-  permission: "ask",
+  permission: "always-ask",
   branch: "main",
   context: "1,024 / 128,000",
   state: { kind: "idle", outcome: null },
@@ -358,7 +358,7 @@ test("status and Markdown fit narrow and wide terminal cells", async (t) => {
     ui.start();
     await setTimeout(50);
     const text = terminal.text();
-    for (const value of [idle.model, idle.thinking, idle.cwd, "Ask for approval", idle.branch, idle.context]) {
+    for (const value of [idle.model, idle.thinking, idle.cwd, "Always Ask", idle.branch, idle.context]) {
       assert.ok(text.replace(/\s+/g, "").includes(value.replace(/\s+/g, "")), `${value} is missing at ${width} columns`);
     }
     assert.doesNotMatch(text, /Model deepseek|Thinking medium|Permissions ask|Branch main/);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,6 +12,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { parseCli } from "../src/args.js";
 import { ArkHost } from "../src/runtime.js";
 import { ApprovalBroker } from "../src/approval.js";
+import { CONTEXT_MESSAGE } from "../src/context.js";
 import { inspectSession, WorkspaceLease, writeRunMarker } from "../src/storage.js";
 import type { ApprovalDecision, ApprovalRequest, Choice, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/domain.js";
 
@@ -115,7 +116,7 @@ function stream(response: ServerResponse, reply: Reply, index: number): void {
   response.end("data: [DONE]\n\n");
 }
 
-async function fixture(t: TestContext, respond: (request: ModelRequest, index: number) => Reply | Promise<Reply>, imageInput = false) {
+async function fixture(t: TestContext, respond: (request: ModelRequest, index: number) => Reply | Promise<Reply>, imageInput = false, contextWindow = 128000) {
   const directory = await mkdtemp(join(tmpdir(), "arkcode-runtime-"));
   const cwd = join(directory, "workspace");
   const home = join(directory, "home");
@@ -143,14 +144,14 @@ async function fixture(t: TestContext, respond: (request: ModelRequest, index: n
   await writeFile(join(home, "models.json"), JSON.stringify({ providers: { fixture: {
     baseUrl: `http://127.0.0.1:${address.port}/v1`, api: "openai-completions", apiKey: "fixture-key",
     models: [
-      { id: "test", name: "Local test model", reasoning: false, input: imageInput ? ["text", "image"] : ["text"], contextWindow: 128000, maxTokens: 4096 },
+      { id: "test", name: "Local test model", reasoning: false, input: imageInput ? ["text", "image"] : ["text"], contextWindow, maxTokens: 4096 },
       { id: "alternate", name: "Alternate test model", reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 4096 },
     ],
   } } }));
   await writeFile(join(home, "settings.json"), JSON.stringify({ provider: "fixture", model: "test", thinking: "off", trustedWorkspaces: [cwd] }));
   const hosts: ArkHost[] = [];
   const start = async (ui = new RecordingUI(), args: string[] = []) => {
-    const host = new ArkHost(parseCli(["--cwd", cwd, "--home", home, "--model", "fixture/test", "--permissions", "full-access", ...args]), ui);
+    const host = new ArkHost(parseCli(["--cwd", cwd, "--home", home, "--model", "fixture/test", "--permissions", "never-ask", ...args]), ui);
     hosts.push(host);
     await host.start();
     return { host, ui };
@@ -232,7 +233,7 @@ test("a new session asks for a model instead of letting Pi silently choose one",
     }
   }
   const ui = new ModelUI();
-  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--permissions", "full-access"]), ui);
+  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--permissions", "never-ask"]), ui);
   t.after(() => host.exit());
   await host.start();
   assert.equal(ui.choices, 1);
@@ -243,7 +244,7 @@ test("a new session asks for a model instead of letting Pi silently choose one",
 test("print mode without an explicit or saved model stops before creating a session", async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
   await writeFile(join(f.home, "settings.json"), JSON.stringify({ thinking: "off", trustedWorkspaces: [f.cwd] }));
-  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--print", "--permissions", "full-access"]), new RecordingUI());
+  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--print", "--permissions", "never-ask"]), new RecordingUI());
   t.after(() => host.exit());
   await assert.rejects(host.start(), /Select a model with --model or arkcode config/);
   assert.equal((await readdir(join(f.home, "sessions"), { recursive: true }).catch(() => [])).filter((name) => name.endsWith(".jsonl")).length, 0);
@@ -263,7 +264,7 @@ test("session browser retains the current Agent and draft after a failed cross-p
     corrupt = true;
     calls = 0;
     seen: SessionItem[] = [];
-    async choose(): Promise<string> { return "read-only"; }
+    async choose(): Promise<string> { return "continue"; }
     async browseSessions(items: SessionItem[], details?: (item: SessionItem) => Promise<SessionDetails>): Promise<SessionBrowserResult | null> {
       this.calls++;
       this.seen = items;
@@ -293,7 +294,8 @@ test("session browser retains the current Agent and draft after a failed cross-p
   assert.equal(host.cwd, other);
   assert.equal(ui.draft(), "Preserve this draft");
   assert.ok(ui.messages.some((item) => item.kind === "user" && item.text === "Sound history"));
-  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(ui.statuses.at(-1)?.permission, "never-ask");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, false);
 });
 
 test("session center new creates in the selected project with a fresh workspace lease", { timeout: 30000 }, async (t) => {
@@ -304,7 +306,7 @@ test("session center new creates in the selected project with a fresh workspace 
   const saved = SessionManager.create(other, join(f.home, "sessions", encoded));
   saved.appendMessage({ role: "user", content: "Earlier task", timestamp: Date.now() });
   class NewUI extends RecordingUI {
-    async choose(): Promise<string> { return "read-only"; }
+    async choose(): Promise<string> { return "continue"; }
     async browseSessions(items: SessionItem[]): Promise<SessionBrowserResult | null> {
       assert.ok(items.some((item) => item.cwd === other && item.path));
       return { kind: "new", cwd: other };
@@ -316,7 +318,8 @@ test("session center new creates in the selected project with a fresh workspace 
   await host.browseSessions();
   assert.equal(host.cwd, other);
   assert.equal(ui.draft(), "Keep writing here");
-  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(ui.statuses.at(-1)?.permission, "never-ask");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, false);
   assert.equal(ui.messages.some((entry) => entry.kind === "user" && entry.text === "Earlier task"), false);
 });
 
@@ -371,10 +374,10 @@ test("removed commands are rejected without running the agent, while @ reference
 test("a streamed agent turn reads, writes, edits and executes the native shell", { timeout: 30000 }, async (t) => {
   const shell = process.platform === "win32" ? "[Console]::Write('shell verified')" : "printf 'shell verified'";
   const replies: Reply[] = [
-    { kind: "tool", name: "read", arguments: { path: "input.txt" } },
-    { kind: "tool", name: "write", arguments: { path: "result.txt", content: "before\n" } },
-    { kind: "tool", name: "edit", arguments: { path: "result.txt", oldText: "before", newText: "after" } },
-    { kind: "tool", name: "bash", arguments: { command: shell } },
+    { kind: "tool", name: "Read", arguments: { path: "input.txt" } },
+    { kind: "tool", name: "Write", arguments: { path: "result.txt", content: "before\n" } },
+    { kind: "tool", name: "Edit", arguments: { path: "result.txt", oldText: "before", newText: "after" } },
+    { kind: "tool", name: "Bash", arguments: { command: shell } },
     { kind: "text", text: "Verified all changes." },
   ];
   const f = await fixture(t, (_request, index) => {
@@ -387,8 +390,8 @@ test("a streamed agent turn reads, writes, edits and executes the native shell",
   assert.equal(await readFile(join(f.cwd, "result.txt"), "utf8"), "after\n");
   assert.equal(ui.deltas, "Verified all changes.");
   assert.deepEqual(ui.tools.filter((tool) => tool.state === "running" && tool.text === "").map((tool) => tool.details?.target), ["input.txt", "result.txt", "result.txt", shell]);
-  assert.ok(ui.tools.some((tool) => tool.name === "read" && tool.state === "done" && tool.text.includes("1: source evidence")));
-  assert.ok(ui.tools.some((tool) => tool.name === "bash" && tool.state === "done" && tool.text.includes("shell verified") && tool.text.includes("exit code 0")));
+  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("1: source evidence")));
+  assert.ok(ui.tools.some((tool) => tool.name === "Bash" && tool.state === "done" && tool.text.includes("shell verified") && tool.text.includes("exit code 0")));
   const lastRequest = f.requests.at(-1); assert.ok(lastRequest);
   assert.ok(lastRequest.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("Edited result.txt")));
   const saved = await f.sessions(); assert.equal(saved.length, 1);
@@ -419,7 +422,7 @@ test("actual provider reasoning reaches the transcript with a stable identity an
 test("failed shell receipts retain the exit code in the TUI and restored history", { timeout: 30000 }, async (t) => {
   const command = 'node -e "process.exit(9)"';
   const f = await fixture(t, (_request, index) => index === 0
-    ? { kind: "tool", name: "bash", arguments: { command } }
+    ? { kind: "tool", name: "Bash", arguments: { command } }
     : { kind: "text", text: "The command failed with exit code 9." });
   const { host, ui } = await f.start();
   await host.submit("Run the diagnostic command.");
@@ -466,49 +469,50 @@ test("an active first-run marker without history keeps the workspace read-only",
   });
   await assert.rejects(f.sessions(), { code: "ENOENT" });
   const { host, ui } = await f.start();
-  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
   assert.ok(ui.messages.some((message) => message.text.includes("Execution unconfirmed")));
   await host.submit("/permissions full-access");
-  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
   await host.submit("/new");
   await host.submit("!echo must-not-execute");
   assert.equal(ui.tools.length, 0);
   assert.equal(f.requests.length, 0);
   await host.submit("Inspect only.");
   assert.equal(host.outcome, "completed");
-  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["find", "grep", "ls", "read"]);
+  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["Bash", "Edit", "Glob", "Grep", "Read", "Write"]);
 });
 
 test("denied writes return a tool error and the agent can continue", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => index === 0
-    ? { kind: "tool", name: "write", arguments: { path: "denied.txt", content: "must not exist" } }
+    ? { kind: "tool", name: "Write", arguments: { path: "denied.txt", content: "must not exist" } }
     : { kind: "text", text: "Write was denied." });
   const ui = new RecordingUI(async () => "deny");
-  const { host } = await f.start(ui, ["--permissions", "ask"]);
+  const { host } = await f.start(ui, ["--permissions", "always-ask"]);
   await host.submit("Write a file.");
-  assert.equal(ui.approvals[0]?.tool, "write");
-  assert.ok(ui.tools.some((tool) => tool.name === "write" && tool.state === "error" && tool.text.includes("denied")));
+  assert.equal(ui.approvals[0]?.tool, "Write");
+  assert.ok(ui.tools.some((tool) => tool.name === "Write" && tool.state === "error" && tool.text.includes("denied")));
   await assert.rejects(readFile(join(f.cwd, "denied.txt")), { code: "ENOENT" });
   assert.equal(ui.answers.at(-1), "Write was denied.");
   assert.equal(host.outcome, "completed");
 });
 
-test("read-only agents can inspect files and cannot execute a model-requested write", { timeout: 30000 }, async (t) => {
+test("unconfirmed agents retain six tools but can only inspect files", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => {
-    if (index === 0) return { kind: "tool", name: "read", arguments: { path: "input.txt" } };
-    if (index === 1) return { kind: "tool", name: "write", arguments: { path: "denied.txt", content: "must not exist" } };
+    if (index === 0) return { kind: "tool", name: "Read", arguments: { path: "input.txt" } };
+    if (index === 1) return { kind: "tool", name: "Write", arguments: { path: "denied.txt", content: "must not exist" } };
     return { kind: "text", text: "Inspection complete. Writing unavailable." };
   });
   await writeFile(join(f.cwd, "input.txt"), "read-only evidence\n");
-  const { host, ui } = await f.start(new RecordingUI(), ["--permissions", "read-only"]);
+  await writeRunMarker(f.home, "unpersisted-session", { status: "active", runId: "unconfirmed", startedAt: Date.now(), pid: process.pid, cwd: f.cwd });
+  const { host, ui } = await f.start();
   await host.submit("Inspect the input");
   assert.equal(host.outcome, "completed");
-  assert.ok(ui.tools.some((tool) => tool.name === "read" && tool.state === "done" && tool.text.includes("1: read-only evidence")));
+  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("1: read-only evidence")));
   assert.equal(ui.approvals.length, 0);
-  assert.ok(ui.tools.some((tool) => tool.name === "write" && tool.state === "error"));
+  assert.ok(ui.tools.some((tool) => tool.name === "Write" && tool.state === "error"));
   await assert.rejects(readFile(join(f.cwd, "denied.txt")), { code: "ENOENT" });
   assert.equal(ui.answers.at(-1), "Inspection complete. Writing unavailable.");
-  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["find", "grep", "ls", "read"]);
+  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["Bash", "Edit", "Glob", "Grep", "Read", "Write"]);
 });
 
 test("steering and follow-up inputs are consumed by the real agent queue", { timeout: 30000 }, async (t) => {
@@ -535,9 +539,9 @@ test("steering and follow-up inputs are consumed by the real agent queue", { tim
 });
 
 test("interrupting pending approval restores queued inputs and prevents the write", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, () => ({ kind: "tool", name: "write", arguments: { path: "cancelled.txt", content: "must not exist" } }));
+  const f = await fixture(t, () => ({ kind: "tool", name: "Write", arguments: { path: "cancelled.txt", content: "must not exist" } }));
   const ui = new RecordingUI(() => new Promise<ApprovalDecision>(() => {}));
-  const { host } = await f.start(ui, ["--permissions", "ask"]);
+  const { host } = await f.start(ui, ["--permissions", "always-ask"]);
   const run = host.submit("Start a write");
   await until(() => ui.statuses.at(-1)?.state.kind === "awaiting-approval");
   await host.submit("Pending steering", "steer");
@@ -553,7 +557,7 @@ test("interrupting pending approval restores queued inputs and prevents the writ
 
 test("resume and fork preserve conversation history without replaying tools", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => index === 0
-    ? { kind: "tool", name: "write", arguments: { path: "result.txt", content: "first result" } }
+    ? { kind: "tool", name: "Write", arguments: { path: "result.txt", content: "first result" } }
     : { kind: "text", text: "Original completed answer." });
   const original = await f.start();
   await original.host.submit("Create one result");
@@ -720,9 +724,9 @@ test("a user shell queued during a turn runs afterward and persists its result",
 });
 
 test("interrupt restores queued local commands without executing them", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, () => ({ kind: "tool", name: "write", arguments: { path: "blocked.txt", content: "blocked mutation" } }));
+  const f = await fixture(t, () => ({ kind: "tool", name: "Write", arguments: { path: "blocked.txt", content: "blocked mutation" } }));
   const ui = new RecordingUI(() => new Promise<ApprovalDecision>(() => {}));
-  const { host } = await f.start(ui, ["--permissions", "ask"]);
+  const { host } = await f.start(ui, ["--permissions", "always-ask"]);
   const run = host.submit("Wait for approval");
   await until(() => ui.statuses.at(-1)?.state.kind === "awaiting-approval");
   const command = process.platform === "win32" ? "Set-Content -Path queued.txt -Value 'must not execute'" : "printf 'must not execute' > queued.txt";
@@ -741,7 +745,7 @@ test("interrupt restores queued local commands without executing them", { timeou
 test("new sessions cannot bypass the unconfirmed execution permission gate", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => {
     if (index === 0) return { kind: "text", text: "Saved original history." };
-    if (index === 1) return { kind: "tool", name: "write", arguments: { path: "recovery.txt", content: "forbidden during recovery" } };
+    if (index === 1) return { kind: "tool", name: "Write", arguments: { path: "recovery.txt", content: "forbidden during recovery" } };
     throw new Error("Recovery actions must not send another model request.");
   });
   const original = await f.start();
@@ -752,20 +756,20 @@ test("new sessions cannot bypass the unconfirmed execution permission gate", { t
   await writeRunMarker(f.home, saved.id, { status: "active", runId: "unconfirmed-run", startedAt: 123, pid: process.pid });
   const { host, ui } = await f.start(new RecordingUI(), ["resume", "--last"]);
   assert.equal(host.outcome, "interrupted");
-  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
   assert.ok(ui.messages.some((message) => message.kind === "assistant" && message.text === "Saved original history."));
   assert.ok(ui.messages.some((message) => message.kind === "error" && message.text.includes("Execution unconfirmed.")));
   assert.equal(f.requests.length, 1);
   for (const command of ["/permissions ask", "/permissions full-access"]) await host.submit(command);
-  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
   await assert.rejects(readFile(join(f.cwd, "recovery.txt")), { code: "ENOENT" });
   await host.submit("/fork");
   await host.submit("/permissions ask");
-  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
   assert.equal(ui.messages.filter((message) => message.kind === "error" && message.text.startsWith("Execution unconfirmed.")).length, 4);
   await host.submit("/new");
   await host.submit("/permissions ask");
-  assert.equal(ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
   assert.equal(ui.messages.filter((message) => message.kind === "error" && message.text.startsWith("Execution unconfirmed.")).length, 5);
   await host.submit("!echo must remain blocked");
   assert.equal(host.outcome, "failed");
@@ -775,9 +779,9 @@ test("new sessions cannot bypass the unconfirmed execution permission gate", { t
   await assert.rejects(readFile(join(f.cwd, "recovery.txt")), { code: "ENOENT" });
   await host.exit();
   const restarted = await f.start();
-  assert.equal(restarted.ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(restarted.ui.statuses.at(-1)?.executionBlocked, true);
   await restarted.host.submit("/permissions full-access");
-  assert.equal(restarted.ui.statuses.at(-1)?.permission, "read-only");
+  assert.equal(restarted.ui.statuses.at(-1)?.executionBlocked, true);
   assert.equal(f.requests.length, 1);
 });
 
@@ -812,13 +816,13 @@ for (const command of ["/new", "/resume --last", "/fork"]) {
 
 test("session approval grants apply only to the same tool, cwd and exact operation", async () => {
   const ui: RecordingUI = new RecordingUI(async (): Promise<ApprovalDecision> => ui.approvals.length === 1 ? "session" : "deny");
-  const broker = new ApprovalBroker(ui, () => "ask", () => {});
-  const request: ApprovalRequest = { id: "first", tool: "write", cwd: "/workspace", description: "Write file.txt\ncontent A" };
+  const broker = new ApprovalBroker(ui, () => "always-ask", () => {});
+  const request: ApprovalRequest = { id: "first", tool: "Write", cwd: "/workspace", description: "Write file.txt\ncontent A" };
   assert.equal(await broker.authorize(request), true);
   assert.equal(await broker.authorize({ ...request, id: "another-call" }), true);
   assert.equal(ui.approvals.length, 1);
   assert.equal(await broker.authorize({ ...request, id: "content-change", description: "Write file.txt\ncontent B" }), false);
-  assert.equal(await broker.authorize({ ...request, id: "tool-change", tool: "edit" }), false);
+  assert.equal(await broker.authorize({ ...request, id: "tool-change", tool: "Edit" }), false);
   assert.equal(await broker.authorize({ ...request, id: "cwd-change", cwd: "/another-workspace" }), false);
   assert.equal(ui.approvals.length, 4);
   assert.equal(await broker.authorize(request), true);
@@ -832,8 +836,8 @@ test("cancelled approvals ignore late session grants and require fresh approval"
   const late = new Promise<ApprovalDecision>((resolve) => { resolveLate = resolve; });
   const ui: RecordingUI = new RecordingUI(async (): Promise<ApprovalDecision> => ui.approvals.length === 1 ? late : "deny");
   const changes: Array<ApprovalRequest | null> = [];
-  const broker = new ApprovalBroker(ui, () => "ask", (request) => changes.push(request));
-  const request: ApprovalRequest = { id: "cancelled", tool: "bash", cwd: "/workspace", description: "echo command" };
+  const broker = new ApprovalBroker(ui, () => "always-ask", (request) => changes.push(request));
+  const request: ApprovalRequest = { id: "cancelled", tool: "Bash", cwd: "/workspace", description: "echo command" };
   const pending = broker.authorize(request);
   broker.cancel();
   assert.equal(await pending, false);
@@ -846,20 +850,173 @@ test("cancelled approvals ignore late session grants and require fresh approval"
 });
 
 test("permission changes invalidate pending approval decisions", async () => {
-  let permission: Permission = "ask";
+  let permission: Permission = "always-ask";
   let resolveDecision: (decision: ApprovalDecision) => void = () => {};
   const decision = new Promise<ApprovalDecision>((resolve) => { resolveDecision = resolve; });
   const ui: RecordingUI = new RecordingUI(async (): Promise<ApprovalDecision> => ui.approvals.length === 1 ? decision : "once");
   const broker = new ApprovalBroker(ui, () => permission, () => {});
-  const request: ApprovalRequest = { id: "permission-change", tool: "write", cwd: "/workspace", description: "Write output.txt\ncontent" };
+  const request: ApprovalRequest = { id: "permission-change", tool: "Write", cwd: "/workspace", description: "Write output.txt\ncontent" };
   const pending = broker.authorize(request);
-  permission = "read-only";
+  permission = "ask-when-needed";
   resolveDecision("session");
   assert.equal(await pending, false);
-  assert.equal(await broker.authorize(request), false);
-  permission = "ask";
+  assert.equal(await broker.authorize(request), true);
+  permission = "always-ask";
   assert.equal(await broker.authorize({ ...request, id: "fresh" }), true);
   assert.equal(ui.approvals.length, 2);
   assert.equal(await broker.authorize({ ...request, id: "once-needs-another-approval" }), true);
   assert.equal(ui.approvals.length, 3);
+});
+
+test("permission modes keep the same tool schemas and append-only hidden context across turns", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  await writeFile(join(f.cwd, "AGENTS.md"), "Project instruction A.");
+  await mkdir(join(f.cwd, ".pi", "extensions"), { recursive: true });
+  await writeFile(join(f.cwd, ".pi", "extensions", "malicious.ts"), "throw new Error('project extensions must stay disabled');");
+  const { host, ui } = await f.start(new RecordingUI(), ["--permissions", "always-ask"]);
+  await host.submit("First task");
+  const first = f.requests[0]; assert.ok(first);
+  assert.deepEqual(first.tools?.map((tool) => tool.function.name), ["Read", "Write", "Edit", "Grep", "Glob", "Bash"]);
+  const context = first.messages.filter((message) => JSON.stringify(message.content).includes("<environment_context>"));
+  assert.equal(context.length, 1);
+  assert.equal(context[0]?.role, "user");
+  assert.doesNotMatch(JSON.stringify(first.messages), /sandbox/i);
+  assert.doesNotMatch(JSON.stringify(ui.messages), /sandbox/i);
+  assert.match(JSON.stringify(context), /Project instruction A/);
+  assert.doesNotMatch(JSON.stringify(first.messages.filter((message) => message.role === "system")), /Project instruction A|<current_date>/);
+
+  await host.submit("/permissions ask-when-needed");
+  await host.submit("Second task");
+  const second = f.requests[1]; assert.ok(second);
+  assert.deepEqual(second.tools, first.tools);
+  assert.deepEqual(second.messages.slice(0, first.messages.length), first.messages);
+  assert.equal(second.messages.filter((message) => JSON.stringify(message.content).includes("<environment_context>")).length, 1);
+  await writeFile(join(f.cwd, "AGENTS.md"), "Project instruction B.");
+  await host.submit("/permissions never-ask");
+  await host.submit("Third task");
+  const third = f.requests[2]; assert.ok(third);
+  assert.deepEqual(third.tools, first.tools);
+  assert.deepEqual(third.messages.slice(0, second.messages.length), second.messages);
+  assert.match(JSON.stringify(third.messages.at(-1)?.content), /Project instruction B/);
+  assert.doesNotMatch(JSON.stringify(third.messages.at(-1)?.content), /<cwd>/);
+  await unlink(join(f.cwd, "AGENTS.md"));
+  await host.submit("Fourth task");
+  assert.match(JSON.stringify(f.requests[3]?.messages.at(-1)?.content), /No trusted project instructions apply/);
+  assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text), ["First task", "Second task", "Third task", "Fourth task"]);
+  const paths = await f.sessions(); assert.equal(paths.length, 1);
+  const saved = SessionManager.open(paths[0] ?? "").getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === CONTEXT_MESSAGE);
+  assert.equal(saved.length, 3);
+  assert.ok(saved.every((entry) => entry.type === "custom_message" && !entry.display));
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.ok(!JSON.stringify(resumed.ui.messages).includes("environment_context"));
+  await writeFile(join(f.cwd, "AGENTS.md"), "Restored project instructions.");
+  await resumed.host.submit("Continue restored task");
+  assert.match(JSON.stringify(f.requests[4]?.messages.at(-1)?.content), /Restored project instructions/);
+  await resumed.host.submit("/fork");
+  await writeFile(join(f.cwd, "AGENTS.md"), "Forked project instructions.");
+  await resumed.host.submit("Continue fork");
+  assert.match(JSON.stringify(f.requests[5]?.messages.at(-1)?.content), /Forked project instructions/);
+  await resumed.host.submit("/new");
+  await resumed.host.submit("New task");
+  const last = f.requests.at(-1); assert.ok(last);
+  assert.match(JSON.stringify(last.messages.at(-1)?.content), /<cwd>|Forked project instructions/);
+  assert.doesNotMatch(JSON.stringify(last.messages), /First task/);
+});
+
+test("Ask When Needed executes ordinary writes, edits and shell commands without approvals", { timeout: 30000 }, async (t) => {
+  const replies: Reply[] = [
+    { kind: "tool", name: "Write", arguments: { path: "automatic.txt", content: "before" } },
+    { kind: "tool", name: "Edit", arguments: { path: "automatic.txt", oldText: "before", newText: "after" } },
+    { kind: "tool", name: "Bash", arguments: { command: "node --version" } },
+    { kind: "text", text: "Done." },
+  ];
+  const f = await fixture(t, (_request, index) => { const reply = replies[index]; assert.ok(reply); return reply; });
+  const { host, ui } = await f.start(new RecordingUI(async () => "deny"), ["--permissions", "ask-when-needed"]);
+  await host.submit("Make and verify the change");
+  assert.equal(host.outcome, "completed");
+  assert.equal(await readFile(join(f.cwd, "automatic.txt"), "utf8"), "after");
+  assert.equal(ui.approvals.length, 0);
+});
+
+test("finite danger policy precedes session grants, Never Ask skips approval and Always Ask exempts ls", async () => {
+  const ui = new RecordingUI(async () => "session");
+  let permission: Permission = "always-ask";
+  const broker = new ApprovalBroker(ui, () => permission, () => {});
+  const request = (command: string): ApprovalRequest => ({ id: command, tool: "Bash", cwd: "/workspace", description: command, invocation: { kind: "shell", command, shell: "/bin/sh" } });
+  for (const tool of ["Read", "Grep", "Glob"]) assert.equal(await broker.authorize({ id: tool, tool, cwd: "/workspace", description: "inspect" }), true);
+  assert.equal(await broker.authorize(request("ls -la")), true);
+  assert.equal(ui.approvals.length, 0);
+  assert.equal(await broker.authorize(request("echo hello")), true);
+  assert.equal(await broker.authorize(request("echo hello")), true);
+  assert.equal(ui.approvals.length, 1);
+  assert.equal(await broker.authorize(request("ls > generated.txt")), true);
+  assert.equal(ui.approvals.length, 2);
+  permission = "ask-when-needed";
+  assert.equal(await broker.authorize(request("shutdown now")), true);
+  assert.equal(await broker.authorize(request("shutdown now")), true);
+  assert.equal(ui.approvals.length, 4);
+  assert.equal(await broker.authorize(request("echo '")), true);
+  assert.equal(ui.approvals.length, 4);
+  permission = "never-ask";
+  assert.equal(await broker.authorize(request("shutdown now")), true);
+  assert.equal(ui.approvals.length, 4);
+});
+
+test("mode changes during asynchronous command inspection cannot authorize a stale call", async () => {
+  const ui = new RecordingUI();
+  let permission: Permission = "always-ask";
+  const broker = new ApprovalBroker(ui, () => permission, () => {});
+  const pending = broker.authorize({ id: "stale", tool: "Bash", cwd: "/workspace", description: "ls", invocation: { kind: "shell", command: "ls", shell: "/bin/sh" } });
+  permission = "never-ask";
+  broker.reset();
+  assert.equal(await pending, false);
+  assert.equal(ui.approvals.length, 0);
+});
+
+test("manual compact preserves uppercase file tracking and refreshes hidden context when its anchor is removed", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (_request, index) => {
+    if (index === 0) return { kind: "tool", name: "Write", arguments: { path: "tracked.txt", content: "saved" } };
+    if (index === 1) return { kind: "text", text: "Earlier detailed evidence. ".repeat(5000) };
+    return { kind: "text", text: "Summary or completed answer." };
+  });
+  await writeFile(join(f.cwd, "AGENTS.md"), "Instructions before compact.");
+  const { host, ui } = await f.start();
+  await host.submit("Create the tracked file");
+  await host.submit("Keep a recent turn");
+  await host.submit("/compact");
+  assert.equal(host.outcome, "completed");
+  const paths = await f.sessions();
+  const entries = SessionManager.open(paths[0] ?? "").getBranch();
+  const compact = entries.findLast((entry) => entry.type === "compaction");
+  assert.ok(compact?.type === "compaction");
+  assert.match(compact.summary, /<modified-files>\ntracked.txt/);
+  await writeFile(join(f.cwd, "AGENTS.md"), "Instructions after compact.");
+  await host.submit("Continue after compact");
+  const request = f.requests.at(-1); assert.ok(request);
+  const context = request.messages.at(-1);
+  assert.equal(context?.role, "user");
+  assert.match(JSON.stringify(context?.content), /<cwd>/);
+  assert.match(JSON.stringify(context?.content), /Instructions after compact/);
+  assert.equal(ui.messages.some((message) => message.text.includes("<environment_context>")), false);
+});
+
+test("automatic compact during tool continuation reinjects current context before the next conversational request", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (_request, index) => index === 0
+    ? { kind: "tool", name: "Read", arguments: { path: "large.txt", limit: 2000 } }
+    : { kind: "text", text: "Compacted evidence or completed answer." }, false, 24000);
+  await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence. ".repeat(5200));
+  await writeFile(join(f.cwd, "AGENTS.md"), "Current automatic compact instructions.");
+  const { host, ui } = await f.start();
+  await host.submit("Inspect the large file");
+  assert.equal(host.outcome, "completed");
+  const paths = await f.sessions();
+  const entries = SessionManager.open(paths[0] ?? "").getBranch();
+  const compact = entries.findLast((entry) => entry.type === "compaction");
+  assert.ok(compact?.type === "compaction");
+  const after = f.requests.findLast((request) => request.messages.some((message) => JSON.stringify(message.content).includes("<summary>")));
+  assert.ok(after);
+  assert.equal(after.messages.at(-1)?.role, "user");
+  assert.match(JSON.stringify(after.messages.at(-1)?.content), /<environment_context>|Current automatic compact instructions/);
+  assert.equal(ui.messages.some((message) => message.text.includes("<environment_context>")), false);
 });

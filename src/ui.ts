@@ -42,6 +42,7 @@ import type {
   UserInterface,
 } from "./domain.js";
 import { slashCommands } from "./commands.js";
+import { permissionLabels } from "./permissions.js";
 import { mentionPrefix, WorkspaceAutocompleteProvider } from "./autocomplete.js";
 
 class SecretInput extends Input {
@@ -453,7 +454,7 @@ export class TerminalUI implements UserInterface {
 
   private toolLines(entry: Extract<TranscriptEntry, { kind: "tool" }>, width: number): string[] {
     const action = this.toolAction(entry.name, entry.state);
-    const shell = entry.name === "bash" || entry.name === "shell";
+    const shell = entry.name.toLowerCase() === "bash" || entry.name === "shell";
     const marker = entry.state === "error" ? red("•") : entry.state === "done" && shell ? green("•") : dim("•");
     const target = (shell ? commandText : pathText)(entry.target || entry.name);
     const result = entry.exitCode === undefined ? "" : `  ${entry.exitCode === 0 ? dim(`exit ${entry.exitCode}`) : red(`exit ${entry.exitCode}`)}`;
@@ -468,8 +469,9 @@ export class TerminalUI implements UserInterface {
   }
 
   private toolAction(name: string, state: ToolState): string {
+    name = name.toLowerCase();
     if (state === "error") return "Failed";
-    if (name === "read" || name === "find" || name === "grep" || name === "ls") return state === "running" ? "Exploring" : "Explored";
+    if (["read", "glob", "find", "grep", "ls"].includes(name)) return state === "running" ? "Exploring" : "Explored";
     if (name === "edit" || name === "write") return state === "running" ? "Editing" : "Edited";
     if (name === "bash" || name === "shell") return state === "running" ? "Running" : "Ran";
     return state === "running" ? "Working" : "Worked";
@@ -719,7 +721,7 @@ export class TerminalUI implements UserInterface {
   }
 
   private exploration(entry: Extract<TranscriptEntry, { kind: "tool" }>): boolean {
-    return entry.state === "done" && ["read", "find", "grep", "ls"].includes(entry.name);
+    return entry.state === "done" && ["read", "glob", "find", "grep", "ls"].includes(entry.name.toLowerCase());
   }
 
   private activity(width: number): string[] {
@@ -743,7 +745,7 @@ export class TerminalUI implements UserInterface {
   private statusLines(width: number): string[] {
     const status = this.currentStatus;
     if (!status) return [];
-    const permission = status.permission === "read-only" ? "Read only" : status.permission === "ask" ? "Ask for approval" : "Full access";
+    const permission = permissionLabels[status.permission] + (status.executionBlocked ? " · Execution blocked" : "");
     const fields = [
       accent(sanitizeTerminalText(status.model)),
       reasoningText(sanitizeTerminalText(status.thinking)),

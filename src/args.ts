@@ -2,8 +2,8 @@ import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { z } from "zod";
+import { parsePermission } from "./permissions.js";
 
-const permissionSchema = z.enum(["read-only", "ask", "full-access"]);
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 export function parseCli(argv: string[]) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
@@ -13,20 +13,20 @@ export function parseCli(argv: string[]) {
     "read-only": { type: "boolean" }, print: { type: "boolean", short: "p" },
     json: { type: "boolean" }, approve: { type: "boolean" },
     last: { type: "boolean" }, help: { type: "boolean", short: "h" },
-    version: { type: "boolean", short: "v" }, sandbox: { type: "string" },
+    version: { type: "boolean", short: "v" },
     provider: { type: "string" }, "base-url": { type: "string" },
     api: { type: "string" }, "api-key-env": { type: "string" },
     name: { type: "string" }, input: { type: "string" }, reasoning: { type: "string" },
     "context-window": { type: "string" }, "max-tokens": { type: "string" }, trust: { type: "boolean" },
   }});
-  if (values.sandbox && values.sandbox !== "none") throw new Error("Sandbox is not available in this release. Use --sandbox none.");
   if (values["full-access"] && values["read-only"]) throw new Error("Choose one permission preset.");
+  if (values["read-only"]) parsePermission("read-only");
   const command = ["resume", "fork", "config", "models"].includes(positionals[0] ?? "") ? positionals.shift() : undefined;
   return {
     cwd: resolve(values.cwd ?? process.cwd()),
     home: resolve(values.home ?? process.env.ARKCODE_HOME ?? resolve(homedir(), ".arkcode")),
     model: values.model, thinking: values.thinking ? thinkingSchema.parse(values.thinking) : undefined,
-    permission: values["full-access"] ? permissionSchema.parse("full-access") : values["read-only"] ? permissionSchema.parse("read-only") : values.permissions ? permissionSchema.parse(values.permissions) : undefined,
+    permission: values["full-access"] ? parsePermission("never-ask") : values.permissions ? parsePermission(values.permissions) : undefined,
     print: Boolean(values.print || values.json), json: Boolean(values.json), approve: Boolean(values.approve),
     last: Boolean(values.last), help: Boolean(values.help), version: Boolean(values.version),
     provider: values.provider, baseUrl: values["base-url"], api: values.api,
@@ -56,18 +56,19 @@ Usage: arkcode [options] [prompt]
   -C, --cwd PATH           Workspace directory
   -m, --model PROVIDER/ID  Select a configured Pi model
       --thinking LEVEL    off, minimal, low, medium, high, xhigh, max
-      --permissions MODE  read-only, ask, full-access
-      --full-access       Execute with your OS privileges
-      --read-only         Disable shell and writing tools
+      --permissions MODE  always-ask, ask-when-needed, never-ask
+      --full-access       Alias for --permissions never-ask
       --trust             Trust workspace AGENTS.md text
   -p, --print             Run one prompt without a TUI
       --json              Emit JSON events
-      --approve           Approve writes in print mode
+      --approve           Approve requested actions in print mode
       --home PATH         ArkCode configuration directory
   -h, --help              Show help
 
-No OS sandbox. Ask confirms every write and command. Untrusted directories
-start Read Only unless you explicitly choose a permission preset.
+Six tools remain available in every approval mode.
+Always Ask allows reading/search and plain ls; other actions need approval.
+Ask When Needed allows ordinary actions and asks for known dangerous commands.
+Never Ask runs without tool approval. Untrusted directories skip AGENTS.md.
 Use /connect to configure a Pi provider or custom endpoint.
 Print mode requires --model or a saved default model.
 In the TUI, press Left on an empty idle composer or use /resume to browse sessions.

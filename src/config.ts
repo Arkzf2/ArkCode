@@ -1,14 +1,14 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { createExtensionRuntime, ModelRuntime, type ResourceLoader } from "@earendil-works/pi-coding-agent";
+import { createExtensionRuntime, ModelRuntime, type LoadExtensionsResult, type ResourceLoader } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { z } from "zod";
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
-import type { Permission } from "./domain.js";
+import { configuredPermissionSchema } from "./permissions.js";
+import { SYSTEM_PROMPT } from "./prompt.js";
 
-const permissionSchema = z.enum(["read-only", "ask", "full-access"]) satisfies z.ZodType<Permission>;
 const legacyDeepSeekProviderSchema = z.object({
   baseUrl: z.literal("https://api.deepseek.com/v1"),
   api: z.literal("openai-completions"),
@@ -19,7 +19,7 @@ export const arkConfigSchema = z.object({
   provider: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).default("medium"),
-  permission: permissionSchema.default("ask"),
+  permission: configuredPermissionSchema.default("always-ask"),
   trustedWorkspaces: z.array(z.string().min(1)).default([]),
 }).strict();
 export type ArkConfig = z.infer<typeof arkConfigSchema>;
@@ -203,7 +203,7 @@ export async function configureConnection(home: string, runtime: ModelRuntime, r
   return model;
 }
 
-function readInstructions(cwd: string): Array<{ path: string; content: string }> {
+export function readInstructions(cwd: string): Array<{ path: string; content: string }> {
   const directories: string[] = [];
   let current = resolve(cwd);
   while (true) {
@@ -232,17 +232,16 @@ function readInstructions(cwd: string): Array<{ path: string; content: string }>
   return files;
 }
 
-export function createResources(cwd: string, trusted: boolean): ResourceLoader {
+export function createResources(cwd: string, trusted: boolean, hostExtensions?: LoadExtensionsResult): ResourceLoader {
   let agentsFiles = trusted ? readInstructions(cwd) : [];
-  const extensions = { extensions: [], errors: [], runtime: createExtensionRuntime() };
-  const prompt = "You are ArkCode, a terminal coding agent. Inspect the project before making changes. Follow project instructions. Keep changes focused, verify the result, and report what changed and what was checked. Never claim a command succeeded without its result. Tool permissions are enforced by the host. Do not bypass a denied tool action.";
+  const extensions = hostExtensions ?? { extensions: [], errors: [], runtime: createExtensionRuntime() };
   return {
     getExtensions: () => extensions,
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles }),
-    getSystemPrompt: () => prompt,
+    getSystemPrompt: () => SYSTEM_PROMPT,
     getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
     getAppendSystemPromptSources: () => [],
