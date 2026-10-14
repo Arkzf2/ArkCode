@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
 import { convertToPng, detectSupportedImageMimeTypeFromFile, resizeImage } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { workspacePath } from "./tools.js";
+import { workspacePath } from "../tools/workspace.js";
 
 const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 

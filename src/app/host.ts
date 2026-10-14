@@ -5,20 +5,25 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
-  createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
+  createAgentSession, createCodemodeExtension, createToolSearchExtension, DefaultResourceLoader, SessionManager, SettingsManager,
   type AgentSession, type AgentSessionEvent, type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
-import { ApprovalBroker } from "./approval.js";
-import { slashCommands } from "./commands.js";
-import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig, type ConnectionRequest } from "./config.js";
-import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, listArkSessions, readRunMarker, writeRunMarker } from "./storage.js";
-import { ManagedShell, createTools, cleanOutput, workspacePath, TOOL_NAMES, READ_TOOL_NAMES } from "./tools.js";
-import { compactionTracking, installDynamicContext } from "./context.js";
-import { parsePermission, permissionLabels } from "./permissions.js";
-import { getBranch } from "./review.js";
-import { displayUserText, prepareMentions } from "./mentions.js";
+import { ApprovalBroker } from "../permissions/approval.js";
+import { McpManager } from "../integrations/mcp/manager.js";
+import { slashCommands } from "../ui/commands.js";
+import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig, type ConnectionRequest } from "../config/settings.js";
+import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, listArkSessions, readRunMarker, writeRunMarker } from "../session/storage.js";
+import { ManagedShell } from "../tools/shell.js";
+import { createTools, TOOL_NAMES, READ_TOOL_NAMES } from "../tools/index.js";
+import { cleanOutput } from "../tools/output.js";
+import { ToolOutputFiles } from "../tools/output-files.js";
+import { workspacePath } from "../tools/workspace.js";
+import { compactionTracking, installDynamicContext } from "../context/dynamic.js";
+import { parsePermission, permissionLabels } from "../permissions/policy.js";
+import { getBranch } from "../ui/review.js";
+import { displayUserText, prepareMentions } from "../context/mentions.js";
 import type { CliOptions } from "./args.js";
-import type { ApprovalRequest, InputMode, Permission, RunState, SessionItem, ToolDetails, UserInterface } from "./domain.js";
+import type { ApprovalRequest, InputMode, Permission, RunState, SessionItem, ToolDetails, UserInterface } from "./types.js";
 
 export function contentText(content: unknown): string {
   if (typeof content === "string") return cleanOutput(content);
@@ -28,12 +33,13 @@ export function contentText(content: unknown): string {
   ).join("\n"));
 }
 
-const unsupported = new Set(["goal", "agent", "mcp", "plugins", "memories", "plan", "cloud"]);
+const unsupported = new Set(["goal", "agent", "plugins", "memories", "plan", "cloud"]);
 const toolTargetSchema = z.object({ path: z.string().optional(), command: z.string().optional(), pattern: z.string().optional() });
 const toolResultSchema = z.object({ exitCode: z.number().nullable().optional() });
 const shellHistorySchema = z.object({ id: z.string(), command: z.string(), exitCode: z.number().nullable(), status: z.enum(["running", "completed", "failed", "cancelled"]), output: z.string() });
 
-function toolDetails(args: unknown): ToolDetails | undefined {
+function toolDetails(args: unknown, name = ""): ToolDetails | undefined {
+  if (name.startsWith("mcp__")) return { target: cleanOutput(name) };
   const result = toolTargetSchema.safeParse(args);
   if (!result.success) return undefined;
   const target = result.data.command ?? result.data.path ?? result.data.pattern;
@@ -49,6 +55,7 @@ export class ArkHost {
   private config: ArkConfig;
   private runtime: ModelRuntime | null = null;
   private session: AgentSession | null = null;
+  private mcp: McpManager | null = null;
   private manager: SessionManager | null = null;
   private lease: WorkspaceLease | null = null;
   private shell: ManagedShell;
@@ -89,8 +96,8 @@ export class ArkHost {
     this.trusted = this.config.trustedWorkspaces.some((path) => this.samePath(path, this.cwd));
     if (!this.trusted && !this.options.print && !this.options.trust) {
       const choice = await this.ui.choose(`Trust workspace ${this.cwd}?`, [
-        { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Tool approval follows the selected mode." },
-        { value: "continue", label: "Continue without project instructions", description: "Skip project AGENTS.md and default to Always Ask." },
+        { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md and project MCP servers, which can start local processes. Tool approval follows the selected mode." },
+        { value: "continue", label: "Continue without project configuration", description: "Skip project AGENTS.md and MCP servers; default to Always Ask." },
       ]);
       if (choice === "trust") this.options.trust = true;
     }
@@ -137,8 +144,8 @@ export class ArkHost {
   }
   private effectivePermission(): Permission { return this.permission; }
   private async authorizeTool(request: ApprovalRequest): Promise<boolean> {
-    if (this.lease?.viewer || this.storageFailed || this.interrupted || this.state.kind === "stopping") return false;
-    if (this.executionUnconfirmed && !READ_TOOL_NAMES.includes(request.tool)) return false;
+    if (this.closing || this.lease?.viewer || this.storageFailed || this.interrupted || this.state.kind === "stopping") return false;
+    if (this.executionUnconfirmed && (request.invocation?.kind === "mcp" || !READ_TOOL_NAMES.includes(request.tool))) return false;
     return this.broker.authorize(request);
   }
   private approvalChanged(request: ApprovalRequest | null): void {
@@ -154,6 +161,7 @@ export class ArkHost {
       context: usage?.percent === null || usage?.percent === undefined ? "Context unknown" : `${usage.percent.toFixed(1)}% used`,
       state: this.state, queued: [...this.queued, ...this.localQueue.map((input) => `Queued shell: ${input}`)], viewer: this.lease?.viewer ?? false,
       executionBlocked: this.executionUnconfirmed || this.storageFailed,
+      mcpServers: this.mcp?.statuses.map(({ entry }) => entry.name) ?? [],
     });
   }
   private async replaceSession(manager: SessionManager, initial = false, target?: {
@@ -187,13 +195,24 @@ export class ArkHost {
         }
       }
     }
+    const mcp = new McpManager({ home: this.home, cwd, trusted,
+      canConnect: () => !this.closing && !this.lease?.viewer && !this.executionUnconfirmed && !this.storageFailed && this.state.kind !== "stopping",
+      authorize: (request) => this.authorizeTool(request), warning: (message) => this.ui.message("error", cleanOutput(message)),
+    });
+    const outputFiles = new ToolOutputFiles();
     const extensionLoader = new DefaultResourceLoader({
       cwd, agentDir: this.home, settingsManager: SettingsManager.inMemory({}),
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      extensionFactories: [{ name: "arkcode-file-tracking", hidden: true, factory: compactionTracking }],
+      extensionFactories: [{ name: "arkcode-file-tracking", hidden: true, factory: compactionTracking },
+        { name: "arkcode-tool-output", hidden: true, factory: (pi) => {
+          pi.on("tool_result", async (event) => { await outputFiles.capture(event.toolName, event.details); });
+        } },
+        { name: "pi-codemode", hidden: true, factory: createCodemodeExtension({ mode: "on", models: false }) },
+        { name: "pi-tool-search", hidden: true, factory: createToolSearchExtension() },
+        { name: "arkcode-mcp", hidden: true, factory: mcp.extension }],
     });
     await extensionLoader.reload();
-    if (extensionLoader.getExtensions().errors.length) throw new Error("Cannot initialize ArkCode file tracking.");
+    if (extensionLoader.getExtensions().errors.length) throw new Error("Cannot initialize ArkCode extensions.");
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd, agentDir: this.home, modelRuntime: runtime, model,
       thinkingLevel: initial ? this.options.thinking : undefined,
@@ -203,8 +222,8 @@ export class ArkHost {
         cacheWarming: "off",
       }),
       resourceLoader: createResources(extensionLoader.getExtensions()),
-      tools: TOOL_NAMES,
-      customTools: createTools({ cwd, shell, authorize: (request) => this.authorizeTool(request) }),
+      tools: [...TOOL_NAMES, "codemode", "tool_search", "mcp__*"],
+      customTools: createTools({ cwd, shell, outputFiles, authorize: (request) => this.authorizeTool(request) }),
     });
     installDynamicContext(session, { cwd, home: this.home, shell: shell.executable, trusted, projectDocMaxBytes: this.config.projectDocMaxBytes,
       onWarning: (message) => this.ui.message("info", cleanOutput(message)),
@@ -215,7 +234,7 @@ export class ArkHost {
     catch (error) { session.dispose(); throw error; }
     const oldLease = this.lease;
     this.unsubscribe?.();
-    this.session?.dispose();
+    await this.closeSession("new");
     this.broker.reset();
     if (target) {
       this.cwd = cwd;
@@ -228,6 +247,7 @@ export class ArkHost {
     }
     this.manager = manager;
     this.session = session;
+    this.mcp = mcp;
     this.unsubscribe = session.subscribe((event) => this.event(event));
     this.lastAnswer = "";
     this.state = { kind: "idle", outcome: null };
@@ -241,6 +261,8 @@ export class ArkHost {
       this.state = { kind: "idle", outcome: "interrupted" };
       this.executionUnconfirmed = true;
     }
+    await session.bindExtensions({ mode: "print" });
+    await mcp.waitReady();
     this.refreshStatus();
     if (target && oldLease !== lease) await oldLease?.release();
   }
@@ -264,7 +286,7 @@ export class ArkHost {
       else if (message.role === "assistant") {
         for (const [index, block] of message.content.entries()) {
           if (block.type === "toolCall") {
-            const target = toolDetails(block.arguments);
+            const target = toolDetails(block.arguments, block.name);
             if (target) details.set(block.id, target);
           } else if (block.type === "thinking" && !block.redacted && block.thinking) {
             this.ui.reasoning(`${randomUUID()}:${index}`, cleanOutput(block.thinking), false);
@@ -273,7 +295,12 @@ export class ArkHost {
         const text = contentText(message.content);
         if (text) this.ui.message("assistant", text);
         if ((message.stopReason === "stop" || message.stopReason === "length") && text) this.lastAnswer = text;
-      } else if (message.role === "toolResult") this.ui.tool(message.toolCallId, message.toolName, contentText(message.content), message.isError ? "error" : "done", { ...details.get(message.toolCallId), ...toolResultDetails(message.details) });
+      } else if (message.role === "toolResult") {
+        for (const call of message.nestedCalls?.calls ?? []) this.ui.tool(call.id, call.name,
+          cleanOutput(call.error ?? (call.status === "ok" ? "Completed in CodeMode. Output was consumed by the script." : "Execution unconfirmed.")),
+          call.status === "ok" ? "done" : "error", toolDetails(call.arguments, call.name));
+        this.ui.tool(message.toolCallId, message.toolName, contentText(message.content), message.isError ? "error" : "done", { ...details.get(message.toolCallId), ...toolResultDetails(message.details) });
+      }
       else if (message.role === "bashExecution") this.ui.tool(randomUUID(), "shell", message.output, message.cancelled || message.exitCode !== 0 ? "error" : "done", { target: cleanOutput(message.command), exitCode: message.exitCode });
       else if (message.role === "custom" && message.customType === "arkcode-shell") {
         const receipt = shellHistorySchema.safeParse(message.details);
@@ -315,7 +342,7 @@ export class ArkHost {
           else if ((event.message.stopReason === "stop" || event.message.stopReason === "length") && text) this.lastAnswer = text;
         }
         break;
-      case "tool_execution_start": this.ui.tool(event.toolCallId, event.toolName, "", "running", toolDetails(event.args)); break;
+      case "tool_execution_start": this.ui.tool(event.toolCallId, event.toolName, "", "running", toolDetails(event.args, event.toolName)); break;
       case "tool_execution_update": this.ui.tool(event.toolCallId, event.toolName, contentText(event.partialResult.content), "running"); break;
       case "tool_execution_end": this.ui.tool(event.toolCallId, event.toolName, contentText(event.result.content), event.isError ? "error" : "done", toolResultDetails(event.result.details)); break;
       case "queue_update": this.queued = [...event.steering.map((text) => `Instruction pending: ${text}`), ...event.followUp.map((text) => `Queued follow-up: ${text}`)]; break;
@@ -428,14 +455,20 @@ export class ArkHost {
     if (returned.length) this.ui.setDraft([this.ui.draft(), ...returned].filter(Boolean).join("\n\n"));
     this.queued = [];
     this.refreshStatus();
-    await Promise.all([this.session?.abort(), this.shell.stopAll()]);
+    await Promise.all([this.session?.abort(), this.shell.stopAll(), this.mcp?.cancelConnecting()]);
     await this.active;
   }
   async exit(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
-    try { await this.interrupt(); this.unsubscribe?.(); this.session?.dispose(); await this.lease?.release(); }
+    try { await this.interrupt(); this.unsubscribe?.(); await this.closeSession("quit"); await this.lease?.release(); }
     finally { this.ui.stop(); }
+  }
+  private async closeSession(reason: "new" | "quit"): Promise<void> {
+    try {
+      await this.mcp?.close();
+      await this.session?.extensionRunner.emit({ type: "session_shutdown", reason });
+    } finally { this.session?.dispose(); }
   }
   get outcome(): string | null { return this.state.kind === "idle" ? this.state.outcome : null; }
 
@@ -507,8 +540,8 @@ export class ArkHost {
         let allowInstructions = trusted;
         if (!trusted && !this.options.print) {
           const choice = await this.ui.choose(`Trust workspace ${lease.canonicalCwd}?`, [
-            { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md instructions. Tool approval follows the selected mode." },
-            { value: "continue", label: "Continue without project instructions", description: "Skip project AGENTS.md and default to Always Ask." },
+            { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md and project MCP servers, which can start local processes. Tool approval follows the selected mode." },
+            { value: "continue", label: "Continue without project configuration", description: "Skip project AGENTS.md and MCP servers; default to Always Ask." },
           ]);
           if (choice === null) return;
           allowInstructions = choice === "trust";
@@ -572,7 +605,7 @@ export class ArkHost {
     const session = this.session;
     const runtime = this.runtime;
     if (!session || !runtime) throw new Error("Session not initialized.");
-    const safeCommands = new Set(["help", "status", "copy", "exit", "resume"]);
+    const safeCommands = new Set(["help", "status", "copy", "exit", "resume", "mcp"]);
     if (this.lease?.viewer && !safeCommands.has(name)) throw new Error("Read-only viewer. Session mutations are disabled.");
     const idleCommands = new Set(["new", "resume", "fork", "compact", "init", "connect"]);
     if (this.state.kind !== "idle" && idleCommands.has(name)) {
@@ -582,6 +615,7 @@ export class ArkHost {
     switch (name) {
       case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Left opens sessions from the empty idle composer. Ctrl+C interrupts or exits when idle. Esc interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
       case "status": this.ui.message("info", `Permissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
+      case "mcp": await this.manageMcp(args); break;
       case "model": {
         await runtime.refresh({ allowNetwork: false });
         const models = await runtime.getAvailable();
@@ -599,8 +633,8 @@ export class ArkHost {
       case "permissions": {
         if (this.executionUnconfirmed) throw new Error("Execution unconfirmed. This host is limited to inspection. Inspect the workspace and terminate any orphaned commands before restarting with a new session.");
         const value = argument || await this.ui.choose("Permissions", [
-          { value: "always-ask", label: "Always Ask", description: "Allow reading, search and plain ls; approve other actions." },
-          { value: "ask-when-needed", label: "Ask When Needed", description: "Allow ordinary actions; approve known dangerous commands." },
+          { value: "always-ask", label: "Always Ask", description: "Allow workspace reading, search and plain ls; approve other actions and MCP calls." },
+          { value: "ask-when-needed", label: "Ask When Needed", description: "Allow ordinary built-in actions; approve dangerous commands and MCP tools without user auto-approval." },
           { value: "never-ask", label: "Never Ask", description: "Full access without tool approval." },
         ]);
         if (!value) break;
@@ -632,6 +666,61 @@ export class ArkHost {
       default: this.ui.setDraft(text); throw new Error(`Unknown command /${name}. Use /help.`);
     }
     this.refreshStatus();
+  }
+  private async manageMcp(args: string[]): Promise<void> {
+    const mcp = this.mcp;
+    if (!mcp) throw new Error("MCP is not initialized.");
+    let [action = "", name, ...extra] = args;
+    if (!action) {
+      this.ui.message("info", mcp.statusText());
+      if (this.options.print || this.lease?.viewer || this.state.kind !== "idle") return;
+      name = await this.ui.choose("MCP servers", mcp.statuses.map(({ entry, state }) => ({
+        value: entry.name, label: entry.name, description: `${state.kind} | ${entry.scope} | ${entry.config.transport}`,
+      }))) ?? undefined;
+      if (!name) return;
+      const server = mcp.statuses.find(({ entry }) => entry.name === name);
+      if (!server) return;
+      action = await this.ui.choose(`MCP ${name}`, [
+        { value: "tools", label: "Tools" }, { value: "reconnect", label: "Reconnect" },
+        { value: "login", label: "Sign in with OAuth" }, { value: "logout", label: "Sign out" },
+        { value: server.entry.config.enabled ? "disable" : "enable", label: server.entry.config.enabled ? "Disable" : "Enable" },
+      ]) ?? "";
+      if (!action) return;
+    }
+    const exposure = action === "exposure" ? z.enum(["codemode", "deferred", "direct", "hidden"]).safeParse(extra[0]) : undefined;
+    if ((action === "exposure" ? extra.length !== 1 || !exposure?.success : extra.length > 0)
+      || !["status", "tools", "reload", "reconnect", "enable", "disable", "login", "logout", "exposure"].includes(action)) {
+      throw new Error("Usage: /mcp [status|tools <server>|reload|reconnect [server]|enable|disable|login|logout <server>|exposure <server> <codemode|deferred|direct|hidden>].");
+    }
+    if (this.mcp !== mcp) throw new Error("Session changed. Open /mcp again.");
+    if (action === "status") { if (name) throw new Error("Use /mcp status without a server name."); this.ui.message("info", mcp.statusText()); return; }
+    if (action === "tools") { if (!name) throw new Error("Use /mcp tools <server>."); this.ui.message("info", mcp.toolsText(name)); return; }
+    if (this.lease?.viewer) throw new Error("Read-only viewer cannot manage MCP connections or configuration.");
+    if (this.executionUnconfirmed || this.storageFailed) throw new Error("Execution or history is unconfirmed. MCP connections are disabled.");
+    if (this.state.kind !== "idle") throw new Error("Wait until the current run finishes before changing MCP connections.");
+    if (action === "reload" && name) throw new Error("Use /mcp reload without a server name.");
+    if (["enable", "disable", "login", "logout", "exposure"].includes(action) && !name) throw new Error(`Use /mcp ${action} <server>.`);
+    if (action === "login" && this.options.print) throw new Error("Use interactive ArkCode for /mcp login.");
+    this.broker.reset();
+    await this.runOperation(async () => {
+      if (action === "reload") await mcp.reload();
+      else if (action === "reconnect") await mcp.reconnect(name);
+      else if (action === "exposure" && name && exposure?.success) await mcp.setExposure(name, exposure.data);
+      else if (action === "logout" && name) await mcp.logout(name);
+      else if (action === "login" && name) await mcp.login(name, {
+        showAuthorizationUrl: (url) => this.ui.message("info", `Open this URL to sign in:\n${url.href}`),
+        promptForRedirectUrl: async (signal) => {
+          signal.throwIfAborted();
+          let onAbort = () => {};
+          const cancelled = new Promise<undefined>((resolve) => { onAbort = () => { this.ui.dismiss(); resolve(undefined); }; });
+          signal.addEventListener("abort", onAbort, { once: true });
+          try { return await Promise.race([this.ui.input("Paste the redirect URL if the browser callback cannot reach ArkCode").then((value) => value ?? undefined), cancelled]); }
+          finally { signal.removeEventListener("abort", onAbort); }
+        },
+      });
+      else if (name) await mcp.setEnabled(name, action === "enable");
+      this.ui.message("info", mcp.statusText());
+    });
   }
   private async runOperation(operation: () => Promise<unknown>): Promise<void> {
     this.interrupted = false;

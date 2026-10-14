@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createAgentSession, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { createModelRuntime, createResources } from "../src/config.js";
-import { CONTEXT_MESSAGE, contextUpdate, installDynamicContext, type ContextSnapshot } from "../src/context.js";
+import { createModelRuntime, createResources } from "../src/config/settings.js";
+import { CONTEXT_MESSAGE, contextUpdate, installDynamicContext, type ContextSnapshot } from "../src/context/dynamic.js";
 
 test("legacy context snapshots cannot suppress the new full instruction disclosure", () => {
   const snapshot = { environment: { cwd: "/workspace", platform: "linux", os: "Linux", shell: "bash", current_date: "2026-10-14",

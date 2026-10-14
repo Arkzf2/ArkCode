@@ -2,7 +2,7 @@ import { release, type as osType } from "node:os";
 import { z } from "zod";
 import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { InstructionsLoader, instructionSchema } from "./instructions.js";
-import { getBranch } from "./review.js";
+import { getBranch } from "../ui/review.js";
 
 export const CONTEXT_MESSAGE = "arkcode-context";
 const environmentSchema = z.object({
@@ -90,9 +90,9 @@ export const compactionTracking: ExtensionFactory = (pi) => {
   pi.on("session_before_compact", (event) => {
     const { fileOps, messagesToSummarize, turnPrefixMessages } = event.preparation;
     for (const message of [...messagesToSummarize, ...turnPrefixMessages]) {
-      if (message.role !== "assistant") continue;
-      for (const block of message.content) {
-        if (block.type !== "toolCall") continue;
+      const calls = message.role === "toolResult" ? message.nestedCalls?.calls ?? []
+        : message.role === "assistant" ? message.content.filter((block) => block.type === "toolCall") : [];
+      for (const block of calls) {
         const path = z.object({ path: z.string() }).safeParse(block.arguments);
         if (!path.success) continue;
         if (block.name === "Read") fileOps.read.add(path.data.path);

@@ -18,7 +18,7 @@
 
 ## 静态 system prompt
 
-`src/prompt.ts` 中的 `SYSTEM_PROMPT` 分为身份说明和三个行为部分。
+`src/context/prompt.ts` 中的 `SYSTEM_PROMPT` 分为身份说明和三个行为部分。
 
 - 任务范围：落实用户要求，分析任务只调查和报告；先检查实现及项目指令，保留用户修改和无关工作，接收运行中的用户调整。
 - 工具使用：Read 读取文件，Grep 搜索内容，Glob 搜索文件名，Edit 精确替换，Write 新建或完整覆盖，Bash 执行实际宿主 shell；宿主处理工具审批，模型尊重拒绝和任务边界。
@@ -28,7 +28,7 @@
 
 ## 动态环境字段
 
-`src/context.ts` 使用 `ContextSnapshot` 保存环境和项目指令快照。
+`src/context/dynamic.ts` 使用 `ContextSnapshot` 保存环境和项目指令快照。
 
 | 字段 | 含义 | 采集方式 |
 | --- | --- | --- |
@@ -179,12 +179,12 @@ compact 会重组有效历史，因此完整对话前缀不再保持。新工作
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/prompt.ts` | 静态行为文本 |
-| `src/config.ts` | 配置校验、项目指令预算与静态资源加载 |
-| `src/instructions.ts` | 全局、Git 祖先及 workspace 递归规则发现、字节预算、错误恢复 |
-| `src/context.ts` | 快照 schema、完整/差量渲染、隐藏持久消息、请求注入和 compact 文件跟踪 |
-| `src/runtime.ts` | 会话安装、隐藏历史过滤、执行恢复限制 |
-| `src/tools.ts`、`src/approval.ts` | 六工具声明及执行时审批 |
+| `src/context/prompt.ts` | 静态行为文本 |
+| `src/config/settings.ts` | 配置校验、项目指令预算与静态资源加载 |
+| `src/context/instructions.ts` | 全局、Git 祖先及 workspace 递归规则发现、字节预算、错误恢复 |
+| `src/context/dynamic.ts` | 快照 schema、完整/差量渲染、隐藏持久消息、请求注入和 compact 文件跟踪 |
+| `src/app/host.ts` | 会话安装、隐藏历史过滤、执行恢复限制 |
+| `src/tools/index.ts`、`src/permissions/approval.ts` | 六工具声明及执行时审批 |
 | `test/context.test.ts` | 跨日、差量、完整锚点丢失与取消行为 |
 | `test/instructions.test.ts` | 规则顺序、递归作用域、大小、信任、链接、读取失败、配置和删除刷新 |
 | `test/runtime.test.ts` | 本地模型请求中的 user role、前缀一致性、隐藏历史、AGENTS.md 修改/删除、恢复/fork/新会话、手动/自动 compact |

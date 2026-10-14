@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
-import { displayUserText } from "./mentions.js";
+import { displayUserText } from "../context/mentions.js";
 
 const leaseSchema = z.object({ pid: z.number().int().positive(), token: z.string().uuid(), cwd: z.string(), createdAt: z.number() });
 

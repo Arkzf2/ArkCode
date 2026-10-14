@@ -3,6 +3,7 @@ export const slashCommands = [
   { name: "model", description: "Choose model and thinking level" },
   { name: "connect", description: "Configure a provider" },
   { name: "permissions", description: "Choose tool permissions" },
+  { name: "mcp", description: "Manage MCP servers and tools" },
   { name: "status", description: "Session and runtime status" },
   { name: "new", description: "Start a new session" },
   { name: "resume", description: "Resume a saved session" },

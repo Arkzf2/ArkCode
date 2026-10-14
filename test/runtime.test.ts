@@ -9,12 +9,13 @@ import { deflateSync } from "node:zlib";
 import test, { type TestContext } from "node:test";
 import { z } from "zod";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { parseCli } from "../src/args.js";
-import { ArkHost } from "../src/runtime.js";
-import { ApprovalBroker } from "../src/approval.js";
-import { CONTEXT_MESSAGE } from "../src/context.js";
-import { inspectSession, WorkspaceLease, writeRunMarker } from "../src/storage.js";
-import type { ApprovalDecision, ApprovalRequest, Choice, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/domain.js";
+import { parseCli } from "../src/app/args.js";
+import { ArkHost } from "../src/app/host.js";
+import { ApprovalBroker } from "../src/permissions/approval.js";
+import { CONTEXT_MESSAGE } from "../src/context/dynamic.js";
+import { echoMcpTool, httpMcpFixture } from "./mcp-fixture.js";
+import { inspectSession, WorkspaceLease, writeRunMarker } from "../src/session/storage.js";
+import type { ApprovalDecision, ApprovalRequest, Choice, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/app/types.js";
 
 const requestSchema = z.object({
   model: z.string(),
@@ -197,6 +198,405 @@ async function fixture(t: TestContext, respond: (request: ModelRequest, index: n
   const sessions = async () => (await readdir(join(home, "sessions"), { recursive: true })).filter((path) => path.endsWith(".jsonl")).map((path) => join(home, "sessions", path));
   return { cwd, home, requests, start, sessions };
 }
+
+for (const permission of ["always-ask", "ask-when-needed", "never-ask"]) {
+  test(`CodeMode MCP ${permission} uses nested permissions and keeps hidden tools unreachable`, async (t) => {
+    const code = `text(await searchTools("echo")); text(await Promise.allSettled([
+      tools.mcp__fixture__echo({text:"nested"}), Promise.resolve().then(() => tools.mcp__fixture__hidden({text:"forbidden"}))
+    ])); text(typeof models); text(typeof process);`;
+    const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tool", name: "codemode", arguments: { code } } : { kind: "text", text: "Done." });
+    const mcp = await httpMcpFixture(t, { tools: [echoMcpTool, { ...echoMcpTool, name: "hidden" }] });
+    await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url, disabledTools: ["hidden"] } } }));
+    const { host, ui } = await f.start(new RecordingUI(async () => "deny"), ["--permissions", permission]);
+    await host.submit("Call the tools from CodeMode.");
+    assert.ok(f.requests[0]?.tools?.some((tool) => tool.function.name === "codemode"));
+    assert.ok(!f.requests[0]?.tools?.some((tool) => tool.function.name.startsWith("mcp__")));
+    assert.equal(ui.approvals.length, permission === "never-ask" ? 0 : 1);
+    assert.deepEqual(mcp.calls.map((call) => call.name), permission === "never-ask" ? ["echo"] : []);
+    assert.ok(ui.tools.some((tool) => tool.name === "mcp__fixture__echo"));
+    const output = f.requests[1]?.messages.find((message) => message.role === "tool")?.content;
+    assert.match(JSON.stringify(output), /undefined/);
+  });
+}
+
+test("CodeMode composes SDK basic tools and MCP structured results, serializes approvals and restores nested history", async (t) => {
+  const code = `await Promise.all([tools.Write({path:"one.txt",content:"first"}), tools.Write({path:"two.txt",content:"second"})]);
+    const result = await tools.mcp__fixture__echo({text:"structured"}); text(result.structuredContent.answer);
+    text(await tools.Read({path:"one.txt"}));`;
+  const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tool", name: "codemode", arguments: { code } } : { kind: "text", text: "Done." });
+  const mcp = await httpMcpFixture(t, { tools: [{ ...echoMcpTool, outputSchema: { type: "object", properties: { answer: { type: "number" } } } }],
+    call: () => ({ content: [{ type: "text", text: "summary" }], structuredContent: { answer: 42 } }),
+  });
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  let pending = 0;
+  const ui = new RecordingUI(async () => { assert.equal(++pending, 1); await delay(10); pending--; return "once"; });
+  const { host } = await f.start(ui, ["--permissions", "always-ask"]);
+  await host.submit("Compose tools.");
+  assert.equal(await readFile(join(f.cwd, "one.txt"), "utf8"), "first");
+  assert.equal(await readFile(join(f.cwd, "two.txt"), "utf8"), "second");
+  assert.equal(ui.approvals.length, 3);
+  const output = JSON.stringify(f.requests[1]?.messages.find((message) => message.role === "tool")?.content);
+  assert.match(output, /42/); assert.match(output, /first/);
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.ok(resumed.ui.tools.some((tool) => tool.name === "Write" && tool.details?.target === "one.txt" && tool.state === "done"));
+});
+
+for (const source of ["MCP", "Bash"]) {
+  test(`${source} truncated output can be read without granting writes or access to other external files`, async (t) => {
+    let outputPath = "";
+    let privatePath = "";
+    const longOutput = "prefix evidence line\n".repeat(2500) + "middle evidence marker\n" + "suffix evidence line\n".repeat(2500);
+    const f = await fixture(t, (request, index) => {
+      if (index === 0) return source === "MCP" ? { kind: "tool", name: "mcp__fixture__echo", arguments: { text: "large" } }
+        : { kind: "tool", name: "Bash", arguments: { command: `node -e "process.stdout.write('prefix evidence line\\n'.repeat(2500)+'middle evidence marker\\n'+'suffix evidence line\\n'.repeat(2500))"` } };
+      if (index === 1) {
+        const output = request.messages.findLast((message) => message.role === "tool")?.content;
+        assert.equal(typeof output, "string");
+        const match = /Full output: (.*?)(?: \(read it with offset\/limit\)|\])/.exec(String(output));
+        assert.ok(match?.[1]); outputPath = match[1];
+        return { kind: "tool", name: "Read", arguments: { path: outputPath, offset: 2501, limit: 1 } };
+      }
+      if (index === 2) return { kind: "tool", name: "Write", arguments: { path: outputPath, content: "forbidden replacement" } };
+      if (index === 3) return { kind: "tool", name: "Read", arguments: { path: privatePath } };
+      return { kind: "text", text: "Done." };
+    });
+    privatePath = join(f.home, "private.txt");
+    await writeFile(privatePath, "outside-private-evidence");
+    if (source === "MCP") {
+      const mcp = await httpMcpFixture(t, { call: () => ({ content: [{ type: "text", text: longOutput }] }) });
+      await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
+    }
+    const { host, ui } = await f.start();
+    t.after(async () => { if (outputPath) await rm(outputPath, { force: true }); });
+    await host.submit("Inspect the middle of the output.");
+    assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("middle evidence marker")));
+    assert.ok(ui.tools.some((tool) => tool.name === "Write" && tool.state === "error"));
+    assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "error" && tool.text.includes("workspace")));
+    assert.equal(await readFile(outputPath, "utf8"), longOutput);
+    assert.doesNotMatch(JSON.stringify(f.requests), /outside-private-evidence/);
+  });
+}
+
+test("/mcp exposure persists and changes the model declarations", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  const mcp = await httpMcpFixture(t);
+  const path = join(f.home, "mcp.json");
+  await writeFile(path, JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  const { host } = await f.start();
+  await host.submit("Initial tools.");
+  assert.ok(!f.requests[0]?.tools?.some((tool) => tool.function.name.startsWith("mcp__")));
+  await host.submit("/mcp exposure fixture direct");
+  assert.equal(JSON.parse(await readFile(path, "utf8")).mcpServers.fixture.exposure, "direct");
+  await host.submit("Updated tools.");
+  assert.ok(f.requests[1]?.tools?.some((tool) => tool.function.name === "mcp__fixture__echo"));
+});
+
+test("/mcp status and interactive tools panel use connected servers without a model request", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  const mcp = await httpMcpFixture(t);
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
+  const titles: string[] = [];
+  class McpUI extends RecordingUI {
+    override async choose(title: string): Promise<string | null> {
+      titles.push(title);
+      return title === "MCP servers" ? "fixture" : title === "MCP fixture" ? "tools" : null;
+    }
+  }
+  const { host, ui } = await f.start(new McpUI());
+  await host.submit("/mcp");
+  assert.deepEqual(titles, ["MCP servers", "MCP fixture"]);
+  assert.match(ui.messages.at(-1)?.text ?? "", /enabled mcp__fixture__echo/);
+  await host.submit("/mcp status");
+  assert.match(ui.messages.at(-1)?.text ?? "", /fixture: connected/);
+  assert.equal(f.requests.length, 0);
+  await host.exit();
+  assert.equal(mcp.closed, 1);
+});
+
+for (const permission of ["always-ask", "ask-when-needed", "never-ask"]) {
+  test(`MCP ${permission} separates dynamic exposure from approval even for readOnlyHint`, async (t) => {
+    const f = await fixture(t, (_request, index) => index === 0
+      ? { kind: "tool", name: "mcp__fixture__echo", arguments: { text: "hello" } } : { kind: "text", text: "Done." });
+    const mcp = await httpMcpFixture(t, { tools: [echoMcpTool, { ...echoMcpTool, name: "hidden" }] });
+    await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url, disabledTools: ["hidden"] } } }));
+    const { host, ui } = await f.start(new RecordingUI(async () => "deny"), ["--permissions", permission]);
+    await host.submit("Use the MCP echo tool.");
+    assert.deepEqual(f.requests[0]?.tools?.map(({ function: tool }) => tool.name), ["Read", "Write", "Edit", "Grep", "Glob", "Bash", "codemode", "tool_search", "mcp__fixture__echo"]);
+    assert.equal(ui.approvals.length, permission === "never-ask" ? 0 : 1);
+    assert.equal(mcp.calls.length, permission === "never-ask" ? 1 : 0);
+    if (permission !== "never-ask") {
+      assert.equal(ui.approvals[0]?.invocation?.kind, "mcp");
+      assert.match(JSON.stringify(f.requests[1]?.messages), /MCP tool execution denied/);
+    } else assert.match(JSON.stringify(f.requests[1]?.messages), /MCP echo: hello/);
+    await host.exit();
+  });
+}
+
+test("MCP user auto-approval applies only in Ask When Needed; destructive hints still ask", async (t) => {
+  const replies: Reply[] = [
+    { kind: "tool", name: "mcp__fixture__echo", arguments: { text: "auto" } },
+    { kind: "tool", name: "mcp__fixture__danger", arguments: { text: "danger" } },
+    { kind: "text", text: "Done." },
+    { kind: "tool", name: "mcp__fixture__echo", arguments: { text: "auto" } },
+    { kind: "text", text: "Done." },
+    { kind: "text", text: "Done." },
+  ];
+  const f = await fixture(t, (_request, index) => { const reply = replies[index]; assert.ok(reply); return reply; });
+  const mcp = await httpMcpFixture(t, { tools: [echoMcpTool, { ...echoMcpTool, name: "danger", annotations: { destructiveHint: true } }] });
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url, autoApproveTools: ["*"] } } }));
+  const { host, ui } = await f.start(new RecordingUI(async () => "deny"), ["--permissions", "ask-when-needed"]);
+  await host.submit("Use both MCP tools.");
+  assert.deepEqual(mcp.calls.map((call) => call.name), ["echo"]);
+  assert.equal(ui.approvals.length, 1);
+  await host.submit("/permissions always-ask");
+  await host.submit("Echo again.");
+  assert.equal(mcp.calls.length, 1);
+  assert.equal(ui.approvals.length, 2);
+  assert.deepEqual(f.requests[3]?.tools, f.requests[0]?.tools);
+  await host.submit("/permissions never-ask");
+  await host.submit("Inspect the schemas.");
+  assert.deepEqual(f.requests[5]?.tools, f.requests[0]?.tools);
+  await host.exit();
+});
+
+test("MCP enable/disable persists the defining source and new sessions close and rebuild connections", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  const mcp = await httpMcpFixture(t);
+  await mkdir(join(f.cwd, ".arkcode"), { recursive: true });
+  const path = join(f.cwd, ".arkcode", "mcp.json");
+  await writeFile(path, JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
+  const { host, ui } = await f.start();
+  assert.equal(mcp.initialized, 1);
+  await host.submit("/mcp disable fixture");
+  assert.equal(JSON.parse(await readFile(path, "utf8")).mcpServers.fixture.enabled, false);
+  assert.equal(mcp.closed, 1);
+  await host.submit("No MCP tools.");
+  assert.equal(f.requests[0]?.tools?.some((tool) => tool.function.name.startsWith("mcp__")), false);
+  await host.submit("/mcp enable fixture");
+  assert.equal(mcp.initialized, 2);
+  await host.submit("MCP tools are back.");
+  assert.equal(f.requests[1]?.tools?.some((tool) => tool.function.name === "mcp__fixture__echo"), true);
+  await host.submit("/mcp reconnect fixture");
+  assert.equal(mcp.closed, 2);
+  assert.equal(mcp.initialized, 3);
+  await host.submit("/new");
+  assert.equal(mcp.closed, 3);
+  assert.equal(mcp.initialized, 4);
+  await host.submit("/mcp tools fixture");
+  assert.match(ui.messages.at(-1)?.text ?? "", /mcp__fixture__echo/);
+  await host.exit();
+  assert.equal(mcp.closed, 4);
+});
+
+test("MCP list_changed replaces the real model tool declarations and preserves structured/error results", async (t) => {
+  const f = await fixture(t, (_request, index) => index === 1
+    ? { kind: "tool", name: "mcp__fixture__replacement", arguments: { text: "data" } } : { kind: "text", text: "Done." });
+  const mcp = await httpMcpFixture(t, { call: () => ({ content: [{ type: "text", text: "summary" }], structuredContent: { answer: 42 }, isError: true }) });
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
+  const { host, ui } = await f.start();
+  await host.submit("First directory.");
+  await until(() => mcp.streams > 0);
+  mcp.setTools([{ ...echoMcpTool, name: "replacement" }]);
+  const deadline = Date.now() + 8000;
+  do {
+    await host.submit("/mcp tools fixture");
+    if (ui.messages.at(-1)?.text.includes("mcp__fixture__replacement")) break;
+    assert.ok(Date.now() < deadline); await delay(10);
+  } while (true);
+  await host.submit("Use the new directory.");
+  const names = f.requests[1]?.tools?.map((tool) => tool.function.name) ?? [];
+  assert.ok(names.includes("mcp__fixture__replacement"));
+  assert.ok(!names.includes("mcp__fixture__echo"));
+  assert.deepEqual(mcp.calls.map((call) => call.name), ["replacement"]);
+  assert.match(JSON.stringify(f.requests[2]?.messages), /summary/);
+  assert.ok(ui.tools.some((tool) => tool.name === "mcp__fixture__replacement" && tool.state === "error"));
+  const saved = SessionManager.open((await f.sessions())[0] ?? "").getBranch();
+  assert.ok(saved.some((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.isError));
+  await host.exit();
+});
+
+test("MCP schema changes invalidate a pending approved call and management cannot mutate a busy session", async (t) => {
+  const f = await fixture(t, (_request, index) => index === 0
+    ? { kind: "tool", name: "mcp__fixture__echo", arguments: { text: "pending" } } : { kind: "text", text: "Done." });
+  const mcp = await httpMcpFixture(t);
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
+  let approve: (decision: ApprovalDecision) => void = () => {};
+  const decision = new Promise<ApprovalDecision>((resolve) => { approve = resolve; });
+  const { host, ui } = await f.start(new RecordingUI(() => decision), ["--permissions", "always-ask"]);
+  const run = host.submit("Call MCP.");
+  await until(() => ui.approvals.length === 1 && mcp.streams > 0);
+  await host.submit("/mcp disable fixture");
+  assert.match(ui.messages.at(-1)?.text ?? "", /Wait until the current run finishes/);
+  mcp.setTools([{ ...echoMcpTool, description: "Changed tool contract." }]);
+  const deadline = Date.now() + 8000;
+  do {
+    await host.submit("/mcp tools fixture");
+    if (ui.messages.at(-1)?.text.includes("Changed tool contract.")) break;
+    assert.ok(Date.now() < deadline); await delay(10);
+  } while (true);
+  approve("once");
+  await run;
+  assert.equal(mcp.calls.length, 0);
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /no longer available|changed while awaiting/);
+  await host.exit();
+});
+
+test("MCP interrupt while awaiting approval sends no external call and ignores a late grant", async (t) => {
+  const f = await fixture(t, () => ({ kind: "tool", name: "mcp__fixture__echo", arguments: { text: "pending" } }));
+  const mcp = await httpMcpFixture(t);
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
+  let approve: (decision: ApprovalDecision) => void = () => {};
+  const decision = new Promise<ApprovalDecision>((resolve) => { approve = resolve; });
+  const { host, ui } = await f.start(new RecordingUI(() => decision), ["--permissions", "always-ask"]);
+  const run = host.submit("Call MCP.");
+  await until(() => ui.approvals.length === 1);
+  await host.interrupt(); approve("session"); await run;
+  assert.equal(host.outcome, "interrupted");
+  assert.equal(mcp.calls.length, 0);
+  await host.exit();
+  assert.equal(mcp.closed, 1);
+});
+
+test("interrupt cancels a real in-flight MCP request without replaying it", async (t) => {
+  const f = await fixture(t, () => ({ kind: "tool", name: "mcp__fixture__echo", arguments: { text: "slow" } }));
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const mcp = await httpMcpFixture(t, { call: async () => { await pending; return { content: [{ type: "text", text: "late result" }] }; } });
+  t.after(() => release());
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
+  const { host } = await f.start();
+  const run = host.submit("Call the slow MCP tool.");
+  await until(() => mcp.calls.length === 1);
+  await host.interrupt();
+  await run;
+  assert.equal(host.outcome, "interrupted");
+  await until(() => mcp.notifications.includes("notifications/cancelled"));
+  assert.equal(mcp.calls.length, 1);
+  release();
+  await host.exit();
+});
+
+test("MCP session grants bind exact arguments and connection identity, including tools named Read", async () => {
+  const ui = new RecordingUI(async () => "session");
+  const broker = new ApprovalBroker(ui, () => "always-ask", () => {});
+  const invocation = { kind: "mcp", server: "fixture", tool: "Read", source: "/home/mcp.json", identity: "connection-one",
+    arguments: { path: "file.txt" }, autoApprove: true, destructive: false,
+  } satisfies NonNullable<ApprovalRequest["invocation"]>;
+  const request: ApprovalRequest = { id: "one", tool: "Read", cwd: "/workspace", description: "external read", invocation };
+  assert.equal(await broker.authorize(request), true);
+  assert.equal(ui.approvals.length, 1);
+  assert.equal(await broker.authorize({ ...request, id: "two" }), true);
+  assert.equal(ui.approvals.length, 1);
+  assert.equal(await broker.authorize({ ...request, invocation: { ...invocation, arguments: { path: "other.txt" } } }), true);
+  assert.equal(await broker.authorize({ ...request, invocation: { ...invocation, identity: "connection-two" } }), true);
+  assert.equal(await broker.authorize({ ...request, invocation: { ...invocation, destructive: true } }), true);
+  assert.equal(await broker.authorize({ ...request, invocation: { ...invocation, destructive: true } }), true);
+  assert.equal(ui.approvals.length, 5);
+});
+
+test("MCP resolves user bearer-token environment references and isolates a failed server without exposing credentials", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  const token = "private-mcp-test-secret";
+  const envName = "ARKCODE_MCP_TEST_TOKEN";
+  const original = process.env[envName]; process.env[envName] = token;
+  t.after(() => { if (original === undefined) delete process.env[envName]; else process.env[envName] = original; });
+  const mcp = await httpMcpFixture(t, { authorization: `Bearer ${token}` });
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: {
+    fixture: { exposure: "direct", url: mcp.url, bearerTokenEnvVar: envName }, bad: { exposure: "direct", url: mcp.url },
+  } }));
+  const { host, ui } = await f.start();
+  await host.submit("/mcp status");
+  assert.match(ui.messages.at(-1)?.text ?? "", /fixture: connected/);
+  assert.match(ui.messages.at(-1)?.text ?? "", /bad: needs-auth/);
+  assert.doesNotMatch(JSON.stringify(ui.messages), new RegExp(token));
+  await host.submit("Use available tools.");
+  assert.ok(f.requests[0]?.tools?.some((tool) => tool.function.name === "mcp__fixture__echo"));
+  assert.ok(!f.requests[0]?.tools?.some((tool) => tool.function.name.startsWith("mcp__bad__")));
+  await host.exit();
+});
+
+test("MCP startup timeout isolates an unresponsive server and still exposes healthy tools", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const slow = await httpMcpFixture(t, { initialize: () => gate });
+  const healthy = await httpMcpFixture(t);
+  t.after(() => release());
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: {
+    slow: { url: slow.url, startupTimeoutMs: 300 }, healthy: { exposure: "direct", url: healthy.url },
+  } }));
+  const { host, ui } = await f.start();
+  await host.submit("/mcp status");
+  assert.match(ui.messages.at(-1)?.text ?? "", /slow: failed/);
+  assert.match(ui.messages.at(-1)?.text ?? "", /healthy: connected/);
+  await host.submit("Use the healthy directory.");
+  assert.ok(f.requests[0]?.tools?.some((tool) => tool.function.name === "mcp__healthy__echo"));
+  assert.ok(!f.requests[0]?.tools?.some((tool) => tool.function.name.startsWith("mcp__slow__")));
+  release();
+  await host.exit();
+});
+
+test("untrusted project MCP, viewer and execution-unconfirmed sessions do not start connections", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  const mcp = await httpMcpFixture(t);
+  await mkdir(join(f.cwd, ".arkcode"), { recursive: true });
+  await writeFile(join(f.cwd, ".arkcode", "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
+  await writeFile(join(f.home, "settings.json"), JSON.stringify({ provider: "fixture", model: "test", thinking: "off", trustedWorkspaces: [] }));
+  const untrusted = await f.start();
+  await untrusted.host.submit("/mcp status");
+  assert.match(untrusted.ui.messages.at(-1)?.text ?? "", /skipped in untrusted workspace/);
+  assert.equal(mcp.initialized, 0);
+  await untrusted.host.exit();
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
+  const owner = await f.start();
+  assert.equal(mcp.initialized, 1);
+  const viewer = await f.start();
+  assert.equal(mcp.initialized, 1);
+  await viewer.host.submit("/mcp status");
+  assert.match(viewer.ui.messages.at(-1)?.text ?? "", /fixture: blocked/);
+  await viewer.host.submit("/mcp reconnect");
+  assert.match(viewer.ui.messages.at(-1)?.text ?? "", /Read-only viewer/);
+  await viewer.host.exit(); await owner.host.exit();
+  await writeRunMarker(f.home, "orphan-mcp", { status: "active", runId: "orphan-run", startedAt: Date.now(), pid: process.pid, cwd: f.cwd });
+  const recovery = await f.start();
+  await recovery.host.submit("/mcp status");
+  assert.match(recovery.ui.messages.at(-1)?.text ?? "", /fixture: blocked/);
+  assert.equal(mcp.initialized, 1);
+  await recovery.host.exit();
+});
+
+test("real stdio MCP receives tool calls and exits on session replacement and host shutdown", async (t) => {
+  const f = await fixture(t, (_request, index) => index === 0
+    ? { kind: "tool", name: "mcp__local__echo", arguments: { text: "stdio" } } : { kind: "text", text: "Done." });
+  const log = join(f.cwd, "mcp-events.jsonl");
+  const serverPath = join(f.cwd, "mcp-server.mjs");
+  await writeFile(serverPath, `import { createInterface } from 'node:readline';
+import { appendFileSync } from 'node:fs';
+const log = (event) => appendFileSync(process.env.ARKCODE_MCP_TEST_LOG, JSON.stringify({event, pid:process.pid})+'\\n');
+log('started');
+const input = createInterface({input:process.stdin});
+input.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.id === undefined) return;
+  let result = {};
+  if (message.method === 'initialize') result = {protocolVersion:'2025-11-25',capabilities:{tools:{}},serverInfo:{name:'local',version:'1'}};
+  if (message.method === 'tools/list') result = {tools:[${JSON.stringify(echoMcpTool)}]};
+  if (message.method === 'tools/call') {log('called'); result={content:[{type:'text',text:'stdio receipt'}]};}
+  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:message.id,result})+'\\n');
+});
+input.on('close', () => {log('closed'); process.exit(0);});
+`);
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { local: { exposure: "direct", command: process.execPath, args: [serverPath], env: { ARKCODE_MCP_TEST_LOG: log } } } }));
+  const { host } = await f.start();
+  await host.submit("Call local MCP.");
+  assert.match(JSON.stringify(f.requests[1]?.messages), /stdio receipt/);
+  await host.submit("/new");
+  await host.exit();
+  const events = (await readFile(log, "utf8")).trim().split("\n").map((line) => z.object({ event: z.string(), pid: z.number() }).parse(JSON.parse(line)));
+  assert.deepEqual(events.map((event) => event.event), ["started", "called", "closed", "started", "closed"]);
+  for (const pid of new Set(events.map((event) => event.pid))) assert.throws(() => process.kill(pid, 0));
+});
 
 test("/connect chooses a Pi provider, credentials, then an available catalog model", async (t) => {
   const original = process.env.OPENAI_API_KEY;
@@ -383,7 +783,7 @@ test("removed commands are rejected without running the agent, while @ reference
   const f = await fixture(t, () => ({ kind: "text", text: "File reference received." }));
   const { host, ui } = await f.start();
   await host.submit("/help");
-  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /status /new /resume /rename /fork /compact /copy /init /exit");
+  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /mcp /status /new /resume /rename /fork /compact /copy /init /exit");
   for (const command of ["diff", "review", "ps", "theme", "statusline", "stop", "quit", "mention", "clear"]) {
     await host.submit(`/${command}`);
     assert.deepEqual(ui.messages.at(-1), { kind: "error", text: `Unknown command /${command}. Use /help.` });
@@ -420,11 +820,11 @@ test("a streamed agent turn reads, writes, edits and executes the native shell",
   assert.equal(host.outcome, "completed");
   assert.equal(await readFile(join(f.cwd, "result.txt"), "utf8"), "after\n");
   assert.equal(ui.deltas, "Verified all changes.");
-  assert.deepEqual(ui.tools.filter((tool) => tool.state === "running" && tool.text === "").map((tool) => tool.details?.target), ["input.txt", "result.txt", "result.txt", shell]);
-  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("1: source evidence")));
-  assert.ok(ui.tools.some((tool) => tool.name === "Bash" && tool.state === "done" && tool.text.includes("shell verified") && tool.text.includes("exit code 0")));
+  assert.deepEqual(ui.tools.filter((tool) => tool.state === "running" && tool.text === "" && tool.details?.target).map((tool) => tool.details?.target), ["input.txt", "result.txt", "result.txt", shell]);
+  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("source evidence")));
+  assert.ok(ui.tools.some((tool) => tool.name === "Bash" && tool.state === "done" && tool.text.includes("shell verified") && tool.details?.exitCode === 0));
   const lastRequest = f.requests.at(-1); assert.ok(lastRequest);
-  assert.ok(lastRequest.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("Edited result.txt")));
+  assert.ok(lastRequest.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("Successfully replaced 1 block(s) in result.txt")));
   const saved = await f.sessions(); assert.equal(saved.length, 1);
   assert.ok((await readFile(saved[0] ?? "", "utf8")).includes("Verified all changes."));
 });
@@ -459,8 +859,8 @@ test("failed shell receipts retain the exit code in the TUI and restored history
   await host.submit("Run the diagnostic command.");
   const failed = ui.tools.findLast((tool) => tool.state === "error");
   assert.equal(failed?.details?.exitCode, 9);
-  assert.match(failed?.text ?? "", /exit code 9/);
-  assert.ok(f.requests.at(-1)?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("exit code 9")));
+  assert.match(failed?.text ?? "", /exited with code 9/);
+  assert.ok(f.requests.at(-1)?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("exited with code 9")));
   await host.exit();
   const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
   assert.deepEqual(resumed.ui.tools.findLast((tool) => tool.state === "error")?.details, { target: command, exitCode: 9 });
@@ -510,7 +910,7 @@ test("an active first-run marker without history keeps the workspace read-only",
   assert.equal(f.requests.length, 0);
   await host.submit("Inspect only.");
   assert.equal(host.outcome, "completed");
-  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["Bash", "Edit", "Glob", "Grep", "Read", "Write"]);
+  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["Bash", "Edit", "Glob", "Grep", "Read", "Write", "codemode", "tool_search"]);
 });
 
 test("denied writes return a tool error and the agent can continue", { timeout: 30000 }, async (t) => {
@@ -538,12 +938,12 @@ test("unconfirmed agents retain six tools but can only inspect files", { timeout
   const { host, ui } = await f.start();
   await host.submit("Inspect the input");
   assert.equal(host.outcome, "completed");
-  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("1: read-only evidence")));
+  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("read-only evidence")));
   assert.equal(ui.approvals.length, 0);
   assert.ok(ui.tools.some((tool) => tool.name === "Write" && tool.state === "error"));
   await assert.rejects(readFile(join(f.cwd, "denied.txt")), { code: "ENOENT" });
   assert.equal(ui.answers.at(-1), "Inspection complete. Writing unavailable.");
-  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["Bash", "Edit", "Glob", "Grep", "Read", "Write"]);
+  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["Bash", "Edit", "Glob", "Grep", "Read", "Write", "codemode", "tool_search"]);
 });
 
 test("steering and follow-up inputs are consumed by the real agent queue", { timeout: 30000 }, async (t) => {
@@ -907,7 +1307,7 @@ test("permission modes keep the same tool schemas and append-only hidden context
   const { host, ui } = await f.start(new RecordingUI(), ["--permissions", "always-ask"]);
   await host.submit("First task");
   const first = f.requests[0]; assert.ok(first);
-  assert.deepEqual(first.tools?.map((tool) => tool.function.name), ["Read", "Write", "Edit", "Grep", "Glob", "Bash"]);
+  assert.deepEqual(first.tools?.map((tool) => tool.function.name), ["Read", "Write", "Edit", "Grep", "Glob", "Bash", "codemode", "tool_search"]);
   const context = first.messages.filter((message) => JSON.stringify(message.content).includes("<environment_context>"));
   assert.equal(context.length, 1);
   assert.equal(context[0]?.role, "user");
@@ -1033,10 +1433,10 @@ test("manual compact preserves uppercase file tracking and refreshes hidden cont
 });
 
 test("automatic compact during tool continuation reinjects current context before the next conversational request", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, (_request, index) => index === 0
-    ? { kind: "tool", name: "Read", arguments: { path: "large.txt", limit: 2000 } }
+  const f = await fixture(t, (_request, index) => index < 2
+    ? { kind: "tool", name: "Read", arguments: { path: "large.txt", offset: index * 2000 + 1, limit: 2000 } }
     : { kind: "text", text: "Compacted evidence or completed answer." }, false, 24000);
-  await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence. ".repeat(5200));
+  await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
   await writeFile(join(f.cwd, "AGENTS.md"), "Current automatic compact instructions.");
   const { host, ui } = await f.start();
   await host.submit("Inspect the large file");

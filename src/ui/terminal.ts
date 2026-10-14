@@ -40,9 +40,9 @@ import type {
   ToolDetails,
   UiActions,
   UserInterface,
-} from "./domain.js";
+} from "../app/types.js";
 import { slashCommands } from "./commands.js";
-import { permissionLabels } from "./permissions.js";
+import { permissionLabels } from "../permissions/policy.js";
 import { mentionPrefix, WorkspaceAutocompleteProvider } from "./autocomplete.js";
 
 class SecretInput extends Input {
@@ -253,7 +253,7 @@ export class TerminalUI implements UserInterface {
     if (value.state.kind === "idle") {
       for (const entry of this.entries) if (entry.kind === "reasoning") entry.active = false;
     }
-    if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(value.cwd));
+    if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(value.cwd, () => this.currentStatus?.mcpServers ?? []));
     this.render();
   }
 
@@ -405,7 +405,9 @@ export class TerminalUI implements UserInterface {
       `Allow this tool request?\nTool: ${request.tool}\nRequest: ${request.description}\nDirectory: ${request.cwd}`,
       [
         { value: "once", label: "1. Yes, proceed" },
-        { value: "session", label: "2. Yes, and don't ask again for this command in this session" },
+        { value: "session", label: request.invocation?.kind === "mcp" && request.invocation.destructive
+          ? "2. Yes, proceed; this tool still requires approval next time"
+          : "2. Yes, and don't ask again for this exact request in this session" },
         { value: "deny", label: "3. No, continue without running it" },
       ],
     );
@@ -442,7 +444,7 @@ export class TerminalUI implements UserInterface {
 
   private createEditor(): Editor {
     const editor = new ArkEditor(this.tui, this.theme.editor, { paddingX: 4, autocompleteMaxVisible: 6 });
-    editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(this.currentStatus?.cwd ?? process.cwd()));
+    editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(this.currentStatus?.cwd ?? process.cwd(), () => this.currentStatus?.mcpServers ?? []));
     editor.onSubmit = (value) => this.submit(value, this.busy() ? "steer" : "prompt");
     return editor;
   }
@@ -474,6 +476,7 @@ export class TerminalUI implements UserInterface {
     if (["read", "glob", "find", "grep", "ls"].includes(name)) return state === "running" ? "Exploring" : "Explored";
     if (name === "edit" || name === "write") return state === "running" ? "Editing" : "Edited";
     if (name === "bash" || name === "shell") return state === "running" ? "Running" : "Ran";
+    if (name.startsWith("mcp__")) return state === "running" ? "Calling MCP" : "Called MCP";
     return state === "running" ? "Working" : "Worked";
   }
 

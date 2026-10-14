@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ApprovalRequest, Permission, UserInterface } from "./domain.js";
+import type { ApprovalRequest, Permission, UserInterface } from "../app/types.js";
 import { inspectShell } from "./shell-policy.js";
 
 export class ApprovalBroker {
@@ -15,14 +15,16 @@ export class ApprovalBroker {
   async authorize(request: ApprovalRequest): Promise<boolean> {
     const permission = this.permission();
     if (permission === "never-ask") return true;
-    if (["Read", "Grep", "Glob"].includes(request.tool)) return true;
+    const mcp = request.invocation?.kind === "mcp" ? request.invocation : undefined;
+    if (!mcp && ["Read", "Grep", "Glob"].includes(request.tool)) return true;
     const generation = this.generation;
     const inspection = request.invocation?.kind === "shell"
       ? await inspectShell(request.invocation.command, request.invocation.shell) : undefined;
     if (generation !== this.generation || this.permission() !== permission) return false;
     const digest = createHash("sha256").update(JSON.stringify([request.tool, request.cwd, request.description, request.invocation])).digest("hex");
-    if (!inspection?.dangerous && this.grants.has(digest)) return true;
-    if (!inspection?.dangerous && (permission === "ask-when-needed" || inspection?.listing)) return true;
+    const dangerous = inspection?.dangerous || mcp?.destructive;
+    if (!dangerous && this.grants.has(digest)) return true;
+    if (!dangerous && (mcp ? permission === "ask-when-needed" && mcp.autoApprove : permission === "ask-when-needed" || inspection?.listing)) return true;
     this.changed(request);
     let cancel: () => void = () => {};
     const cancelled = new Promise<"deny">((resolve) => { cancel = () => resolve("deny"); });

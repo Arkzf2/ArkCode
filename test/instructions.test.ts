@@ -5,8 +5,8 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { InstructionsLoader } from "../src/instructions.js";
-import { loadConfig, saveConfig } from "../src/config.js";
+import { InstructionsLoader } from "../src/context/instructions.js";
+import { loadConfig, saveConfig } from "../src/config/settings.js";
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), "arkcode-instructions-"));

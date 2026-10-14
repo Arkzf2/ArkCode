@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { parseCli, HELP } from "./args.js";
-import { ArkHost } from "./runtime.js";
-import { configureConnection, createModelRuntime, type ConnectionRequest } from "./config.js";
-import { PlainUI, TerminalUI } from "./ui.js";
+import { parseCli, HELP } from "./app/args.js";
+import { ArkHost } from "./app/host.js";
+import { configureConnection, createModelRuntime, type ConnectionRequest } from "./config/settings.js";
+import { PlainUI, TerminalUI } from "./ui/terminal.js";
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const options = parseCli(argv);

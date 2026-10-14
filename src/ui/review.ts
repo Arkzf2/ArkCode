@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cleanOutput } from "./tools.js";
+import { cleanOutput } from "../tools/output.js";
 
 const execute = promisify(execFile);
 

@@ -1,0 +1,41 @@
+{
+  "version": "1.2.0",
+  "files": {
+    "dist/core/tools/grep.js": {
+      "original": "641ae520a88c7eb86406d9a18880f31412cb41cdc15a7ee3e1da5de62979ca7c",
+      "patched": "3588fbc454fb0e850dedfd920d8859c3d43b146bb60060925db5c7bb204c928e"
+    },
+    "dist/core/tools/grep.d.ts": {
+      "original": "cb1b7103658fca88fcc381b1e5f0f42e0e17d900b686c0843fe767a597ac5660",
+      "patched": "0b9c8358f87c444fabd3cfbb3e9ed56bf85fe41c5d7103a5567bb109c828d2cb"
+    },
+    "dist/extensions/mcp/index.d.ts": {
+      "original": "2326ac2f37daa7bbf258629846b4ff6d4d8d2c570331777b2da0852525de843e",
+      "patched": "b347af1f6db0bdba43bc31b639b7b22a23e8588235ab8317b2758fe5dff9f8f9"
+    },
+    "dist/index.d.ts": {
+      "original": "3b4267eee6912bd03bf155281847cb0ef61ddea4d6c4b40eb996dbfe73d1e076",
+      "patched": "b16ed6c756256c4f7bb8d55ac1b85f6e3c162b6dea1c8c100f7fbb080e424935"
+    },
+    "dist/extensions/mcp/index.js": {
+      "original": "c0570b9d256120a1df9b65a015964076dff6a3710646e041fcb2770ae7132fde",
+      "patched": "5dea4d593359ea436e1a688299d36da1734a369c1d6f7095113280da948a5bb0"
+    },
+    "dist/extensions/mcp/tools.js": {
+      "original": "93d4aae2090400c1565ba536f38cf373f022de2c6519e37c02493fbe420842f5",
+      "patched": "0c564756fccd53765b6ac5179ba9cbab854066d79e5d3a2eecb5508ab5036c52"
+    },
+    "dist/extensions/mcp/tools.d.ts": {
+      "original": "56a395f0e65b23c95f72b582bf965c4f2e3b47e67600513813082f18ea13c8cd",
+      "patched": "d0f3729a81bab52050ed4f37822238e74a6c9a0f9d748480e8359adf2b182ab0"
+    },
+    "dist/extensions/mcp/runtime.js": {
+      "original": "be9e8eea88363f2fefaea2c25c854845393f112394ee5989d22facd2f1acea6e",
+      "patched": "1cd7daf5213e410a5b95adf461a39b4141faeaa592ad5da2db9e96f67624cfc9"
+    },
+    "dist/extensions/mcp/runtime.d.ts": {
+      "original": "d5c9561f03ff23a629e9744971ba218a9092fa1a9635c4079dbda816b99e8178",
+      "patched": "7c6b4ccc7e60dd4e6b40dbecca4b7f0687dd49afee7fe757559c4a55ce522bbb"
+    }
+  }
+}

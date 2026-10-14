@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inspectShell } from "../src/shell-policy.js";
+import { inspectShell } from "../src/permissions/shell-policy.js";
 
 test("POSIX inspection follows nested commands and Kimi's finite danger rules without executing input", async () => {
   for (const command of ["shutdown now", "sudo -u root reboot", "sudo -n rm -rf /important", "env -C /tmp X=1 rm -rf /important", "echo $(shutdown now)", "echo `reboot`", "bash -lc 'rm -rf /important'", "eval 'shutdown now'", "busybox rm -rf /important", "dd if=/dev/zero of=/dev/sda", "mkfs.ext4 /dev/sda", "systemctl --host host reboot"]) {

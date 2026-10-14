@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { z } from "zod";
-import { parsePermission } from "./permissions.js";
+import { parsePermission } from "../permissions/policy.js";
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 export function parseCli(argv: string[]) {
@@ -58,18 +58,19 @@ Usage: arkcode [options] [prompt]
       --thinking LEVEL    off, minimal, low, medium, high, xhigh, max
       --permissions MODE  always-ask, ask-when-needed, never-ask
       --full-access       Alias for --permissions never-ask
-      --trust             Trust workspace AGENTS.md text
+      --trust             Trust project AGENTS.md and MCP server configuration
   -p, --print             Run one prompt without a TUI
       --json              Emit JSON events
       --approve           Approve requested actions in print mode
       --home PATH         ArkCode configuration directory
   -h, --help              Show help
 
-Six tools remain available in every approval mode.
-Always Ask allows reading/search and plain ls; other actions need approval.
-Ask When Needed allows ordinary actions and asks for known dangerous commands.
-Never Ask runs without tool approval. Untrusted directories skip project AGENTS.md; global instructions still apply.
+Six built-in tools remain available in every approval mode; connected MCP tools are exposed dynamically.
+Always Ask allows workspace reading/search and plain ls; other actions and MCP calls need approval.
+Ask When Needed allows ordinary built-in actions; dangerous commands and MCP tools without user auto-approval ask.
+Never Ask runs without tool approval. Untrusted directories skip project AGENTS.md and MCP; user configuration still applies.
 Use /connect to configure a Pi provider or custom endpoint.
+Use /mcp to inspect servers and tools, reload configuration, reconnect, or enable/disable servers.
 Print mode requires --model or a saved default model.
 In the TUI, press Left on an empty idle composer or use /resume to browse sessions.
 `;

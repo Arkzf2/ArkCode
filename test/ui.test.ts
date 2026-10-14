@@ -7,8 +7,8 @@ import { setTimeout } from "node:timers/promises";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { stripTerminalSequences, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
-import type { SessionBrowserResult, SessionItem, Status, UiActions } from "../src/domain.js";
-import { sanitizeTerminalText, TerminalUI } from "../src/ui.js";
+import type { SessionBrowserResult, SessionItem, Status, UiActions } from "../src/app/types.js";
+import { sanitizeTerminalText, TerminalUI } from "../src/ui/terminal.js";
 
 class MemoryTerminal implements Terminal {
   output = "";
@@ -348,6 +348,24 @@ test("Ctrl+T displays full tool receipts", async (t) => {
   assert.match(terminal.text(), /line4/);
 });
 
+test("/mcp completes in the terminal and MCP receipts retain the server/tool identity", async (t) => {
+  const terminal = new MemoryTerminal(100);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, mcpServers: ["github"] });
+  ui.start();
+  for (const key of "/mc") terminal.press(key);
+  await setTimeout(100);
+  terminal.press("\t");
+  await setTimeout(100);
+  assert.equal(ui.draft(), "/mcp ");
+  ui.setDraft("");
+  ui.tool("mcp-call", "mcp__github__get_issue", "Issue receipt", "done", { target: "mcp__github__get_issue" });
+  await setTimeout(50);
+  assert.match(terminal.text(), /Called MCP mcp__github__get_issue/);
+  assert.match(terminal.text(), /Issue receipt/);
+});
+
 test("status and Markdown fit narrow and wide terminal cells", async (t) => {
   for (const width of [40, 80, 120]) {
     const terminal = new MemoryTerminal(width);
@@ -474,7 +492,7 @@ test("stopping preserves the draft and prevents keys and paste from sending or e
 });
 
 test("plain output streams deltas without duplicating its final answer", async () => {
-  const source = new URL("../src/ui.ts", import.meta.url).href;
+  const source = new URL("../src/ui/terminal.ts", import.meta.url).href;
   const code = `import { PlainUI } from ${JSON.stringify(source)};
     const ui = new PlainUI({ json: false, approve: false });
     ui.assistantDelta('Hello ');

@@ -7,7 +7,7 @@ import {
   type AutocompleteSuggestions,
 } from "@earendil-works/pi-tui";
 import { slashCommands } from "./commands.js";
-import { workspacePath } from "./tools.js";
+import { workspacePath } from "../tools/workspace.js";
 
 const ignoredDirectories = new Set([".git", ".arkcode", "node_modules"]);
 
@@ -19,8 +19,19 @@ export class WorkspaceAutocompleteProvider implements AutocompleteProvider {
   readonly triggerCharacters = ["@"];
   private readonly commands: CombinedAutocompleteProvider;
 
-  constructor(private readonly cwd: string) {
-    this.commands = new CombinedAutocompleteProvider(slashCommands, cwd);
+  constructor(private readonly cwd: string, mcpServers: () => readonly string[] = () => []) {
+    this.commands = new CombinedAutocompleteProvider(slashCommands.map((command) => command.name !== "mcp" ? command : {
+      ...command,
+      getArgumentCompletions: (prefix: string) => {
+        const exposure = /^exposure\s+(\S+)\s+(\S*)$/.exec(prefix);
+        if (exposure) return ["codemode", "deferred", "direct", "hidden"].filter((mode) => mode.startsWith(exposure[2] ?? ""))
+          .map((mode) => ({ value: `exposure ${exposure[1]} ${mode}`, label: mode }));
+        const match = /^(tools|reconnect|enable|disable|login|logout|exposure)\s+(\S*)$/.exec(prefix);
+        const names = match ? mcpServers().filter((name) => name.startsWith(match[2] ?? "")).map((name) => `${match[1]} ${name}`)
+          : ["status", "tools", "reload", "reconnect", "enable", "disable", "login", "logout", "exposure"].filter((name) => name.startsWith(prefix));
+        return names.map((value) => ({ value, label: value }));
+      },
+    }), cwd);
   }
 
   async getSuggestions(lines: string[], cursorLine: number, cursorCol: number, options: { signal: AbortSignal; force?: boolean }): Promise<AutocompleteSuggestions | null> {

@@ -1,5 +1,5 @@
-import type { Permission } from "./permissions.js";
-export type { Permission } from "./permissions.js";
+import type { Permission } from "../permissions/policy.js";
+export type { Permission } from "../permissions/policy.js";
 export type InputMode = "prompt" | "steer" | "follow-up";
 export type RunOutcome = "completed" | "failed" | "interrupted";
 export type RunState =
@@ -13,7 +13,9 @@ export interface ApprovalRequest {
   tool: string;
   description: string;
   cwd: string;
-  invocation?: { kind: "shell"; command: string; shell: string } | { kind: "file"; path: string };
+  invocation?: { kind: "shell"; command: string; shell: string } | { kind: "file"; path: string }
+    | { kind: "mcp"; server: string; tool: string; source: string; identity: string;
+      arguments: Record<string, unknown>; autoApprove: boolean; destructive: boolean };
 }
 export type ApprovalDecision = "once" | "session" | "deny";
 export interface Choice { value: string; label: string; description?: string }
@@ -43,6 +45,7 @@ export interface Status {
   queued: string[];
   viewer: boolean;
   executionBlocked?: boolean;
+  mcpServers?: string[];
 }
 export interface UserInterface {
   status(value: Status): void;

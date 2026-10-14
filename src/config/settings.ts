@@ -6,8 +6,8 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { z } from "zod";
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
-import { configuredPermissionSchema } from "./permissions.js";
-import { SYSTEM_PROMPT } from "./prompt.js";
+import { configuredPermissionSchema } from "../permissions/policy.js";
+import { SYSTEM_PROMPT } from "../context/prompt.js";
 
 const legacyDeepSeekProviderSchema = z.object({
   baseUrl: z.literal("https://api.deepseek.com/v1"),

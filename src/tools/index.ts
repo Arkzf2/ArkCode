@@ -1,0 +1,140 @@
+import { access, mkdir, stat, writeFile } from "node:fs/promises";
+import { relative, sep } from "node:path";
+import type { TSchema } from "typebox";
+import { minimatch } from "minimatch";
+import { z } from "zod";
+import { createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition,
+  createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition,
+  detectSupportedImageMimeTypeFromFile, type BashOperations, type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import type { ApprovalRequest } from "../app/types.js";
+import type { ManagedShell, ShellReceipt } from "./shell.js";
+import type { ToolOutputFiles } from "./output-files.js";
+import { collect, readBuffer, workspacePath } from "./workspace.js";
+
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+export const TOOL_NAMES = ["Read", "Write", "Edit", "Grep", "Glob", "Bash"];
+export const READ_TOOL_NAMES = ["Read", "Grep", "Glob"];
+const invocationSchema = z.union([z.object({ command: z.string() }), z.object({ path: z.string() })]);
+
+
+export function createTools(options: {
+  cwd: string;
+  authorize: (request: ApprovalRequest) => Promise<boolean>;
+  shell: ManagedShell;
+  outputFiles?: ToolOutputFiles;
+}): ToolDefinition[] {
+  const { cwd, authorize, shell, outputFiles } = options;
+  const readPath = async (path: string) => await outputFiles?.resolve(cwd, path) ?? workspacePath(cwd, path);
+  const wrap = <T extends TSchema, D, S>(name: string, tool: ToolDefinition<T, D, S>): Omit<ToolDefinition<T, D, S>, "renderCall" | "renderResult"> => {
+    const { renderCall: _renderCall, renderResult: _renderResult, ...definition } = tool;
+    return {
+      ...definition,
+      name,
+      label: name,
+      promptGuidelines: definition.promptGuidelines?.map((guideline) => guideline.replace(/\b(read|write|edit|grep|find|bash|powershell)\b/g,
+        (toolName) => ({ read: "Read", write: "Write", edit: "Edit", grep: "Grep", find: "Glob", bash: "Bash", powershell: "Bash" })[toolName] ?? toolName)),
+      executionMode: "sequential",
+      async execute(id, params, signal, onUpdate, ctx) {
+        signal?.throwIfAborted();
+        const args = invocationSchema.safeParse(params);
+        const invocation: ApprovalRequest["invocation"] = !args.success ? undefined : "command" in args.data
+          ? { kind: "shell", command: args.data.command, shell: shell.executable }
+          : { kind: "file", path: args.data.path };
+        if (invocation?.kind === "file") {
+          if (name === "Read") await readPath(invocation.path);
+          else await workspacePath(cwd, invocation.path, name === "Write" || name === "Edit");
+        }
+        const description = `${name}\nArguments:\n${JSON.stringify(params)}`;
+        if (!await authorize({ id, tool: name, description, cwd, invocation })) throw new Error("Tool execution denied.");
+        signal?.throwIfAborted();
+        return tool.execute(id, params, signal, onUpdate, ctx);
+      },
+    };
+  };
+  const writeFileGuarded = async (path: string, content: string) => {
+    if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw new Error("Content exceeds the 2 MiB text limit.");
+    await writeFile(await workspacePath(cwd, path, true), content, "utf8");
+  };
+  const read = wrap("Read", createReadToolDefinition(cwd, {
+    operations: {
+      access: async (path) => access(await readPath(path)),
+      readFile: async (path) => await outputFiles?.read(cwd, path) ?? readBuffer(cwd, path, false, true),
+      detectImageMimeType: async (path) => detectSupportedImageMimeTypeFromFile(await readPath(path)),
+    },
+  }));
+  const write = wrap("Write", createWriteToolDefinition(cwd, {
+    operations: {
+      mkdir: async (path) => { await mkdir(await workspacePath(cwd, path, true), { recursive: true }); },
+      writeFile: writeFileGuarded,
+    },
+  }));
+  const edit = wrap("Edit", createEditToolDefinition(cwd, {
+    operations: {
+      access: async (path) => access(await workspacePath(cwd, path, true)),
+      readFile: (path) => readBuffer(cwd, path, true),
+      writeFile: writeFileGuarded,
+    },
+  }));
+  const findDefinition = createFindToolDefinition(cwd);
+  const find = wrap("Glob", {
+    ...findDefinition,
+    description: "Find workspace files by glob pattern, excluding dependency, metadata and credential paths. Returns paths relative to the search directory.",
+    promptSnippet: "Find workspace files by glob pattern",
+    async execute(id, params, signal, update, ctx) {
+      const definition = createFindToolDefinition(cwd, {
+        operations: {
+          exists: async (path) => { await stat(await workspacePath(cwd, path)); return true; },
+          glob: async (pattern, path, { limit }) => (await collect(cwd, path, signal))
+            .filter((file) => minimatch(relative(path, file).split(sep).join("/"), pattern, {
+              matchBase: true, dot: true, nocase: process.platform === "win32",
+            })).slice(0, limit),
+        },
+      });
+      return definition.execute(id, params, signal, update, ctx);
+    },
+  });
+  const grep = wrap("Grep", createGrepToolDefinition(cwd, {
+    maxFileBytes: MAX_FILE_BYTES,
+    excludeGlobs: ["**/.git/**", "**/.arkcode/**", "**/node_modules/**", "**/.env", "**/.env.*"],
+    operations: {
+      isDirectory: async (path) => (await stat(await workspacePath(cwd, path))).isDirectory(),
+      readFile: async (path) => (await readBuffer(cwd, path)).toString("utf8"),
+    },
+  }));
+  const createShell = process.platform === "win32" ? createPowerShellToolDefinition : createBashToolDefinition;
+  const shellDefinition = createShell(cwd, { exposeSessionEnvironment: false });
+  const bash = wrap("Bash", {
+    ...shellDefinition,
+    description: `${shellDefinition.description} Runs in ${shell.executable} with your OS privileges; commands can access paths outside the workspace.`,
+    async execute(id, params, signal, update, ctx) {
+      if (params.timeout !== undefined && (!Number.isFinite(params.timeout) || params.timeout < 1 || params.timeout > 600)) {
+        throw new Error("Shell timeout must be between 1 and 600 seconds.");
+      }
+      let receipt: ShellReceipt | undefined;
+      const operations: BashOperations = {
+        async exec(command, _cwd, { signal: shellSignal, timeout, onData }) {
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          shellSignal?.addEventListener("abort", abort, { once: true });
+          if (shellSignal?.aborted) controller.abort();
+          const timer = timeout === undefined ? undefined : setTimeout(abort, timeout * 1000);
+          try {
+            receipt = await shell.execute(command, controller.signal, undefined, onData);
+            if (receipt.status === "cancelled") onData(Buffer.from("\n[Command cancelled]"));
+            return { exitCode: receipt.status === "cancelled" ? 130 : receipt.exitCode };
+          } finally {
+            if (timer) clearTimeout(timer);
+            shellSignal?.removeEventListener("abort", abort);
+          }
+        },
+      };
+      const definition = createShell(cwd, { operations, exposeSessionEnvironment: false });
+      const result = await definition.execute(id, params, signal, update, ctx);
+      return { ...result, details: { ...result.details, ...receipt,
+        ...(receipt?.status === "cancelled" ? { exitCode: 130, processExitCode: receipt.exitCode } : {}),
+      } };
+    },
+  });
+  return [read, write, edit, grep, find, bash];
+}

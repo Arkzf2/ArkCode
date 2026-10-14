@@ -5,13 +5,12 @@ import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, realpath, rm, appendFile, writeFile, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel } from "../src/config.js";
-import { inspectSession, listArkSessions, readRunMarker, recoverRunMarker, WorkspaceLease, writeRunMarker } from "../src/storage.js";
-import { parseCli } from "../src/args.js";
+import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel } from "../src/config/settings.js";
+import { inspectSession, listArkSessions, readRunMarker, recoverRunMarker, WorkspaceLease, writeRunMarker } from "../src/session/storage.js";
+import { parseCli } from "../src/app/args.js";
 
 test("settings persist defaults and reject unknown permission values", async () => {
   const home = await mkdtemp(join(tmpdir(), "arkcode-config-"));
@@ -92,13 +91,15 @@ test("different config homes and path aliases share the same workspace writer le
   }
 });
 
-test("a crashed real process releases ownership by stale lease recovery and does not replay runs", async () => {
+test("a crashed real process releases ownership by stale lease recovery and does not replay runs", { timeout: 15000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "arkcode-crash-"));
-  const moduleUrl = pathToFileURL(resolve("src/storage.ts")).href;
+  const moduleUrl = new URL("../src/session/storage.ts", import.meta.url).href;
   const script = `const { WorkspaceLease } = await import(${JSON.stringify(moduleUrl)}); await WorkspaceLease.acquire(${JSON.stringify(root)}, ${JSON.stringify(root)}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);`;
   const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
   try {
-    const output = await once(child.stdout, "data");
+    const output = await Promise.race([once(child.stdout, "data"), once(child, "exit").then(([code]) => {
+      throw new Error(`Lease fixture exited before becoming ready: ${String(code)}`);
+    })]);
     assert.match(String(output[0]), /ready/);
     const viewer = await WorkspaceLease.acquire(root, root);
     assert.equal(viewer.viewer, true);
