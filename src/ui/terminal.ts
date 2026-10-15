@@ -45,6 +45,8 @@ import type {
 import { slashCommands } from "./commands.js";
 import { permissionLabels } from "../permissions/policy.js";
 import { mentionPrefix, WorkspaceAutocompleteProvider } from "./autocomplete.js";
+import { diffStats, highlightCommand, renderDiff, toolColors } from "./tool-rendering.js";
+import { contextDetails, contextReadout } from "./context-usage.js";
 
 class SecretInput extends Input {
   override render(width: number): string[] {
@@ -64,7 +66,7 @@ type ToolState = Parameters<UserInterface["tool"]>[3];
 type TranscriptEntry =
   | { kind: "message"; role: MessageKind; text: string; component: Markdown | Text }
   | { kind: "reasoning"; id: string; text: string; active: boolean; component: Text }
-  | { kind: "tool"; id: string; name: string; target: string; exitCode?: number; text: string; state: ToolState };
+  | { kind: "tool"; id: string; name: string; target: string; exitCode?: number; diff?: string; text: string; state: ToolState; expanded: boolean | null };
 type Panel = { transient?: boolean } & (
   | { kind: "choice"; component: Container; cancel: () => void; select: (index: number) => void }
   | { kind: "input"; component: Container; cancel: () => void }
@@ -105,9 +107,7 @@ const red = fg(219, 160, 160);
 const dim = fg(145, 146, 154);
 const faint = fg(105, 106, 114);
 const userText = fg(209, 201, 181);
-const pathText = fg(168, 170, 180);
-const commandText = fg(214, 215, 218);
-const neutral = fg(195, 196, 205);
+const neutral = fg(229, 231, 235);
 const reasoningText = fg(180, 173, 191);
 const directoryText = fg(167, 188, 192);
 const permissionText = fg(203, 189, 152);
@@ -225,6 +225,11 @@ export class TerminalUI implements UserInterface {
   private panel: Panel | null = null;
   private browser: BrowserState | null = null;
   private expanded = false;
+  private readonly toolHitRows = new Map<number, { id: string; end: number }>();
+  private mouseDown: { id: string; row: number; column: number } | null = null;
+  private scrollOffset = 0;
+  private transcriptRows = 0;
+  private contextRows = 0;
   private visibleStart = 0;
   private pasting = false;
   private lastKey: { data: string; at: number } | null = null;
@@ -235,6 +240,7 @@ export class TerminalUI implements UserInterface {
 
   constructor(private readonly actions: UiActions, private readonly terminal: Terminal = new ProcessTerminal()) {
     this.tui = new TuiMainScreen(terminal, true);
+    this.tui.setClearOnShrink(true);
     this.editor = this.createEditor();
     this.tui.addInputListener((data) => this.handleKeys(data));
     this.rebuild();
@@ -243,7 +249,9 @@ export class TerminalUI implements UserInterface {
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.terminal.clearScreen();
     this.tui.start();
+    this.mouseReporting(true);
     let ticks = 0;
     this.timer = setInterval(() => {
       ticks++;
@@ -306,7 +314,7 @@ export class TerminalUI implements UserInterface {
   tool(id: string, name: string, text: string, state: ToolState, details?: ToolDetails): void {
     let entry = this.tools.get(id);
     if (!entry) {
-      entry = { kind: "tool", id, name, target: "", text, state };
+      entry = { kind: "tool", id, name, target: "", text, state, expanded: null };
       this.tools.set(id, entry);
       this.entries.push(entry);
     }
@@ -315,6 +323,7 @@ export class TerminalUI implements UserInterface {
     entry.state = state;
     if (details?.target !== undefined) entry.target = sanitizeTerminalText(details.target);
     if (details?.exitCode !== undefined) entry.exitCode = details.exitCode;
+    if (details?.diff !== undefined) entry.diff = sanitizeTerminalText(details.diff);
     this.render();
   }
 
@@ -467,6 +476,10 @@ export class TerminalUI implements UserInterface {
     this.tools.clear();
     this.activeAssistant = null;
     this.visibleStart = 0;
+    this.scrollOffset = 0;
+    this.transcriptRows = 0;
+    this.toolHitRows.clear();
+    this.mouseDown = null;
     this.render();
   }
 
@@ -476,7 +489,7 @@ export class TerminalUI implements UserInterface {
     this.dismiss();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    if (this.started) this.tui.stop();
+    if (this.started) { this.mouseReporting(false); this.tui.stop(); }
     this.started = false;
   }
 
@@ -492,19 +505,32 @@ export class TerminalUI implements UserInterface {
     return new Text(text, 0, kind === "user" ? 0 : 1);
   }
 
-  private toolLines(entry: Extract<TranscriptEntry, { kind: "tool" }>, width: number): string[] {
+  private toolLines(entry: Extract<TranscriptEntry, { kind: "tool" }>, width: number, startRow: number): string[] {
     const action = this.toolAction(entry.name, entry.state);
     const shell = entry.name.toLowerCase() === "bash" || entry.name === "shell";
-    const marker = entry.state === "error" ? red("•") : entry.state === "done" && shell ? green("•") : dim("•");
-    const target = (shell ? commandText : pathText)(entry.target || entry.name);
+    const marker = entry.state === "error" ? toolColors.error("●") : toolColors.success("●");
+    const target = (shell ? highlightCommand : toolColors.path)(entry.target || entry.name);
     const result = entry.exitCode === undefined ? "" : `  ${entry.exitCode === 0 ? dim(`exit ${entry.exitCode}`) : red(`exit ${entry.exitCode}`)}`;
-    const heading = wrapTextWithAnsi(`${neutral(action)} ${target}${result}`, Math.max(1, width - 4));
+    const diff = entry.state === "error" ? undefined : entry.diff;
+    const counts = diff ? diffStats(diff) : null;
+    const changes = counts ? `  ${toolColors.success(`+${counts.added}`)} ${toolColors.error(`-${counts.removed}`)}` : "";
+    const heading = wrapTextWithAnsi(`${neutral(action)} ${target}${changes}${result}`, Math.max(1, width - 4));
     const rows = heading.map((line, index) => `  ${index === 0 ? marker : " "} ${line}`);
-    const output = entry.text;
-    const wrapped = output ? output.split("\n").flatMap((line) => wrapTextWithAnsi(this.formatToolLine(line), Math.max(1, width - 6))) : [];
-    const preview = this.expanded ? wrapped : wrapped.slice(0, 3);
+    const outputWidth = Math.max(1, width - 6);
+    const output = entry.text.replace(/\n$/, "");
+    const wrapped = diff ? renderDiff(diff, outputWidth) : output ? output.split("\n").flatMap((line) => wrapTextWithAnsi(toolColors.output(line), outputWidth)) : [];
+    const limit = diff ? 8 : 3;
+    const expanded = entry.expanded ?? this.expanded;
+    const preview = expanded ? wrapped : wrapped.slice(0, limit);
     rows.push(...preview.map((line, index) => `    ${index === 0 ? dim("└") : " "} ${line}`));
-    if (!this.expanded && wrapped.length > 3) rows.push(...wrapTextWithAnsi(dim(`+${wrapped.length - 3} lines · Ctrl+T for details`), Math.max(1, width - 4)).map((line) => `    ${line}`));
+    if (wrapped.length > limit) {
+      const label = expanded ? "Show less (click to collapse)" : `+${wrapped.length - limit} lines (click / Ctrl+T to expand)`;
+      for (const line of wrapTextWithAnsi(dim(label), Math.max(1, width - 4))) {
+        this.toolHitRows.set(startRow + rows.length, { id: entry.id, end: 4 + visibleWidth(line) });
+        rows.push(`    ${line}`);
+      }
+      if (expanded) this.toolHitRows.set(startRow, { id: entry.id, end: width });
+    }
     return [...rows, ""];
   }
 
@@ -512,19 +538,11 @@ export class TerminalUI implements UserInterface {
     name = name.toLowerCase();
     if (state === "error") return "Failed";
     if (["read", "glob", "find", "grep", "ls"].includes(name)) return state === "running" ? "Exploring" : "Explored";
-    if (name === "edit" || name === "write") return state === "running" ? "Editing" : "Edited";
+    if (name === "edit") return state === "running" ? "Editing" : "Edited";
+    if (name === "write") return state === "running" ? "Writing" : "Wrote";
     if (name === "bash" || name === "shell") return state === "running" ? "Running" : "Ran";
     if (name.startsWith("mcp__")) return state === "running" ? "Calling MCP" : "Called MCP";
     return state === "running" ? "Working" : "Worked";
-  }
-
-  private formatToolLine(line: string): string {
-    if (line.startsWith("+") && !line.startsWith("+++")) return green(line);
-    if (line.startsWith("-") && !line.startsWith("---")) return red(line);
-    if (line.startsWith("@@")) return dim(line);
-    if (/^\s*(PASS|ok|✓)/.test(line)) return green(line);
-    if (/^\s*(FAIL|Error|AssertionError)/.test(line)) return red(line);
-    return dim(line);
   }
 
   private rebuild(): void {
@@ -549,27 +567,13 @@ export class TerminalUI implements UserInterface {
     this.tui.addChild(new RenderComponent((width) => this.headerLines(width)));
     this.tui.addChild(new RenderComponent((width) => {
       const lines: string[] = [];
+      this.toolHitRows.clear();
       const entries = this.entries.slice(this.visibleStart);
       for (let index = 0; index < entries.length; index++) {
         const entry = entries[index];
         if (!entry) continue;
         if (entry.kind === "tool") {
-          const group = [entry];
-          if (!this.expanded && this.exploration(entry)) {
-            let next = entries[index + 1];
-            while (next?.kind === "tool" && this.exploration(next)) {
-              group.push(next);
-              index++;
-              next = entries[index + 1];
-            }
-          }
-          if (group.length > 1) {
-            lines.push(`  ${dim("•")} ${neutral("Explored")}`);
-            const output = group.flatMap((tool) => wrapTextWithAnsi(`${tool.name === "read" ? "Read" : tool.name} ${tool.target || tool.name}`, Math.max(1, width - 6)));
-            lines.push(...output.slice(0, 3).map((line, offset) => `    ${offset === 0 ? dim("└") : " "} ${dim(line)}`));
-            if (output.length > 3) lines.push(...wrapTextWithAnsi(dim(`+${output.length - 3} lines · Ctrl+T for details`), Math.max(1, width - 4)).map((line) => `    ${line}`));
-            lines.push("");
-          } else lines.push(...this.toolLines(entry, width));
+          lines.push(...this.toolLines(entry, width, this.headerLines(width).length + lines.length));
           continue;
         }
         if (entry.kind === "reasoning" && !this.expanded) continue;
@@ -584,13 +588,22 @@ export class TerminalUI implements UserInterface {
         }
         let first = true;
         for (const line of rendered) {
-          if (!stripTerminalSequences(line).trim()) { lines.push(""); continue; }
-          const color = entry.kind === "reasoning" ? (value: string) => italic(dim(value)) : entry.role === "error" ? red : entry.role === "info" ? dim : neutral;
-          lines.push(`  ${first ? dim("•") : " "} ${color(line)}`);
+          if (!stripTerminalSequences(line).trim()) {
+            if (lines.length > 0 && lines.at(-1) !== "") lines.push("");
+            continue;
+          }
+          const color = entry.kind === "reasoning" ? (value: string) => italic(dim(value)) : entry.role === "error" ? red : neutral;
+          lines.push(`  ${first ? dim("●") : " "} ${color(line)}`);
           first = false;
         }
       }
-      return lines;
+      if (this.scrollOffset > 0) this.scrollOffset += Math.max(0, lines.length - this.transcriptRows);
+      this.transcriptRows = lines.length;
+      this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - 1));
+      const end = lines.length - this.scrollOffset;
+      const headerHeight = this.headerLines(width).length;
+      for (const row of this.toolHitRows.keys()) if (row >= headerHeight + end) this.toolHitRows.delete(row);
+      return lines.slice(0, end);
     }));
     this.tui.addChild(new RenderComponent((width) => this.activity(width)));
     if (this.panel) this.tui.addChild(this.panel.component);
@@ -775,21 +788,18 @@ export class TerminalUI implements UserInterface {
     return { consume: true };
   }
 
-  private exploration(entry: Extract<TranscriptEntry, { kind: "tool" }>): boolean {
-    return entry.state === "done" && ["read", "glob", "find", "grep", "ls"].includes(entry.name.toLowerCase());
-  }
-
   private activity(width: number): string[] {
     const status = this.currentStatus;
     if (!status || status.initializing) return [];
     const rows: string[] = [];
+    if (this.scrollOffset > 0) rows.push(`↑ History · ${this.scrollOffset} lines below · PgDn or End to return`);
     if (status.state.kind !== "idle") {
       const elapsed = Math.floor((Date.now() - status.state.startedAt) / 1000);
       const currentTool = [...this.tools.values()].findLast((tool) => tool.state === "running");
       const thinking = this.entries.some((entry) => entry.kind === "reasoning" && entry.active);
       const label = status.state.kind === "awaiting-approval" ? "Approval needed" :
         status.state.kind === "stopping" ? "Stopping" : currentTool ? `${this.toolAction(currentTool.name, "running")} ${currentTool.target || currentTool.name}` : this.activeAssistant ? "Writing response" : thinking ? "Thinking" : "Working";
-      rows.push(`${dim("•")} ${label}  ${dim(`(${elapsed}s)`)}`);
+      rows.push(`${dim("●")} ${label}  ${dim(`(${elapsed}s)`)}`);
     } else if (status.state.outcome === "interrupted") rows.push("Interrupted");
     else if (status.state.outcome === "failed") rows.push("Failed");
     else rows.push(status.state.outcome === "completed" ? "Completed" : "Ready");
@@ -802,15 +812,22 @@ export class TerminalUI implements UserInterface {
     if (!status || status.initializing) return [];
     const permission = permissionLabels[status.permission] + (status.executionBlocked ? " · Execution blocked" : "");
     const fields = [
-      accent(sanitizeTerminalText(status.model)),
+      accent(sanitizeTerminalText(status.model.slice(status.model.indexOf("/") + 1))),
       reasoningText(sanitizeTerminalText(status.thinking)),
       directoryText(sanitizeTerminalText(status.cwd)),
       permissionText(permission),
       branchText(sanitizeTerminalText(status.branch || "No Git")),
-      yellow(sanitizeTerminalText(status.context.replace("Context unknown", "Context unavailable"))),
     ];
     const joined = fields.join("  ");
-    return wrapTextWithAnsi(joined, Math.max(1, width - 4)).map((row) => `  ${row}`);
+    const contentWidth = Math.max(1, width - 4);
+    const context = contextReadout(status.context, contentWidth);
+    const paint = context.tone === "critical" ? toolColors.error : context.tone === "warning" ? yellow : dim;
+    const contextLines = wrapTextWithAnsi(paint(context.text), contentWidth);
+    this.contextRows = contextLines.length;
+    return [
+      ...wrapTextWithAnsi(joined, contentWidth).map((row) => `  ${row}`),
+      ...contextLines.map((row) => `  ${" ".repeat(Math.max(0, contentWidth - visibleWidth(row)))}${row}`),
+    ];
   }
 
   private headerLines(width: number): string[] {
@@ -852,6 +869,10 @@ export class TerminalUI implements UserInterface {
   }
 
   private handleKeys(data: string): TuiInputListenerResult {
+    if (!this.pasting && !data.includes("\x1b[200~")) {
+      if (data.startsWith("\x1b[<")) return this.handleMouse(data);
+      if (data.startsWith("\x1b[M")) return { consume: true };
+    }
     if (isKeyRelease(data)) return { consume: true };
     if (!this.panel && !this.browser && (!this.currentStatus || this.currentStatus.initializing)) {
       if (matchesKey(data, "ctrl+c")) this.run(() => this.actions.exit());
@@ -887,15 +908,16 @@ export class TerminalUI implements UserInterface {
       }
       return undefined;
     }
-    if (this.currentStatus?.state.kind === "stopping" && !matchesKey(data, "ctrl+c") && !matchesKey(data, "ctrl+t") && !matchesKey(data, "ctrl+o")) return { consume: true };
+    if (this.currentStatus?.state.kind === "stopping" && !matchesKey(data, "ctrl+c") && !matchesKey(data, "ctrl+t") && !matchesKey(data, "ctrl+o") && !matchesKey(data, "pageUp") && !matchesKey(data, "pageDown") && !matchesKey(data, "end")) return { consume: true };
     if (matchesKey(data, "ctrl+c")) {
       this.run(() => this.busy() ? this.actions.interrupt() : this.actions.exit());
     } else if (matchesKey(data, "ctrl+d") && !this.draft()) {
       this.run(() => this.actions.exit());
     } else if (matchesKey(data, "escape")) {
       if (this.editor.isShowingAutocomplete()) return undefined;
-      if (this.expanded) {
+      if (this.expanded || [...this.tools.values()].some((entry) => entry.expanded)) {
         this.expanded = false;
+        for (const entry of this.tools.values()) entry.expanded = null;
         this.render();
       } else if (this.busy()) this.run(() => this.actions.interrupt());
       else if (!this.draft()) {
@@ -910,12 +932,19 @@ export class TerminalUI implements UserInterface {
       this.run(() => this.actions.browseSessions());
     } else if (matchesKey(data, "ctrl+t")) {
       this.expanded = !this.expanded;
+      for (const entry of this.tools.values()) entry.expanded = null;
       if (this.expanded) this.visibleStart = 0;
+      this.render();
+    } else if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
+      this.scrollTranscript((matchesKey(data, "pageUp") ? 1 : -1) * Math.max(1, this.terminal.rows - 10));
+    } else if (matchesKey(data, "end") && this.scrollOffset > 0) {
+      this.scrollOffset = 0;
       this.render();
     } else if (matchesKey(data, "ctrl+o")) {
       this.run(() => this.actions.submit("/copy", "prompt"));
     } else if (matchesKey(data, "ctrl+l")) {
       this.visibleStart = this.entries.length;
+      this.scrollOffset = 0;
       this.tui.terminal.clearScreen();
       this.tui.requestRender(true);
     } else if (matchesKey(data, "ctrl+r")) {
@@ -923,7 +952,7 @@ export class TerminalUI implements UserInterface {
     } else if (matchesKey(data, "ctrl+g")) {
       this.run(() => this.editExternally());
     } else if (data === "?" && !this.draft()) {
-      this.message("info", "Enter send / steer    Tab queue follow-up    Left sessions    Ctrl+C interrupt / exit\nCtrl+T tool details    Ctrl+O copy    Ctrl+R history    Ctrl+G editor\nCtrl+L clear view    Shift+Enter newline    Esc cancel    /help commands");
+      this.message("info", "Enter send / steer    Tab queue follow-up    Left sessions    Ctrl+C interrupt / exit\nClick +N lines to expand / Show less to collapse    Ctrl+T all details\nWheel / PgUp / PgDn scroll    End latest    Shift+drag select text\nClick context for token details    Ctrl+O copy    Ctrl+R history    Ctrl+G editor\nCtrl+L clear view    Shift+Enter newline    Esc cancel    /help commands");
     } else return undefined;
     return { consume: true };
   }
@@ -946,6 +975,7 @@ export class TerminalUI implements UserInterface {
       const file = join(directory, "prompt.md");
       await writeFile(file, draft, "utf8");
       const command = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad.exe" : "vi");
+      this.mouseReporting(false);
       this.tui.stop();
       this.started = false;
       const code = await new Promise<number | null>((resolve, reject) => {
@@ -960,7 +990,10 @@ export class TerminalUI implements UserInterface {
     } finally {
       if (!this.started) {
         this.started = true;
+        this.terminal.clearScreen();
         this.tui.start();
+        this.tui.requestRender(true);
+        this.mouseReporting(true);
         this.tui.setFocus(this.editor);
       }
       this.externalEditor = false;
@@ -974,6 +1007,56 @@ export class TerminalUI implements UserInterface {
 
   private render(): void {
     if (this.started && !this.externalEditor) this.tui.requestRender();
+  }
+
+  private mouseReporting(enabled: boolean): void {
+    this.terminal.write(enabled ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1000l\x1b[?1006l");
+    this.mouseDown = null;
+  }
+
+  private scrollTranscript(delta: number): void {
+    this.scrollOffset = Math.max(0, Math.min(Math.max(0, this.transcriptRows - 1), this.scrollOffset + delta));
+    this.mouseDown = null;
+    this.render();
+  }
+
+  private handleMouse(data: string): TuiInputListenerResult {
+    const status = this.currentStatus;
+    const match = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(data);
+    if (!match || this.pasting || this.externalEditor || this.browser || !status || status.initializing) return { consume: true };
+    const button = Number(match[1]);
+    const column = Number(match[2]) - 1;
+    const screenRow = Number(match[3]) - 1;
+    if ((button & 28) !== 0 || column < 0 || column >= this.terminal.columns || screenRow < 0 || screenRow >= this.terminal.rows) return { consume: true };
+    if ((button & 64) !== 0) {
+      if ((button & 3) <= 1) {
+        const delta = (button & 1) === 0 ? -3 : 3;
+        if (this.panel?.kind === "inspection") this.panel.scroll(delta);
+        else if (!this.panel) this.scrollTranscript(-delta);
+      }
+      return { consume: true };
+    }
+    if (this.panel || (button & 35) !== 0) return { consume: true };
+    const state = this.tui.captureRenderState();
+    if (state.previousWidth !== this.terminal.columns || state.previousHeight !== this.terminal.rows) return { consume: true };
+    const row = state.previousViewportTop + screenRow;
+    const tool = this.toolHitRows.get(row);
+    const contextStart = state.previousLines.length - this.contextRows;
+    const isContext = row >= contextStart && row < state.previousLines.length;
+    const id = tool && column >= 4 && column < tool.end ? tool.id : isContext && column >= 2 ? "context" : null;
+    if (match[4] === "M") this.mouseDown = id ? { id, row, column } : null;
+    else {
+      const press = this.mouseDown;
+      this.mouseDown = null;
+      if (id && press?.id === id && press.row === row && press.column === column) {
+        if (isContext) this.run(() => this.inspect("Context usage", contextDetails(status)));
+        else {
+          const entry = this.tools.get(id);
+          if (entry) { entry.expanded = !(entry.expanded ?? this.expanded); this.render(); }
+        }
+      }
+    }
+    return { consume: true };
   }
 }
 

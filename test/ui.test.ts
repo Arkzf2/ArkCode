@@ -39,7 +39,7 @@ const idle: Status = {
   cwd: "D:/ArkCode/a-long-directory-name",
   permission: "always-ask",
   branch: "main",
-  context: "1,024 / 128,000",
+  context: { tokens: 1024, contextWindow: 128000, percent: 0.8 },
   state: { kind: "idle", outcome: null },
   queued: [],
   viewer: false,
@@ -83,7 +83,8 @@ test("startup hides the composer and blocks typing, paste and submit until MCP i
   await setTimeout(30);
   assert.doesNotMatch(terminal.text(), /Initializing\.\.\./);
   assert.match(terminal.text(), /Retained startup prompt/);
-  assert.match(terminal.text(), /deepseek\/deepseek-chat/);
+  assert.match(terminal.text(), /deepseek-chat/);
+  assert.doesNotMatch(terminal.text(), /deepseek\/deepseek-chat/);
   terminal.press("\r");
   await setTimeout(10);
   assert.deepEqual(submitted, ["Retained startup prompt"]);
@@ -490,7 +491,7 @@ test("status and Markdown fit narrow and wide terminal cells", async (t) => {
     ui.start();
     await setTimeout(50);
     const text = terminal.text();
-    for (const value of [idle.model, idle.thinking, idle.cwd, "Always Ask", idle.branch, idle.context]) {
+    for (const value of ["deepseek-chat", idle.thinking, idle.cwd, "Always Ask", idle.branch, "1k / 128k", "0.8% used"]) {
       assert.ok(text.replace(/\s+/g, "").includes(value.replace(/\s+/g, "")), `${value} is missing at ${width} columns`);
     }
     assert.doesNotMatch(text, /Model deepseek|Thinking medium|Permissions ask|Branch main/);
@@ -535,7 +536,7 @@ test("approval replaces the composer while retaining footer metadata and the ori
   const frame = terminal.text();
   assert.match(frame, /Allow this tool request/);
   assert.doesNotMatch(frame, /Continue after this decision|Ask ArkCode to do anything|╭/);
-  assert.match(frame, /deepseek\/deepseek-chat/);
+  assert.match(frame, /deepseek-chat/);
   assert.equal(ui.draft(), "Continue after this decision");
   terminal.press("\x1b");
   assert.equal(await approval, "deny");

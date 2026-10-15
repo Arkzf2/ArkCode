@@ -11,6 +11,7 @@ import { z } from "zod";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { parseCli } from "../src/app/args.js";
 import { ArkHost } from "../src/app/host.js";
+import { loadConfig } from "../src/config/settings.js";
 import { ApprovalBroker } from "../src/permissions/approval.js";
 import { CONTEXT_MESSAGE } from "../src/context/dynamic.js";
 import { echoMcpTool, httpMcpFixture } from "./mcp-fixture.js";
@@ -967,6 +968,23 @@ test("a streamed agent turn reads, writes, edits and executes the native shell",
   assert.ok(lastRequest.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("Successfully replaced 1 block(s) in result.txt")));
   const saved = await f.sessions(); assert.equal(saved.length, 1);
   assert.ok((await readFile(saved[0] ?? "", "utf8")).includes("Verified all changes."));
+  assert.match(ui.tools.findLast((tool) => tool.name === "Write" && tool.state === "done")?.details?.diff ?? "", /\+1 before/);
+  assert.match(ui.tools.findLast((tool) => tool.name === "Edit" && tool.state === "done")?.details?.diff ?? "", /-1 before\n\+1 after/);
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.match(resumed.ui.tools.findLast((tool) => tool.name === "Edit")?.details?.diff ?? "", /-1 before\n\+1 after/);
+});
+
+test("context status follows the active model window and carries token estimates", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }), false, 65536);
+  const { host, ui } = await f.start();
+  assert.equal(ui.statuses.at(-1)?.context?.contextWindow, 65536);
+  await host.submit("Show usage.");
+  const usage = ui.statuses.at(-1)?.context;
+  assert.ok(usage && usage.tokens !== null && usage.tokens > 0);
+  assert.equal(usage.percent, usage.tokens / 65536 * 100);
+  await host.submit("/model fixture/alternate");
+  assert.equal(ui.statuses.at(-1)?.context?.contextWindow, 128000);
 });
 
 test("actual provider reasoning reaches the transcript with a stable identity and survives resume", { timeout: 30000 }, async (t) => {
@@ -1419,6 +1437,40 @@ test("cancelled approvals ignore late session grants and require fresh approval"
   assert.equal(ui.approvals.length, 2);
   assert.deepEqual(changes, [request, null, { ...request, id: "retry" }, null]);
 });
+
+for (const permission of ["never-ask", "ask-when-needed", "always-ask"]) {
+  test(`permission selection persists ${permission} across host restarts`, async (t) => {
+    const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+    class PermissionsUI extends RecordingUI {
+      override async choose(title: string): Promise<string | null> {
+        return title === "Permissions" ? permission : null;
+      }
+    }
+    const options = parseCli(["--cwd", f.cwd, "--home", f.home]);
+    const ui = new PermissionsUI();
+    const host = new ArkHost(options, ui);
+    const override = permission === "always-ask" ? "never-ask" : "always-ask";
+    try {
+      await host.start();
+      await host.submit(`/permissions ${override}`);
+      assert.equal(loadConfig(f.home).permission, override);
+      await host.submit("/permissions");
+      assert.equal(ui.statuses.at(-1)?.permission, permission);
+      assert.equal(loadConfig(f.home).permission, permission);
+    } finally { await host.exit(); }
+
+    const restoredUI = new RecordingUI();
+    const restored = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home]), restoredUI);
+    try {
+      await restored.start();
+      assert.equal(restoredUI.statuses.at(-1)?.permission, permission);
+    } finally { await restored.exit(); }
+
+    const explicit = await f.start(new RecordingUI(), ["--permissions", override]);
+    assert.equal(explicit.ui.statuses.at(-1)?.permission, override);
+    assert.equal(loadConfig(f.home).permission, permission);
+  });
+}
 
 test("permission changes invalidate pending approval decisions", async () => {
   let permission: Permission = "always-ask";

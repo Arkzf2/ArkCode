@@ -82,6 +82,25 @@ test("file tools reject symlinks to outside and protected metadata", async () =>
   } finally { await files.cleanup(); }
 });
 
+test("Write returns real changes for new files and overwrites without changing its model-facing receipt", async (t) => {
+  const files = await fixture();
+  t.after(() => files.cleanup());
+  const shell = new ManagedShell(files.cwd);
+  t.after(() => shell.stopAll());
+  const write = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Write");
+  assert.ok(write);
+  const resultSchema = z.object({ content: z.array(z.object({ text: z.string() })), details: z.object({ diff: z.string() }) });
+  const created = resultSchema.parse(await executeTool(write, "new", { path: "preview.txt", content: "first\r\nsecond\r\n" }));
+  assert.equal(created.content[0]?.text, "Successfully wrote to preview.txt");
+  assert.match(created.details.diff, /\+1 first\n\+2 second/);
+  const updated = resultSchema.parse(await executeTool(write, "overwrite", { path: "preview.txt", content: "first\r\nchanged\r\n" }));
+  assert.match(updated.details.diff, /-2 second\n\+2 changed/);
+  assert.equal(await readFile(join(files.cwd, "preview.txt"), "utf8"), "first\r\nchanged\r\n");
+  const large = z.object({ details: z.undefined() }).parse(await executeTool(write, "large", { path: "large.txt", content: "x".repeat(300000) }));
+  assert.equal(large.details, undefined);
+  assert.equal((await readFile(join(files.cwd, "large.txt"))).length, 300000);
+});
+
 test("find supports globstar, character classes and brace alternatives", async () => {
   const files = await fixture();
   const shell = new ManagedShell(files.cwd);

@@ -68,7 +68,7 @@ arkcode --model local/my-model
 
 六个内建工具 `Read`、`Write`、`Edit`、`Grep`、`Glob`、`Bash` 在所有模式中常驻。MCP 工具由已连接服务器的当前目录动态注册，名称为 `mcp__<server>__<tool>`，清洗或超长名称加 hash。权限切换不会改变工具 schema。原 `find` 改名为 `Glob`，原 `ls` 工具删除；目录列表使用 Bash。Windows 默认执行 PowerShell，因此 `Bash` 是工具名，实际 shell 由环境上下文提供。Always Ask 也允许独立的 `Get-ChildItem`；重定向、管道、命令替换和串联命令不属于列表豁免。
 
-未信任目录跳过项目 AGENTS.md，保留全局规则，默认 Always Ask；显式 CLI 权限仍生效。可通过 `/permissions` 或 `--permissions always-ask/ask-when-needed/never-ask` 选择。旧 `ask`、`full-access` 和 `--full-access` 仍映射到相应新模式；旧 `read-only` 配置及 `--read-only` 会报错，要求明确选择新模式。
+未信任目录跳过项目 AGENTS.md，保留全局规则，默认 Always Ask；显式 CLI 权限仍生效。通过 `/permissions` 选择的模式会保存，下次启动自动恢复；`--permissions always-ask/ask-when-needed/never-ask` 可覆盖当次启动的模式。旧 `ask`、`full-access` 和 `--full-access` 仍映射到相应新模式；旧 `read-only` 配置及 `--read-only` 会报错，要求明确选择新模式。
 
 Ask When Needed 采用 Kimi 的普通动作自动批准、有限高危规则优先询问的机制。规则覆盖关机/重启、磁盘格式化、写入设备的 `dd`、递归强制删除等，并检查命令包装、命令替换与嵌套 shell。无通配、变量和 `..` 的 `/tmp`、`/temp` 删除目标有例外。PowerShell 使用原生 AST，增加对应 Windows 命令规则。POSIX 使用 `bash-parser` 在独立解析进程中检查；超时、解析失败及尚不支持的 heredoc 视为无法分析，在 Ask When Needed 中自动允许，在 Always Ask 中询问。它不检查任意脚本或所有副作用，例如 `git push`、`git reset --hard` 和 Python 脚本不会仅因该有限规则要求批准。
 
@@ -158,11 +158,15 @@ Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交�
 | `/copy`、`/init` | 复制完整回答、生成 AGENTS.md |
 | `/exit` | 停止执行并退出 |
 
-TUI 遵循原生设计 demo 的 `prism/instrument-deepfield`，使用固定 Prism 配色、完整输入框和六字段底栏。底栏依次显示模型、推理等级、目录、权限、Git 分支和上下文用量。审批与选择面板替换输入框，关闭后恢复草稿。工具显示实际目标与执行状态，默认预览最多三行终端输出，失败命令保留退出码。模型提供的推理内容默认收起。
+TUI 使用 Prism 配色和完整输入框。工具调用使用醒目的绿色圆点，失败时变红；命令中的程序名、参数、字符串和路径分色。工具结果为灰色，中间说明与回答使用正常文字亮度。终端输出默认预览三行，点击 `+N lines` 单独展开，点击 `Show less` 收起；Ctrl+T 控制全部详情。Edit 和 Write 显示真实文件变更、行号及增删数量，默认预览八行；Write 的变更预览限于新旧内容合计不超过 256 KiB 的文本，较大文件仍正常写入并显示执行结果。失败命令保留退出码。模型提供的推理内容默认收起。
+
+底栏显示模型名称、推理等级、目录、权限和 Git 分支，模型名称不带供应商前缀。上下文另起一行靠右显示当前模型的已用/总 token 和百分比，空间足够时附带进度条。用量达到 70% 和 90% 时分别使用提示色和红色。点击上下文查看完整 token 数字；`~` 表示估算值，压缩后等待模型返回新用量时显示 `?`。模型切换后使用新模型的上下文窗口。`--json` 的 status 事件中，`context` 为 `{ tokens, contextWindow, percent }`，无法取得上下文时为 `null`。
+
+滚轮或 PgUp/PgDn 浏览历史，End 回到最新内容。开启鼠标交互的终端中，按住 Shift 拖动选择文字。审批与选择面板替换输入框，关闭后恢复草稿。
 
 空闲且输入框为空时按左方向键，或输入 `/resume`，打开跨项目会话列表。Tab/Shift+Tab 切换状态筛选，`g` 按项目或状态分组，`/` 搜索，方向键与 PgUp/PgDn 移动，Enter 打开，`n` 在选中项目新建，Esc 返回。宽终端显示会话详情，窄终端显示单列。恢复会话时显示当前分支的完整历史，包括压缩前的消息。列表只把当前进程中实际运行的会话标为 Working 或 Needs you；历史会话标为 Inactive，未确认的运行标记为 Unconfirmed。切换到未信任项目时需要重新选择信任级别，原项目的权限不会自动延续。打开失败会保留原会话与草稿。
 
-旧 `settings.json` 中的 `theme` 和 `statusline` 可读取，下一次保存时移除。文件差异可在 IDE 或外部 Git 工具中查看。代码审查可直接作为普通任务提交。
+旧 `settings.json` 中的 `theme` 和 `statusline` 可读取，下一次保存时移除。完整 Git 差异可在 IDE 或外部 Git 工具中查看。代码审查可直接作为普通任务提交。
 
 Esc 中断 agent；面板中的 Esc 返回。Ctrl+C 运行时中断，空闲时退出。Ctrl+D 在空输入区退出。Ctrl+T 展开工具转录及模型提供的推理内容，Ctrl+O 复制最近完整回答，Ctrl+R 搜索提示历史，Ctrl+G 使用 `VISUAL` 或 `EDITOR` 编辑草稿。Ctrl+L 仅清理视图。Shift+Left 编辑未消费队列输入。空输入区双 Esc 编辑上一条提示并创建分支，不回滚文件。
 

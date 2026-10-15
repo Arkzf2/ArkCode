@@ -1,4 +1,5 @@
 import type { Permission } from "../permissions/policy.js";
+import type { ContextUsage } from "@earendil-works/pi-coding-agent";
 export type { Permission } from "../permissions/policy.js";
 export type InputMode = "prompt" | "steer" | "follow-up";
 export type RunOutcome = "completed" | "failed" | "interrupted";
@@ -25,7 +26,7 @@ export interface Choice {
   status?: { text: string; tone: "positive" | "muted" | "neutral" };
 }
 export interface ChoiceOptions { transient?: boolean; hint?: string; notice?: string; initialValue?: string }
-export interface ToolDetails { target?: string; exitCode?: number }
+export interface ToolDetails { target?: string; exitCode?: number; diff?: string }
 export type SessionState = "needs-you" | "working" | "ready" | "inactive" | "unconfirmed";
 export interface SessionItem {
   id: string;
@@ -46,7 +47,7 @@ export interface Status {
   cwd: string;
   permission: Permission;
   branch: string;
-  context: string;
+  context: ContextUsage | null;
   state: RunState;
   queued: string[];
   viewer: boolean;

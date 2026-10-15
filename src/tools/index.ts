@@ -5,6 +5,7 @@ import { minimatch } from "minimatch";
 import { z } from "zod";
 import { createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition,
   createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition,
+  generateDiffString,
   detectSupportedImageMimeTypeFromFile, type BashOperations, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { ApprovalRequest } from "../app/types.js";
@@ -63,12 +64,26 @@ export function createTools(options: {
       detectImageMimeType: async (path) => detectSupportedImageMimeTypeFromFile(await readPath(path)),
     },
   }));
-  const write = wrap("Write", createWriteToolDefinition(cwd, {
-    operations: {
-      mkdir: async (path) => { await mkdir(await workspacePath(cwd, path, true), { recursive: true }); },
-      writeFile: writeFileGuarded,
+  const { renderCall: _writeCall, renderResult: _writeResult, ...writeDefinition } = createWriteToolDefinition(cwd);
+  const write = wrap<typeof writeDefinition.parameters, { diff: string } | undefined, unknown>("Write", {
+    ...writeDefinition,
+    async execute(id, params, signal, update, ctx) {
+      let diff: string | undefined;
+      const result = await createWriteToolDefinition(cwd, { operations: {
+        mkdir: async (path) => { await mkdir(await workspacePath(cwd, path, true), { recursive: true }); },
+        writeFile: async (path, content) => {
+          let before: string | null = null;
+          try { before = (await readBuffer(cwd, path, true)).toString("utf8"); }
+          catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") before = ""; }
+          await writeFileGuarded(path, content);
+          if (before !== null && Buffer.byteLength(before) + Buffer.byteLength(content) <= 256 * 1024) {
+            diff = generateDiffString(before.replace(/\r\n?/g, "\n"), content.replace(/\r\n?/g, "\n")).diff;
+          }
+        },
+      } }).execute(id, params, signal, update, ctx);
+      return { ...result, details: diff === undefined ? undefined : { diff } };
     },
-  }));
+  });
   const edit = wrap("Edit", createEditToolDefinition(cwd, {
     operations: {
       access: async (path) => access(await workspacePath(cwd, path, true)),

@@ -36,7 +36,7 @@ export function contentText(content: unknown): string {
 
 const unsupported = new Set(["goal", "agent", "plugins", "memories", "plan", "cloud"]);
 const toolTargetSchema = z.object({ path: z.string().optional(), command: z.string().optional(), pattern: z.string().optional() });
-const toolResultSchema = z.object({ exitCode: z.number().nullable().optional() });
+const toolResultSchema = z.object({ exitCode: z.number().nullable().optional(), diff: z.string().optional() });
 const shellHistorySchema = z.object({ id: z.string(), command: z.string(), exitCode: z.number().nullable(), status: z.enum(["running", "completed", "failed", "cancelled"]), output: z.string() });
 
 function toolDetails(args: unknown, name = ""): ToolDetails | undefined {
@@ -49,7 +49,9 @@ function toolDetails(args: unknown, name = ""): ToolDetails | undefined {
 
 function toolResultDetails(value: unknown): ToolDetails | undefined {
   const result = toolResultSchema.safeParse(value);
-  return result.success && typeof result.data.exitCode === "number" ? { exitCode: result.data.exitCode } : undefined;
+  if (!result.success) return undefined;
+  const { exitCode, diff } = result.data;
+  return { ...(typeof exitCode === "number" ? { exitCode } : {}), ...(diff !== undefined ? { diff: cleanOutput(diff) } : {}) };
 }
 
 export class ArkHost {
@@ -166,7 +168,7 @@ export class ArkHost {
     this.ui.status({ model: this.session?.model ? `${this.session.model.provider}/${this.session.model.id}` : "No model",
       thinking: this.session?.thinkingLevel ?? this.config.thinking, cwd: this.cwd,
       permission: this.effectivePermission(), branch: this.branch,
-      context: usage?.percent === null || usage?.percent === undefined ? "Context unknown" : `${usage.percent.toFixed(1)}% used`,
+      context: usage ?? null,
       state: this.state, queued: [...this.queued, ...this.localQueue.map((input) => `Queued shell: ${input}`)], viewer: this.lease?.viewer ?? false,
       executionBlocked: this.executionUnconfirmed || this.storageFailed,
       initializing: this.initializing,
@@ -677,6 +679,9 @@ export class ArkHost {
         ]);
         if (!value) break;
         const permission = parsePermission(value);
+        const config = { ...this.config, permission };
+        saveConfig(this.home, config);
+        this.config = config;
         this.broker.reset(); this.permission = permission;
         this.ui.message("info", `Permissions: ${permissionLabels[permission]}.`); break;
       }
