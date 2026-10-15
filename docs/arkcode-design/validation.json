@@ -1,0 +1,200 @@
+{
+  "generated_at": "2026-10-09T10:22:09.407915+08:00",
+  "source_count": 25,
+  "source_checks": [
+    {
+      "id": "A01",
+      "range_valid": true,
+      "sha256": "e4d655a90bd1b967722ac5287c0f96bfbd737737b5370e717ce71be336da4cf1"
+    },
+    {
+      "id": "A02",
+      "range_valid": true,
+      "sha256": "87aeba60922a1d0c28a34f71500af9680d9a8b07e5cdc1b73d803ff8a343f759"
+    },
+    {
+      "id": "A03",
+      "range_valid": true,
+      "sha256": "703f55c54f01ece31ed37807be4c28b79f003a2b5681ee234cf8ac57b8e2813e"
+    },
+    {
+      "id": "A04",
+      "range_valid": true,
+      "sha256": "f95c6783d6222a6730dcf4fb5a5ef6fdf4bc159dc0ae195e7f567622a5630880"
+    },
+    {
+      "id": "A05",
+      "range_valid": true,
+      "sha256": "bf617cc6ef20aa03d92a8aab67a60b5365e042a763f9d3025be4a104646a8736"
+    },
+    {
+      "id": "A06",
+      "range_valid": true,
+      "sha256": "0fe06422b4bf65533b475459f1f9ce4be2983b98c4130449b9f8779e017803b7"
+    },
+    {
+      "id": "A07",
+      "range_valid": true,
+      "sha256": "4c5260111a17fbaead4c87148096ff1ff96625ad4272638bd304aa0d998b0912"
+    },
+    {
+      "id": "A08",
+      "range_valid": true,
+      "sha256": "5c91ed3e3c34adfdc1bbede70a348b6eaae947e221f7ae2eb542ffbc9e784da0"
+    },
+    {
+      "id": "A09",
+      "range_valid": true,
+      "sha256": "c754194951ce97fec66c26c328d9129cfbf6a8cff56025f6c1db336f8d133dea"
+    },
+    {
+      "id": "A10",
+      "range_valid": true,
+      "sha256": "3d451f7cfdff08f34a3f14406a1c29a6925e9192555dde06b26c3a1619f44b6d"
+    },
+    {
+      "id": "A11",
+      "range_valid": true,
+      "sha256": "ec80303cede3dfc120e92e7be9374627eb60bdb817866091a123243433678f3f"
+    },
+    {
+      "id": "A12",
+      "range_valid": true,
+      "sha256": "39af176c41baca9e71ccf51a6fa1839749c7b9751d1abf6442fff39a7b428804"
+    },
+    {
+      "id": "A13",
+      "range_valid": true,
+      "sha256": "312e0dd5474f3eb504c1ee9f9b37d096a72ae64277b8b1f9c9824b8978d44571"
+    },
+    {
+      "id": "A14",
+      "range_valid": true,
+      "sha256": "6f19d2c6e0a39d969df6195498fd710c46a549bf044f49c43fa35a23352196e4"
+    },
+    {
+      "id": "A15",
+      "range_valid": true,
+      "sha256": "1ce9bcf727acfb644d3521360bb5d7beba2e7db2cb8dfb9e7ca45d84a255c4b0"
+    },
+    {
+      "id": "A16",
+      "range_valid": true,
+      "sha256": "5a01145d4b46450649e1a458415b57ce62d106675c41e6b938f74ca63bdc7966"
+    },
+    {
+      "id": "A17",
+      "range_valid": true,
+      "sha256": "d030114067f8f3eb6ed2d9c7c9266376f992a2ff4ab629229a8c432613efd433"
+    },
+    {
+      "id": "A18",
+      "range_valid": true,
+      "sha256": "b37159dcff66b30f91f15496f62f1b7c7ba6985e0d64e383e26f542decd3908e"
+    },
+    {
+      "id": "A19",
+      "range_valid": true,
+      "sha256": "32ef3ef8cc82db56c212397258412793edf39a63e2bad68e2a267d67c2511920"
+    },
+    {
+      "id": "A20",
+      "range_valid": true,
+      "sha256": "9ad090054d64ff1573cc016cd6b7853bc55c70e18683c2095d1d389c8c2d787a"
+    },
+    {
+      "id": "A21",
+      "range_valid": true,
+      "sha256": "0d5fcd1b6accc4d4475b735aff7368f7825f1e6cdc4df775bd6f7f80b5466a63"
+    },
+    {
+      "id": "C03",
+      "range_valid": true,
+      "sha256": "14ea6ecdc75cfd0044573a3bf10615c232094fbe4c8ab6dc1b82889418d29fa4"
+    },
+    {
+      "id": "K06",
+      "range_valid": true,
+      "sha256": "aced63815d495c38d29e2d99534a22a0ccaca45de305773fea1a4c1a2993d367"
+    },
+    {
+      "id": "K24",
+      "range_valid": true,
+      "sha256": "be8f2b68842d1a38522156f5f04af215981859fa6bd2f508ed1869b3de04afe8"
+    },
+    {
+      "id": "Z02",
+      "range_valid": true,
+      "sha256": "fb63f3820d3d7cdc6e98b2814440fc75cfadae94cee5a54fe81e2a81c573460d"
+    }
+  ],
+  "snapshots": [
+    {
+      "repo": "pi",
+      "sha": "1cedd32724abfcb0915f76cc61b6827e2c16dbad",
+      "clean": true
+    },
+    {
+      "repo": "codex",
+      "sha": "be2e129ecd67d900c016eda12d5d193e33d9c3da",
+      "clean": true
+    },
+    {
+      "repo": "kimi-code",
+      "sha": "5b936697670ed15444bcb4720bd91e6ee776a941",
+      "clean": true
+    },
+    {
+      "repo": "ZCode",
+      "sha": "29628c9acdb81b703bbd4080c207a0e7ce5e276e",
+      "clean": true
+    }
+  ],
+  "unique_ids": true,
+  "resolved_anchors_and_svg_symbols": true,
+  "external_assets": 0,
+  "accessible_svg_diagrams": 3,
+  "standalone_html_bytes": 104559,
+  "browser": {
+    "status": "passed",
+    "desktop": [
+      1440,
+      1000
+    ],
+    "mobile": [
+      390,
+      844
+    ],
+    "page_horizontal_overflow": false,
+    "tested": [
+      "approval allow to test failure",
+      "approval reject to unexecuted evidence",
+      "stop to stopped",
+      "recovery remains execution-locked",
+      "done scenario",
+      "four ownership modules",
+      "source search match, no match, reset"
+    ],
+    "console_errors": [],
+    "screenshots": [
+      "assets/desktop.jpg",
+      "assets/workbench.jpg",
+      "assets/mobile.jpg"
+    ],
+    "transport": "localhost HTTP",
+    "file_url": "not tested: browser policy allows only HTTP/HTTPS; self-containment verified statically"
+  },
+  "review": {
+    "status": "completed",
+    "type": "independent same-family static review",
+    "report": "research/final-audit.md",
+    "findings_fixed": [
+      "recovery command-process exit gate",
+      "explicit sequential tool configuration"
+    ],
+    "remaining_design_blockers": 0,
+    "cross_family": "Kimi authentication failed before review"
+  },
+  "application_implemented": false,
+  "real_model_or_recovery_tests": "not run; design artifact only"
+}

@@ -21,7 +21,7 @@ Verification evidence:
 - `.audit/runtime/migration-final-tests.log`: 152 tests passed after migration, including actual SDK sessions and local MCP/shell behavior.
 - `.audit/runtime/migration-final-check.log` and `migration-final-build.log`: type check and clean build.
 - `.audit/runtime/mcp-live-smoke.log`: installed Playwright and Bing Search connected with 25 and 2 tools; targeted reconnect and shutdown completed; no remote tool calls.
-- `scripts/pi-sdk-patch/README.md`: reproducible patch boundaries and upgrade procedure.
+- `docs/development/PI_SDK_PATCH.md`: reproducible patch boundaries and upgrade procedure.
 - `.audit/runtime/package-install-online.log` and `installed-cli-help.log`: fresh packed-release installation and installed CLI startup. The offline attempt in `package-install.log` failed with `ENOTCACHED` before the successful online retry.
 
 Limits: MCP resources/prompts are disabled pending per-server resource authorization. CodeMode model execution is disabled. Browser OAuth login is wired to the official flow but was not completed against a real external authorization server. Tests run on Windows; no macOS/Linux runtime verification in this migration. A kimi-k3 review attempt failed with HTTP 429; a separate Codex reviewer performed the independent review instead.

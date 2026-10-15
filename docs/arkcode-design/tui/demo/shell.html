@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ArkCode · Black terminal studies</title>
+<style>/* DEMO_CSS */</style>
+</head>
+<body data-theme="prism" data-visual="instrument-deepfield">
+<main>
+ <header class="page-header"><div><h1>ArkCode TUI</h1><p>Instrument + Deep field · 默认方案</p></div><a href="arkcode-tui.html#rendering">设计说明 ↗</a></header>
+ <p class="disclaimer">固定数据演示，不连接模型，不执行命令，也不授予真实权限。</p>
+ <div class="theme-picker" role="group" aria-label="Color palette" lang="en">
+  <button data-theme="signal" aria-pressed="false"><span class="theme-chip signal-chip" aria-hidden="true"></span><span>Signal</span></button>
+  <button data-theme="amber" aria-pressed="false"><span class="theme-chip amber-chip" aria-hidden="true"></span><span>Amber</span></button>
+  <button data-theme="ion" aria-pressed="false"><span class="theme-chip ion-chip" aria-hidden="true"></span><span>Ion</span></button>
+  <button data-theme="prism" aria-pressed="true"><span class="theme-chip prism-chip" aria-hidden="true"></span><span>Prism</span></button>
+ </div>
+ <div class="theme-summary"><p id="theme-description"></p><div id="palette" class="palette" aria-label="Component colors"></div></div>
+ <div class="visual-picker" role="group" aria-label="Selected visual treatment" lang="en">
+  <button data-visual="instrument-deepfield" aria-pressed="true" title="Instrument structure with sparse Deep field particles">Instrument + Deep field</button>
+ </div>
+ <div class="demo-controls" lang="en" aria-label="Demo controls">
+  <select id="scene" aria-label="Scene" hidden><option value="coding">Coding workflow</option></select>
+  <div class="control-group"><button id="play" class="icon" title="Play scene" aria-label="Play scene">@@play@@</button><button id="step" class="icon" title="Next event" aria-label="Next event">@@step-forward@@</button><button id="reset" class="icon" title="Reset scene" aria-label="Reset scene">@@rotate-ccw@@</button></div>
+  <div class="control-group secondary-controls"><button id="transcript" class="icon" title="Detailed transcript (Ctrl+T)" aria-label="Detailed transcript" aria-pressed="false">@@list@@</button><label class="motion-control"><input id="motion" type="checkbox" checked> Motion</label></div>
+  <span id="playback-label" aria-live="polite">Ready</span>
+ </div>
+ <section class="terminal" id="terminal" lang="en" aria-label="ArkCode terminal demo" tabindex="0">
+  <div class="terminal-heading"><strong><span class="pixel-insignia" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>&gt;_ ArkCode</strong><span class="calibration" aria-hidden="true">┊ ┊ ┊ ┊ ┊</span></div>
+  <div class="transcript-scroll" id="scroll" tabindex="0" aria-label="Conversation">
+   <div id="entries"></div>
+   <div id="panel" hidden></div>
+  </div>
+  <div class="bottom-pane">
+   <div id="activity" class="activity" aria-live="polite"><span class="activity-dot" aria-hidden="true"></span><span id="activity-label">Ready</span><span id="elapsed" class="dim"></span><button id="interrupt" class="icon" title="Interrupt (Esc)" aria-label="Interrupt" hidden>@@square@@</button></div>
+   <div id="pending" aria-label="Pending input"></div>
+   <div id="approval" class="approval" role="group" aria-label="Command approval" hidden>
+    <h2>Would you like to run this command?</h2>
+    <p><span class="dim">Reason:</span> Install the dependency required by this project.</p>
+    <p><span class="dim">Command:</span> npm install</p><p><span class="dim">Directory:</span> D:\checkout-web</p>
+    <p class="warn">Requested access: Network, for this command</p>
+    <div class="approval-choices"><button data-decision="once">1. Yes, proceed</button><button data-decision="session">2. Yes, and don't ask again for this command in this session</button><button data-decision="deny">3. No, continue without running it</button></div>
+    <p class="dim key-hint">↑↓ select · enter confirm · esc cancel</p>
+   </div>
+   <form id="composer"><span class="prompt">›</span><textarea id="input" rows="1" wrap="off" spellcheck="false" aria-label="Message to ArkCode" placeholder="Ask ArkCode to do anything"></textarea></form>
+   <dl class="statusline" aria-label="Session information">
+    <div class="meta-model" title="Model"><dt>Model</dt><dd>model-pro</dd></div>
+    <div class="meta-reasoning" title="Reasoning effort"><dt>Reasoning effort</dt><dd>medium</dd></div>
+    <div class="meta-directory meta-wide" title="Working directory"><dt>Directory</dt><dd>D:\checkout-web</dd></div>
+    <div class="meta-permission meta-wide" title="Permissions"><dt>Permissions</dt><dd>Ask for approval</dd></div>
+    <div class="meta-branch" title="Git branch"><dt>Branch</dt><dd>main</dd></div>
+    <div class="meta-context"><dt>Context usage</dt><dd id="context" title="Context usage: 36,000 / 200,000 tokens · fixed demo fixture">18% used</dd></div>
+   </dl>
+  </div>
+ </section>
+ <div class="scene-caption"><span id="caption"></span><span id="notice" role="status"></span></div>
+ <section class="notes"><h2>设计依据</h2><p>采用 Codex 的状态色、状态栏角色色与 diff 增删语义；采用 Kimi 的用户角色色、强调文字与独立组件 token。全部方案保持黑色终端，增删仍用绿与红，普通正文保持中性。以上配色为 ArkCode 自定义方案。</p><p>源码依据见 <a href="https://github.com/openai/codex/blob/main/codex-rs/tui/styles.md">Codex styles</a>、<a href="https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/status_line_style.rs">status line</a>、<a href="https://github.com/openai/codex/blob/main/codex-rs/tui/src/diff_render.rs">diff renderer</a>、<a href="https://github.com/moonshot-ai/kimi-code/blob/main/apps/kimi-code/src/tui/theme/theme-schema.json">Kimi theme schema</a>。本次以本地 checkout 源码为准。</p><p>底部依次为模型、推理等级、目录、权限、分支、上下文用量。配色和视觉方案独立切换，保留当前流程进度。像素柔光与静态颗粒只在标记、边缘和留白出现；正文区域不加滤镜。浏览器的颗粒与柔光不作为原生 TUI 的实现要求。</p></section>
+</main>
+<script>/* MARKED */</script><script>/* HIGHLIGHT */</script><script>/* PURIFY */</script><script>/* DEMO_JS */</script>
+</body></html>

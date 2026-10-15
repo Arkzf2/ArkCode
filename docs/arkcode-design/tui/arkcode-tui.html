@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>ArkCode TUI · Codex 对齐版</title>
+<style>
+:root{--ink:#202124;--muted:#62666c;--line:#dddfe3;--blue:#005bd8;--green:#23704d;--amber:#9f5900;--red:#b53038;--mono:'Cascadia Code',Consolas,'SFMono-Regular',monospace}
+*{box-sizing:border-box}html{scroll-padding-top:20px}body{margin:0;background:#fff;color:var(--ink);font:15px/1.85 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;letter-spacing:0}main{max-width:1000px;margin:auto;padding:32px 24px 60px}header{margin-bottom:28px}h1{font-size:32px;line-height:1.3;margin:8px 0 12px}h2{font-size:23px;line-height:1.5;margin:0 0 15px}h3{font-size:17px;line-height:1.5;margin:22px 0 9px}p{margin:10px 0}a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}a:focus-visible,summary:focus-visible{outline:2px solid var(--blue);outline-offset:4px}.meta,.note,figcaption{font-size:12px;color:var(--muted)}nav{display:flex;flex-wrap:wrap;gap:8px 22px;border-bottom:1px solid var(--line);padding:15px 0;margin-top:18px;font-size:13px}section{padding:30px 0;border-top:1px solid var(--line)}section:first-of-type{border-top:0;padding-top:0}.lead{font-size:17px;max-width:780px}.tag{color:var(--blue);font:12px var(--mono)}code,pre{font-family:var(--mono);letter-spacing:0}code{font-size:13px;overflow-wrap:anywhere}figure{margin:18px 0 24px}figcaption{margin-top:9px}.tui{border:1px solid #d3d5d9;border-radius:6px;background:#fafafa;color:#25272b;padding:20px 24px;overflow-x:auto;box-shadow:0 2px 7px #20212408}.tui pre{font-size:13px;line-height:1.85;margin:0;white-space:pre;width:max-content;min-width:100%}.tui .muted{color:#686d74}.tui .accent{color:var(--blue)}.tui .ok{color:var(--green)}.tui .warn{color:var(--amber)}.tui .bad{color:var(--red)}.tui .selected{color:var(--blue);font-weight:600}.tui .heading{font-weight:600}.tui .composer{display:block;border-top:1px solid #d9dce1;border-bottom:1px solid #d9dce1;padding:9px 0;margin:10px 0}.table{overflow:auto;margin:18px 0}table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.8}th{text-align:left;font-weight:600;background:#f5f5f7}th,td{padding:12px 14px;vertical-align:top;border-bottom:1px solid var(--line);min-width:130px}td:first-child{min-width:170px;font-weight:600}.callout{border-left:3px solid var(--blue);padding:10px 16px;background:#f5f8fd;margin:20px 0;font-size:14px}.warning{border-color:var(--amber);background:#fff9ef}.cols{display:grid;grid-template-columns:1fr 1fr;gap:26px}.cols>div{min-width:0}ul,ol{padding-left:23px;margin:12px 0}li+li{margin-top:8px}.flow{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:16px 0;font:13px/1.8 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}.source-list{font-size:13px}.source-list li{overflow-wrap:anywhere}details{margin:14px 0;border-bottom:1px solid var(--line);padding-bottom:12px}summary{cursor:pointer;font-size:14px;font-weight:600}.tokens{display:flex;flex-wrap:wrap;gap:8px 18px;margin:12px 0;font:12px var(--mono)}.swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:var(--swatch)}footer{border-top:1px solid var(--line);padding-top:20px;color:var(--muted);font-size:12px}.diagram{overflow:auto}.diagram svg{display:block;min-width:620px;width:100%;height:auto}strong{font-weight:600}
+.tui{background:#000;color:#d6d7da;border-color:#303137}.tui .muted{color:#999ba3}.tui .accent{color:#b8b2d5}.tui .ok{color:#92bda0}.tui .warn{color:#cbbd98}.tui .bad{color:#dba0a0}.tui .selected{color:#b8b2d5}.tui .composer{border:1px solid #51545e;border-radius:2px;background:#000;padding:10px 12px}.tui .query{display:block;background:#0d0d10;border-left:1px solid #cbbd98;padding:8px 12px;font-weight:600;color:#cbbd98}
+@media(max-width:650px){main{padding:22px 18px 40px}.cols{grid-template-columns:1fr;gap:8px}.tui{padding:16px}.table th,.table td{padding:10px 12px}}
+@media print{main{max-width:none;padding:0}.tui{box-shadow:none}.table{overflow:visible}thead{display:table-header-group}tr,figure{break-inside:avoid}nav{display:none}a{color:inherit}}
+.tui .composer{border:2px solid #b8b2d5;border-radius:8px}.tui .query{color:#d1c9b5;border-left:2px solid #d1c9b5}
+</style>
+</head>
+<body><main>
+<header id="top">
+ <div class="tag">ARKCODE / TUI SPEC 03 / 2026.10.09</div>
+ <h1>ArkCode TUI</h1>
+ <p class="lead">沿用 Codex 的操作习惯，减少切换工具的学习成本。英文界面、克制的视觉层次，以及可靠的编码执行。</p>
+ <p class="meta">底座仍为 pi-coding-agent SDK。本文是最新产品提案与静态界面样稿，替代上一版权限、输入和命令规则。尚未实现原生 TUI。</p>
+ <p><a href="arkcode-tui-demo.html">打开交互 TUI demo ↗</a> <span class="meta">编码、审批、失败与 Markdown 场景，全部使用固定数据。</span></p>
+ <nav aria-label="章节"><a href="#interface">界面</a><a href="#rendering">渲染</a><a href="#permissions">权限</a><a href="#interaction">操作</a><a href="#commands">功能与命令</a><a href="#flows">工作流程</a><a href="#implementation">实现</a><a href="#sources">依据</a></nav>
+</header>
+
+<section id="interface">
+ <h2>熟悉的交互，ArkCode 自己的界面</h2>
+ <p>结构以 Codex 为准。启动只保留 ArkCode 标识，正文是连续对话与紧凑工具记录。模型、推理等级、目录、权限、分支和上下文用量常驻 composer 下方，默认不显示发送与换行提示。面板按需出现，不增加常驻侧栏。产品文字全部使用英文；用户输入、文件内容和模型回答保留原语言。</p>
+ <figure>
+  <div class="tui" lang="en" aria-label="ArkCode main screen mockup"><pre><span class="heading">&gt;_ ArkCode</span> <span class="muted">v0.1</span>
+
+<span class="query">› Fix duplicate checkout submissions and add a regression test.</span>
+
+• I'll check the submit handler and the existing tests.
+
+• Explored
+  └ Read src/checkout.ts
+    Read test/checkout.test.ts
+
+• Edited src/checkout.ts <span class="muted">(+8 -2)</span>
+
+• Ran npm test -- checkout
+  └ <span class="ok">PASS</span> test/checkout.test.ts
+
+• Added a submit guard and reset it after a failed request.
+  Checkout tests passed. End-to-end tests were not run.
+<span class="composer">› <span class="muted">Ask ArkCode to do anything</span></span><span class="accent">model-pro</span>   <span style="color:#b4adbf">medium</span>   <span style="color:#a7bcc0">D:\checkout-web</span>
+<span class="warn">Ask for approval</span>   <span style="color:#aac0ac">main</span>   <span style="color:#c7b7a4">18% used</span></pre></div>
+  <figcaption>主界面样稿。项目内测试在受限执行环境中自动运行，普通工具不反复弹审批。模型名、路径、结果与用量均为示例。</figcaption>
+ </figure>
+ <div class="cols">
+  <div><h3>Apple 美学在终端里的转译</h3><p>通过留白、对齐、轻边界和稳定的层次降低阅读负担。正文最醒目，参数稍弱，帮助最弱。强调色只用于当前选择、焦点与必要状态。终端沿用用户字体和背景，默认跟随终端明暗与无色设置。</p><p>ArkCode 的识别来自短启动标识、精确缩进和细分隔线。正文不包进反复出现的方框，运行输出不堆装饰性徽章。网页样稿的圆角不要求原生终端画圆角或强制铺背景。</p></div>
+  <div><h3>Codex 定交互，Kimi 补视觉细节</h3><p>采用 Codex 的 <code>•</code>、<code>└</code>、<code>›</code> 层次与紧凑记录。参考 Kimi 的角色色与加粗强调用户 query，composer 使用明确边界、淡底色和焦点色。底部六项会话信息常驻，窄屏换行，不为快捷键提示让位。命令名、快捷键与权限语义仍以 Codex 为准。</p><p>工具输出默认显示动作、对象和关键结果。详细转录保留完整已采集内容。失败用 <code>Failed</code> 和退出码表达，颜色只是辅助；没有实际用量时显示 <code>Context unavailable</code>。demo 的 18% 用量来自固定样例，不是实测。</p></div>
+ </div>
+ <div class="tokens" aria-label="语义色"><span><i class="swatch" style="--swatch:#202124"></i>Text</span><span><i class="swatch" style="--swatch:#62666c"></i>Secondary</span><span><i class="swatch" style="--swatch:#005bd8"></i>Selection</span><span><i class="swatch" style="--swatch:#23704d"></i>Passed</span><span><i class="swatch" style="--swatch:#9f5900"></i>Approval</span><span><i class="swatch" style="--swatch:#b53038"></i>Failed</span></div>
+ <p class="note">原生布局按终端单元格计算。内容左右留 2 列，正文建议不超过 100 列；段落之间 1 空行，工具子项缩进 2 列。只使用常规与强调两种文字权重，不引入 TUI 专用字体下载。复杂记录由 Ctrl+T 进入详细转录。</p>
+</section>
+
+<section id="rendering">
+ <p>默认视觉采用 Instrument 的细线结构与 Deep field 的稀疏颗粒，默认配色使用精简后的 Prism。终端与 composer 使用纯黑背景；工具动作、路径、命令、Markdown 和代码以白灰呈现。composer 使用 8px 圆角与常驻淡紫边框，淡暖灰区分用户输入，红绿保留增删与测试语义。底部六项信息保持低饱和角色色。颗粒限于页边和头部留白，不叠加在正文上。普通输入进入 composer，审批面板与快捷键按自己的操作语义处理。</p>
+ <h2>让推理、行动与结果各自清楚</h2>
+ <p>主视图优先呈现用户需要判断的事实。沿用 Codex 的活动摘要与转录分工，参考 Kimi 的短结果预览和组件复用。<a href="arkcode-tui-demo.html">交互 demo</a> 展示以下规则，原生终端仍需单独实现。</p>
+ <div class="table"><table><thead><tr><th>内容</th><th>渲染规则</th><th>落地边界</th></tr></thead><tbody>
+ <tr><td>推理与活动</td><td>底部一行活动标题、耗时和中断提示。只使用模型实际返回的可展示摘要；没有摘要时显示 Working。完整可见摘要用弱色、斜体留在 Ctrl+T 转录中。</td><td>不编造思考过程，不把等待工具标成模型思考。摘要更新保持同一记录身份。当前工具状态优先于推理标题。</td></tr>
+ <tr><td>工具调用</td><td>Exploring → Explored，Running → Ran，Editing → Edited。相邻文件读取合并为探索组；shell 命令与编辑各保留独立身份。子项用 └ 和固定缩进。</td><td>由 toolCallId 关联开始、增量和结束，不能靠文案匹配。调用工具不代表执行成功；工具返回不代表整个 Agent 已收敛。</td></tr>
+ <tr><td>工具结果</td><td>普通 shell 默认保留约 3 屏幕行预览，显示省略数量，详细转录可展开。失败保留错误原因、位置和 exit code，成功标记仅用于真实成功事件。</td><td>浏览器 demo 用 3 个逻辑行近似；原生版本按终端显示列宽计算。输出是文本，控制序列须过滤。完整已采集输出与展示截断分开，存储截断必须另行说明。</td></tr>
+ <tr><td>Markdown 与流式输出</td><td>小标题保持终端文字尺度；列表悬挂缩进，引用弱化，表格窄屏单独横向滚动。已完成块稳定提交，末尾块可更新；未闭合代码围栏仍能显示代码。</td><td>使用 Pi 的 Markdown 能力和成熟解析器，保留原始 source。先按内容块批量刷新，再优化更新频率。不得逐 token 拼接 HTML 或重复刷整份历史。</td></tr>
+ <tr><td>强调、代码与 diff</td><td>加粗表达重点，inline code 用克制强调色。代码采用语言语法色；diff 用 + / - 和绿 / 红共同区分增删，保留文件与定位。文件引用可打开定位预览。</td><td>代码未知语言回退纯文本；复制使用原始内容。主题改变语法色，不改变权限、成功或失败的含义。颜色不足时，状态文字和符号仍完整。</td></tr>
+ <tr><td>动效与滚动</td><td>只有当前活动标记有轻微亮度变化。完成即停止，不闪整行、不移动旧记录。用户位于底部时跟随新内容，查看历史或选中文字时暂停跟随。</td><td>这是 ArkCode 的动效取舍，未照搬 Codex 的 shimmer。支持关闭与系统减少动态效果。界面后台不继续播放 demo；原生渲染缓存以内容修订、宽度和主题为键。</td></tr>
+ </tbody></table></div>
+ <p><strong>交互 demo 的范围。</strong> 可播放、暂停、逐事件前进、重置和切换明暗。运行时支持 Enter steer、Tab follow-up、中断与草稿恢复；审批支持允许、会话放行、拒绝、取消与键盘选择。Ctrl+T 查看摘要与完整输出，Ctrl+O 复制完整回答。输入 /diff、/review、/copy 可查看对应样例。</p>
+ <p class="note">所有工具结果、文件定位与审查都是固定样例。demo 不连接 Pi SDK，不证明实际沙箱、存储与原生快捷键已实现。浏览器可能保留系统快捷键；顶部转录按钮与输入 /copy 提供等价入口。</p>
+ <details><summary>源码依据与首版实现方式</summary>
+ <p>Codex 把可见推理摘要更新到活动标题，并留在转录中。参见 <a href="https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/tui/src/chatwidget/streaming.rs#L307">streaming.rs</a>。当前紧凑 shell 输出预览约束来自 <a href="https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/tui/src/tool_output.rs#L19">tool_output.rs</a>，不是其他渲染路径中的 5 行常量。</p>
+ <p>Codex 的 <a href="https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/tui/src/streaming/controller.rs">流式控制器</a> 保留提交区域与可变尾部，<a href="https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/tui/src/status_indicator_widget.rs#L230">活动行</a> 单独控制进度与 shimmer。主题参考 <a href="https://learn.chatgpt.com/docs/cli-customization">OpenAI Docs · CLI customization</a>。</p>
+ <p>Kimi 的 <a href="https://github.com/MoonshotAI/kimi-code/blob/5b936697670ed15444bcb4720bd91e6ee776a941/apps/kimi-code/src/tui/components/messages/thinking.ts#L112">thinking.ts</a> 与 <a href="https://github.com/MoonshotAI/kimi-code/blob/5b936697670ed15444bcb4720bd91e6ee776a941/apps/kimi-code/src/tui/constant/rendering.ts#L23">rendering.ts</a> 使用短预览，复用组件与缓存。其 Ctrl+O 展开语义见 <a href="https://www.kimi.com/code/docs/kimi-code-cli/guides/interaction.html">官方交互文档</a>，ArkCode 继续使用 Codex 的复制键位。</p>
+ <p>首版原生渲染直接复用 <a href="https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/tui/src/components/markdown.ts#L281">Pi Markdown 的 source 与 width 缓存</a>。ArkCode 负责事件到显示记录的投影、分组和状态，不另建 Agent 循环。浏览器样稿内嵌 Marked、highlight.js、DOMPurify 与 Lucide 图标，构建后是一个自包含 HTML。</p>
+ </details>
+</section>
+
+<section id="permissions">
+ <h2>权限沿用 Codex 的边界模型</h2>
+ <p>以当前 Codex TUI 的 <strong>Read Only、Ask for approval、Full Access</strong> 为主名称。<code>Ask for approval</code> 对应官方安全文档中的 <code>Auto</code> 预设。这里的“询问”指越过授权边界，不是每条 shell 都询问。<a href="#s-security">依据</a></p>
+ <div class="table"><table><thead><tr><th>模式</th><th>默认可做什么</th><th>何时询问</th><th>底层组合</th></tr></thead><tbody>
+  <tr><td>Read Only</td><td>读取可访问文件，在只读沙箱内执行允许的检查命令。写入默认受阻。</td><td>编辑、网络或其他越界动作需要明确请求。批准是一次额外授权，不等于自动切换模式。</td><td><code>read-only</code><br><code>on-request</code></td></tr>
+  <tr><td>Ask for approval<br><span class="note">Auto 预设</span></td><td>在授权工作区读取、编辑、运行命令。测试、构建和搜索在沙箱内直接执行。</td><td>访问默认关闭的网络、写工作区外文件，或命中需要审批的执行规则。</td><td><code>workspace-write</code><br><code>on-request</code></td></tr>
+  <tr><td>Full Access</td><td>文件与命令不受工作区沙箱限制，网络可用，不再请求工具批准。</td><td>启用时明确确认。仍可向用户询问需求，但这不是权限审批。</td><td><code>danger-full-access</code><br><code>never</code></td></tr>
+ </tbody></table></div>
+ <p>受版本控制且已信任的目录推荐 Ask for approval；未信任或非 Git 目录先进入 Read Only。显式配置与受管策略优先。工作区可写并不意味着元数据目录可写，<code>.git</code>、<code>.agents</code> 和 <code>.codex</code> 等受保护路径仍受限制。ArkCode 自己的 <code>.arkcode</code> 配置与授权记录也纳入保护。</p>
+ <figure><div class="tui" lang="en" aria-label="Permissions picker mockup"><pre><span class="heading">Update model permissions</span>
+
+  1. Read Only
+     Inspect files; request approval for changes or internet access.
+
+<span class="selected">› 2. Ask for approval (current)</span>
+     Edit workspace files and run commands within the sandbox.
+     Ask before internet access or changes outside the workspace.
+
+  3. Full Access
+     Access files and the internet without approval.
+
+<span class="muted">enter select · esc back</span></pre></div><figcaption>/permissions 打开选择器。初始焦点是当前模式，取消不改变配置。菜单按真实执行能力显示，不把不可用模式伪装成可选。</figcaption></figure>
+ <details><summary>Full Access 的确认与模式切换</summary><div class="tui" lang="en" aria-label="Full Access confirmation mockup"><pre><span class="heading">Enable full access?</span>
+
+ArkCode can edit files anywhere on your computer and run
+network commands without asking for approval.
+
+<span class="selected">› 1. Yes, continue anyway</span>   Apply full access for this session
+  2. Cancel                Return without changing permissions
+
+<span class="muted">enter select · esc back</span></pre></div><p>确认后写入 <code>Permissions updated to Full Access</code>。默认只改变当前会话，不顺带改变全局默认。不弹出逐次命令审批，也不暗设“Full Access 但继续询问”的另一套行为。受管策略禁止时显示禁用原因。</p><p>运行中允许打开 /permissions 与 /model。新配置在后续动作的安全边界生效，已启动的命令继续使用启动时的快照。界面区分选择值与实际生效值；有尚未结束的动作时显示 <code>Applies after the current action</code>。不能让一次进行中的命令因切换模式获得更大权限。</p></details>
+ <h3>审批只出现在明确的额外授权处</h3>
+ <figure><div class="tui" lang="en" aria-label="Network approval mockup"><pre><span class="heading">Would you like to run this command?</span>
+
+<span class="muted">Reason:</span> Install the dependency required by this project.
+<span class="muted">Command:</span> npm install
+<span class="muted">Directory:</span> D:\checkout-web
+<span class="warn">Requested access:</span> Network, for this command
+
+<span class="selected">› 1. Yes, proceed</span>
+  2. Yes, and don't ask again for this command in this session
+  3. No, continue without running it
+
+<span class="muted">enter select · esc cancel</span></pre></div><figcaption>沿用 Codex 的选项顺序与范围表达。会话放行选项只在执行层能落实精确范围时出现。选择“继续但不执行”与取消本轮是不同结果。</figcaption></figure>
+ <p>可用决策由请求类型给出。一次允许绑定最终命令、目录和请求身份；会话授权还绑定命令参数或具体网络目标。长期前缀规则另需用户明确选择，首版可以后置，不拿“本会话允许”冒充永久规则。数字快捷键、方向键和 Enter 按 Codex 习惯确认，但粘贴与重复按键不能生成审批动作。</p>
+ <div class="callout warning"><strong>这次产品选择带来的必要调整。</strong> Pi SDK 自身不提供 Codex 等价的 OS 沙箱。只靠权限 hook 或命令字符串检查，无法兑现上面的 Auto 与 Read Only 行为。真实沙箱执行层因此进入首版必需范围；平台执行层未就绪时，对应模式显示 <code>Unavailable: sandbox not ready</code>，不静默退化为无隔离执行。</div>
+</section>
+
+<section id="interaction">
+ <h2>输入习惯也迁移过来</h2>
+ <p>不再保留上一版“运行中 Enter 只保存草稿”的自定义含义。快捷键按焦点处理，优先级为审批、面板与候选、普通输入区。一次按键只消费一次。</p>
+ <div class="table"><table><thead><tr><th>操作</th><th>ArkCode 行为</th><th>边界</th></tr></thead><tbody>
+  <tr><td>Enter · 空闲</td><td>提交任务；候选菜单内确认候选。已选中的无参数命令按 Codex 直接执行。</td><td>需要参数的命令把光标放到参数位置。Tab 补全命令名，不提交。</td></tr>
+  <tr><td>Enter · 执行中</td><td>将新指令作为当前轮次的 steer 输入，显示 <code>Instruction pending</code>，SDK 消费后转为对话记录。</td><td>“立即提交”不等于终止正在运行的工具。工具完成后进入可处理新指令的边界。</td></tr>
+  <tr><td>Tab · 执行中</td><td>把文本或可排队命令加入下一轮，显示 <code>Queued follow-up</code>。</td><td>候选打开时先补全。Shift+Left 编辑最后一条未消费输入；停止或重启不自动重放。</td></tr>
+  <tr><td>Shift+Enter / Ctrl+J</td><td>插入换行。长粘贴原子插入，折叠载荷仍保留原文。</td><td>IME 候选确认、粘贴内换行与 Tab 不发送任务，也不批准工具。</td></tr>
+  <tr><td>@ 文件 / ! 命令</td><td>@ 搜索并插入文件引用。! 发起用户 shell 命令，结果可供后续模型使用。</td><td>! 与模型工具使用同一有效沙箱和审批策略。执行中可排队，不与当前写入工具竞争。</td></tr>
+  <tr><td>Up / Down、Ctrl+R</td><td>召回或检索提示历史。选择后填入草稿，用户主动发送。</td><td>多行文本先移动光标；取消搜索恢复原草稿。文件引用重新校验。</td></tr>
+  <tr><td>Ctrl+G</td><td>使用配置的外部编辑器编辑草稿。返回后恢复输入和终端状态。</td><td>不自动发送。编辑器失败保留可恢复内容。</td></tr>
+  <tr><td>Ctrl+T / Ctrl+O</td><td>Ctrl+T 打开详细转录；Ctrl+O 复制最近一条已完成回答。</td><td>不把 Kimi 的 Ctrl+O 展开含义套到 Codex 键位上。剪贴板不可用时明确提示。</td></tr>
+  <tr><td>Esc</td><td>面板中返回；审批中取消该审批交互；输入区中中断当前轮次。空输入区连按两次进入上一条提示编辑。</td><td>编辑旧提示后产生新的会话分支，不回滚已写入文件。普通面板的 Esc 不停止当前工具。</td></tr>
+  <tr><td>Ctrl+C / Ctrl+D</td><td>Ctrl+C 优先交给当前面板；主界面活跃时中断，空闲时退出。Ctrl+D 在空输入且无面板时退出，其余由编辑器处理。</td><td>以本次固定 Codex 提交为准，双按退出实验已关闭。退出先请求清理，不靠清空 PID 锁冒充停止。</td></tr>
+  <tr><td>? / Ctrl+L</td><td>空输入的 ? 显示快捷键；Ctrl+L 清理当前终端视图，保留会话。</td><td>/clear 是新会话，含义不同。未知 slash 提示未知命令，已后置命令提示不支持，草稿保留。</td></tr>
+ </tbody></table></div>
+ <figure><div class="tui" lang="en" aria-label="Steering and queued input mockup"><pre>• Working <span class="muted">(12s · esc to interrupt)</span>
+  └ Running checkout tests
+
+• Instruction pending
+  ↳ Keep the existing README changes.
+
+• Queued follow-up
+  ↳ Review the retry path after this finishes.
+  <span class="muted">shift+left edit last queued message</span>
+<span class="composer">› <span class="muted">Ask ArkCode to do anything</span></span><span class="accent">model-pro</span>   <span style="color:#b4adbf">medium</span>   <span style="color:#a7bcc0">D:\checkout-web</span>
+<span class="warn">Ask for approval</span>   <span style="color:#aac0ac">main</span>   <span style="color:#c7b7a4">18% used</span></pre></div><figcaption>执行中的英文状态样稿。底部只显示六项值，固定顺序、角色色和悬停说明帮助辨认。steer、下一轮队列、未发送草稿是三种不同状态，不能都标成“已发送”。</figcaption></figure>
+ <p class="note">在线文档和本地源码可能位于不同发布阶段。核心输入行为以官方 CLI reference 为基准；审批、键位冲突与退出细节以固定提交源码校准。发版前针对目标 Codex 版本做一次差异核对，不追逐每个实验功能。</p>
+</section>
+
+<section id="commands">
+ <h2>功能使用 Codex 名称，不另建词汇</h2>
+ <p>下面是首版范围。保留同名操作的含义；已后置的功能不显示为可用，也不占用同名命令做另一件事。迁移兼容是产品主线，Goal、多代理与复杂插件仍可继续后置。</p>
+ <div class="table"><table><thead><tr><th>功能与入口</th><th>首版规格</th><th>运行中</th></tr></thead><tbody>
+  <tr><td>/model</td><td>选择已配置模型及支持的推理等级。显示当前值，下一次模型请求采用已生效配置。</td><td>可打开，后续请求生效</td></tr>
+  <tr><td>/permissions、/status</td><td>选择标准权限预设；状态显示实际 sandbox、approval policy、目录、模型和用量。</td><td>可用，进行中动作不热改</td></tr>
+  <tr><td>/new、/clear</td><td>同目录新会话；/clear 还清理终端视图。原会话与文件保留。</td><td>完成或中断后执行</td></tr>
+  <tr><td>/resume、/rename</td><td>检索恢复历史、修改名称。恢复只读历史与当前工作区，不重跑旧命令。</td><td>可打开；切换前中断并清理</td></tr>
+  <tr><td>/fork、双 Esc 编辑</td><td>从当前或被编辑提示的位置创建分支。Pi SessionManager 管消息树。</td><td>派生前收敛当前动作</td></tr>
+  <tr><td>/compact</td><td>调用 SDK 压缩有效上下文，原始会话历史继续保留。</td><td>只在空闲执行</td></tr>
+  <tr><td>/diff</td><td>默认 Git 工作目录差异，涵盖 staged、unstaged、untracked。单列 unified diff。</td><td>可用，标明仍在变化</td></tr>
+  <tr><td>/review</td><td>模型审查入口，选择未提交改动、分支比较或指定提交。结果以可定位问题呈现，不自动修复。</td><td>当前轮结束后启动</td></tr>
+  <tr><td>/mention、@</td><td>明确文件上下文。提交时校验路径、读取范围、模型能力与大小。</td><td>可编辑或随输入提交</td></tr>
+  <tr><td>/copy、Ctrl+O</td><td>复制最近完整回答；没有完整回答时显示不可用。</td><td>可用，不复制未完成流</td></tr>
+  <tr><td>/init</td><td>生成 AGENTS.md 草稿，遵守有效权限，已有文件不静默覆盖。</td><td>只在空闲执行</td></tr>
+  <tr><td>/ps、/stop</td><td>查看受管 shell 列表与输出；/stop 停止这些命令，不改名为“取消模型轮次”。</td><td>可用，Esc 另负责中断轮次</td></tr>
+  <tr><td>/statusline、/theme</td><td>尾部信息排列和代码主题设置。模型、推理等级、目录、权限、分支、上下文用量保持可见；窄屏换行。</td><td>本地展示设置可用</td></tr>
+  <tr><td>/quit、/exit</td><td>同义退出入口。收敛执行、保存可保存记录，恢复终端。</td><td>发起停止并退出</td></tr>
+ </tbody></table></div>
+ <p><strong>删除上一版自定义主入口。</strong> /changes 改为 /diff，/sessions 改为 /resume；/stop 恢复为受管终端停止。额外的验证证据、运行基线和输出工件仍保存，但放入详细转录与 diff 辅助信息，不要求 Codex 用户学习 /checks 或 /context 才能完成工作。</p>
+ <div class="cols"><div><h3>配置与启动</h3><pre class="flow">arkcode
+arkcode -C "D:\checkout-web"
+arkcode resume --last
+arkcode resume &lt;session-id&gt;
+arkcode fork &lt;session-id&gt;
+arkcode --model &lt;model-id&gt;
+arkcode --sandbox workspace-write -a on-request</pre><p>当前目录直接工作，启动提示可作为位置参数。配置放在 ArkCode 自己的目录，不修改用户的 Codex 设置。首次配置模型来源和凭据，只发送最小连接校验，不发送仓库内容。</p></div><div><h3>迁移与明确后置</h3><p>按同名目录信任、AGENTS.md 指令和模型配置习惯设计。后续提供预览式 Codex 配置导入；首版不声称无损导入 Codex rollout 或共享其会话格式。</p><p>暂不发布 /goal、/agent、/mcp、/plugins、/memories、持久 Plan 与云入口。媒体输入、非交互 exec 和长期规则可按需求补齐。输入这些已知命令时显示 <code>Not available in this release</code>，不让模型把它当普通任务执行。</p></div></div>
+</section>
+
+<section id="flows">
+ <h2>完整操作闭环保持简洁</h2>
+ <div class="table"><table><thead><tr><th>情形</th><th>界面与动作</th><th>必须成立的结果</th></tr></thead><tbody>
+  <tr><td>首次启动</td><td>目录信任、模型配置、权限摘要，然后直接进入输入区。</td><td>已信任项目默认 Auto 语义；未信任目录先 Read Only。取消不留下伪装成功的配置。</td></tr>
+  <tr><td>日常修改与测试</td><td>Enter 发起；工具紧凑展示。工作区内普通命令自动运行，越界才审批。</td><td>已有用户修改保留。最终回答说清修改、验证范围和未完成事项。</td></tr>
+  <tr><td>新增要求</td><td>Enter 进入当前轮；Tab 等当前轮完成后再处理。队列显示顺序，可编辑。</td><td>接收、消费与取消各有身份。恢复不自动发送旧草稿或队列。</td></tr>
+  <tr><td>审批 / 主动提问</td><td>尾部选择面板接管焦点。审批说明额外权限；需求提问说明选择内容。</td><td>两类面板不混淆，Full Access 也可以询问需求。取消不默认选择第一个选项。</td></tr>
+  <tr><td>查看改动 / 审查</td><td>/diff 看实际文件；/review 请求模型找问题；Ctrl+T 看命令详情。</td><td>/diff 的默认范围与 Codex 相同。测试成功来自实际 exit，模型自述不能制造证据。</td></tr>
+  <tr><td>失败与中断</td><td>显示 <code>Failed</code>、<code>Interrupted</code> 或 <code>Stopping</code>。保留草稿和现存文件。</td><td>不自动回滚；停止撤销旧审批。只有受管进程树确认退出后才能开始冲突写入。</td></tr>
+  <tr><td>恢复与占用</td><td>/resume 预览目录、时间和结果。另一宿主持有工作区时显示 <code>Read-only viewer</code>。</td><td>一个真实目录只有一个 writer。旧执行未知时显示 <code>Execution unconfirmed</code>，不能因恢复消息就解锁。</td></tr>
+  <tr><td>连接 / 存储错误</td><td>显示错误原因与重试入口，如 <code>Authentication failed</code>、<code>History not saved</code>。</td><td>不泄露密钥；不自动重跑有副作用的命令；记录未确认时阻止继续写入。</td></tr>
+ </tbody></table></div>
+ <details><summary>审阅与恢复的英文样稿</summary>
+ <div class="tui" lang="en" aria-label="Review and restore mockups"><pre><span class="heading">Review changes</span>
+
+<span class="selected">› Uncommitted changes</span>
+  Compare against a branch
+  Review a commit
+
+<span class="muted">enter select · esc back</span>
+
+──────────────────────────────────────────────────────────────────
+
+<span class="heading">Resume a saved conversation</span>
+
+<span class="muted">Search:</span> checkout
+
+<span class="selected">› Fix duplicate submissions</span>       Today 10:24   checkout-web
+  Explain checkout flow           Yesterday     checkout-web
+  Retry path investigation        Oct 07        Interrupted
+
+<span class="muted">enter resume · esc back</span></pre></div>
+ <p>会话选择器取消恢复原草稿。损坏记录显示可解析内容与错误，不静默新建空会话。首次打开 diff 默认工作目录全量，运行前基线仅作为可选辅助比较，不替换用户对 /diff 的理解。</p>
+ </details>
+</section>
+
+<section id="implementation">
+ <h2>让兼容落到执行层，而不只换文案</h2>
+ <p>SDK 与会话所有权保持不变。为 Codex 的输入和权限契约增加两个必要模块：输入交付记录与沙箱执行器。取消上一版“整轮配置完全冻结”的硬限制，改为在模型请求和工具启动时捕获动作快照。</p>
+ <figure class="diagram"><svg viewBox="0 0 880 180" role="img" aria-labelledby="arch-title arch-desc"><title id="arch-title">ArkCode TUI 实现职责</title><desc id="arch-desc">Codex 兼容交互层处理输入意图，宿主控制输入交付与权限，Pi SDK 持有循环和历史，沙箱执行器落实命令边界。</desc><defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#62666c"/></marker></defs><g font-family="Segoe UI, sans-serif" font-size="14" fill="#202124"><rect x="10" y="20" width="225" height="65" rx="5" fill="#f5f5f7" stroke="#dddfe3"/><text x="25" y="47">English TUI</text><text x="25" y="68" font-size="12" fill="#62666c">Composer / pickers / transcript</text><rect x="285" y="20" width="265" height="65" rx="5" fill="#f5f8fd" stroke="#cbd9ef"/><text x="301" y="47">ArkCode supervisor</text><text x="301" y="68" font-size="12" fill="#62666c">Input delivery / permissions / cancel</text><rect x="600" y="20" width="265" height="65" rx="5" fill="#f5f5f7" stroke="#dddfe3"/><text x="616" y="47">pi-coding-agent SDK</text><text x="616" y="68" font-size="12" fill="#62666c">AgentSession / SessionManager</text><rect x="285" y="117" width="580" height="45" rx="5" fill="#f5f8f5" stroke="#d0dfd5"/><text x="301" y="145">SandboxExecutor · OS isolation / network / process tree</text></g><g stroke="#62666c" fill="none" marker-end="url(#arrow)"><path d="M237 52H278"/><path d="M552 52H593"/><path d="M418 87V110"/><path d="M732 87V110"/></g></svg><figcaption>前端不拥有另一套 Agent 循环。执行权限既覆盖 SDK 文件工具，也覆盖 shell 和 ! 用户命令。</figcaption></figure>
+ <div class="table"><table><thead><tr><th>边界</th><th>落地方式</th></tr></thead><tbody>
+  <tr><td>输入交付</td><td>一个 inputId 对应 draft、accepted、consumed、cancelled。Enter 接到 SDK steer，Tab 接到 followUp。消费前的输入可编辑；停止同时清理 SDK 队列和宿主交付记录，未消费内容返回未发送状态。</td></tr>
+  <tr><td>权限域</td><td>PermissionPreset 独立于 sandbox、approval policy 与 session grants。每次工具启动捕获有效策略与参数摘要。模式切换不能改变已执行中的授权，也不能借用旧审批。</td></tr>
+  <tr><td>沙箱执行</td><td>统一 SandboxExecutor 接口，优先复用成熟的、许可允许的隔离实现。Windows 先验证现成 Codex sandbox 后端作为开发适配路径；发布时锁定并打包可维护执行后端，不假定用户机器装有 Codex。按平台探测能力，失败不无隔离回退。</td></tr>
+  <tr><td>文件与 shell</td><td>文件工具在真实边界内检查路径和受保护元数据；shell 由 OS 隔离落实。一次额外授权放行具体动作，常规项目命令不走泛化危险关键词审批。Full Access 则显式使用无沙箱执行策略。</td></tr>
+  <tr><td>会话与配置</td><td>Pi SessionManager 继续拥有历史、分支和模型变化。ArkCode 只保存草稿、输入交付、授权与工件。使用公共 setModel；选中模型不等于替换已经在流式返回的旧请求。</td></tr>
+  <tr><td>停止与事实</td><td>撤销审批、清理未消费输入、SDK abort、确认受管命令退出。agent_settled 表示 SDK 自动续跑收敛；worker 退出不是子进程树退出，message_end 不是存储确认。</td></tr>
+ </tbody></table></div>
+ <h3>首版交付顺序</h3>
+ <ol><li><strong>先兑现权限。</strong> 已信任目录自动运行工作区测试；网络与越界写入触发审批。Read Only 不能被 shell 绕过。Full Access 的明确确认与实际执行一致。</li><li><strong>再兑现迁移习惯。</strong> Enter steer、Tab follow-up、! shell、Codex 命令与键位，接着是恢复、fork、diff 和 review。每个入口都使用真实事件与输出。</li><li><strong>最后收紧发布质量。</strong> 中文 IME、粘贴、raw mode 恢复、输出控制序列过滤、权限失效、崩溃清理与存储故障。原生终端才是产品验收对象。</li></ol>
+ <p class="note">与上一版相比，队列、fork、轻量 review 和真实沙箱被提前，因为它们直接影响 Codex 用户的核心习惯。Goal、多代理与持久 Plan 继续后置。网页只说明设计，不承担原生产品的状态机演示。</p>
+</section>
+
+<section id="sources">
+ <h2>依据与版本口径</h2>
+ <p>查询日期为 2026-10-09。官方页面用于确认产品行为；固定源码用于菜单、按键与布局细节。英文样稿是 ArkCode 的提案，不是 Codex、Kimi 或 Apple 的实际运行截图。</p>
+ <ul class="source-list">
+  <li id="s-security"><a href="https://learn.chatgpt.com/docs/agent-approvals-security">OpenAI Docs · Agent approvals &amp; security</a>。权限边界、Auto 预设与目录信任。<a href="https://learn.chatgpt.com/docs/permission-modes">Permissions</a> 用于核对当前名称。</li>
+  <li><a href="https://learn.chatgpt.com/docs/cli/reference">OpenAI Docs · CLI reference</a>。Enter 注入、Tab 排队、@ 与 !，以及 CLI 参数。</li>
+  <li><a href="https://learn.chatgpt.com/docs/developer-commands?surface=cli">OpenAI Docs · Developer commands</a>。/diff、/resume、/review、/fork、/stop 与 Ctrl+O 复制。</li>
+  <li><a href="https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approvals_selection_popup%40windows.snap#L8">Codex 权限菜单快照</a>；<a href="https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/tui/src/bottom_pane/approval_overlay.rs#L831">审批选项实现</a>。本地提交 be2e129。</li>
+  <li><a href="https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/tui/src/keymap.rs#L1641">Codex 默认键位</a>；<a href="https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/tui/src/chatwidget/interaction.rs#L587">Ctrl+D 处理</a>；<a href="https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/tui/src/bottom_pane/mod.rs#L235">双按退出开关</a>。</li>
+  <li><a href="https://www.kimi.com/code/docs/kimi-code-cli/guides/interaction.html">Kimi 官方交互文档</a>；<a href="https://github.com/MoonshotAI/kimi-code/blob/5b936697670ed15444bcb4720bd91e6ee776a941/apps/kimi-code/src/tui/components/chrome/footer.ts#L304">Kimi 状态栏实现</a>。本地提交 5b93669，视觉组织参考，不覆盖 Codex 操作语义。</li>
+  <li><a href="https://developer.apple.com/design/human-interface-guidelines/">Apple Human Interface Guidelines</a> 是视觉方向参考。将留白、层次与克制转译到终端，是本方案的设计判断，不照搬桌面材质。</li>
+  <li><a href="https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/docs/sdk.md#L60">Pi SDK 输入与生命周期</a>；<a href="https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/agent-session.ts#L2477">公共 setModel</a>。本地提交 1cedd32。</li>
+ </ul>
+ <p class="note">本版是无脚本、无外部样式或字体依赖的单 HTML。终端样稿只展示界面，不执行命令、不修改凭据、不启用权限。上版的 50 项交互检查仅属于旧原型，不能用来声称本版的 steer、队列或沙箱已经实现。</p>
+</section>
+<footer>ArkCode TUI · revision 03 · <a href="arkcode-tui-v2.html">历史 v2</a> · <a href="../arkcode-design.html">原架构研究</a> · <a href="#top">返回顶部</a></footer>
+</main></body></html>

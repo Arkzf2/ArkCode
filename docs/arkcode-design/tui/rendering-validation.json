@@ -1,0 +1,60 @@
+{
+  "date": "2026-10-09",
+  "artifact": "arkcode-tui-demo.html",
+  "method": "Live browser UI actions through cua_repl Playwright locators and DOM observations",
+  "checks": {
+    "coding_workflow": "Explored, Edited diff, Ran exit 0, completed Markdown answer",
+    "reasoning_transcript": "Both earlier and later visible summaries retained; hidden in main conversation",
+    "tool_disclosure": "Expanded and collapsed in conversation and transcript",
+    "steer": "Enter showed Instruction pending, then consumed once at a tool boundary",
+    "follow_up": "Tab kept Queued follow-up until current turn completed; Play started the next turn",
+    "interruption": "Stopping then Interrupted; queued text restored as unsent input",
+    "approval_once": "Allowed branch produced install and test result records",
+    "approval_session": "Numeric 2 recorded session approval for npm install",
+    "approval_denied": "Keyboard focus followed Tab; Enter denied the selected request; tests unverified",
+    "approval_cancelled": "Escape recorded Approval cancelled; command not run",
+    "failure": "exit 1, assertion location and failed test retained",
+    "markdown": "Headings, emphasis, table, disabled task checkboxes and blockquote rendered",
+    "partial_code_fence": "Code rendered with syntax colors before closing fence arrived",
+    "syntax_highlighting": "Observed highlight.js syntax spans in TypeScript block",
+    "copy_code_control": "Clicked and returned Copied",
+    "copy_answer_source": "Clipboard contained original Markdown heading, fenced code and table source",
+    "file_preview": "Link opened fixture line preview; Back restored conversation",
+    "diff": "Working-directory fixture showed guard and finally reset",
+    "review": "Review after coding did not repeat the fixed pending-flag finding",
+    "motion": "Activity animation observed; unchecking Motion changed animationName to none",
+    "themes": "Light and dark appearance inspected",
+    "external_asset_elements": 0,
+    "browser_console_errors": 0,
+    "javascript_syntax": "node --check passed",
+    "viewport_override": "reset after check"
+  },
+  "viewports": {
+    "desktop": {"width": 1200, "height": 1000, "document_scroll_width": 1185, "composer_inside_terminal": true},
+    "mobile": {"width": 390, "height": 844, "document_scroll_width": 375, "approval_inside_terminal": true, "approval_button_overflow": false}
+  },
+  "screenshots": ["assets/tui-demo-desktop.png", "assets/tui-demo-markdown-dark.png", "assets/tui-demo-mobile.png"],
+  "composer_update": {
+    "date": "2026-10-09",
+    "fields": ["Model", "Reasoning", "Permissions", "Directory", "Branch", "Context"],
+    "persistent_below_composer": true,
+    "visible_in_transcript_and_approval": true,
+    "default_send_and_newline_hints_removed": true,
+    "repeated_startup_metadata_removed": true,
+    "user_query_font_weight": 600,
+    "composer_focus_border": "blue",
+    "light_and_dark_inspected": true,
+    "mobile": {"width": 390, "height": 844, "document_scroll_width": 375, "field_overflow": false, "metadata_inside_terminal": true},
+    "browser_console_errors": 0,
+    "screenshots": ["assets/tui-demo-composer-desktop.png", "assets/tui-demo-composer-mobile.png"],
+    "context_usage": "Fixed demo fixture: 36,000 / 200,000 tokens, 18% used"
+  },
+  "limits": [
+    "All model replies, tool results, review and file previews are fixtures.",
+    "No native TUI, SDK connection, model connection, filesystem tools, OS sandbox or process management implemented.",
+    "Browser modifier shortcuts are not claimed as native terminal verification; buttons and slash command fallbacks were used.",
+    "Native Unicode cell widths, IME, paste protocol, ANSI handling and renderer performance remain unverified.",
+    "The browser streams fixture blocks; it does not reproduce Codex's native line-commit implementation.",
+    "Mobile screenshot predates the final change of the approval footer hint from send to confirm."
+  ]
+}

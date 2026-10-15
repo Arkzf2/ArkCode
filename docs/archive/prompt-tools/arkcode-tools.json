@@ -1,0 +1,155 @@
+[
+  {
+    "name": "read",
+    "description": "Read workspace text files with one-based offset and bounded line count.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000
+        }
+      }
+    },
+    "executionMode": "sequential",
+    "promptSnippet": "Read workspace text files with one-based offset and bounded line count."
+  },
+  {
+    "name": "write",
+    "description": "Create or overwrite a workspace text file.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "path",
+        "content"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
+      }
+    },
+    "executionMode": "sequential",
+    "promptSnippet": "Create or overwrite a workspace text file."
+  },
+  {
+    "name": "edit",
+    "description": "Replace one exact, unique text occurrence in a workspace file.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "path",
+        "oldText",
+        "newText"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "oldText": {
+          "type": "string",
+          "minLength": 1
+        },
+        "newText": {
+          "type": "string"
+        }
+      }
+    },
+    "executionMode": "sequential",
+    "promptSnippet": "Replace one exact, unique text occurrence in a workspace file."
+  },
+  {
+    "name": "grep",
+    "description": "Search workspace text files using a regular expression; returns file and line locations.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "pattern"
+      ],
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "ignoreCase": {
+          "type": "boolean"
+        }
+      }
+    },
+    "executionMode": "sequential",
+    "promptSnippet": "Search workspace text files using a regular expression; returns file and line locations."
+  },
+  {
+    "name": "find",
+    "description": "Find workspace files by glob pattern, excluding dependency and metadata directories.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "pattern"
+      ],
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "executionMode": "sequential",
+    "promptSnippet": "Find workspace files by glob pattern, excluding dependency and metadata directories."
+  },
+  {
+    "name": "ls",
+    "description": "List workspace directory entries.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "executionMode": "sequential",
+    "promptSnippet": "List workspace directory entries."
+  },
+  {
+    "name": "bash",
+    "description": "Run a command in powershell.exe. This is an unsandboxed native shell, not necessarily Bash.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 600
+        }
+      }
+    },
+    "executionMode": "sequential",
+    "promptSnippet": "Run a command in powershell.exe. This is an unsandboxed native shell, not necessarily Bash."
+  }
+]

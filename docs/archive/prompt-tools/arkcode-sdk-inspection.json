@@ -1,0 +1,94 @@
+{
+  "method": "Real installed Pi SDK session inspection; no model requests and no tool execution",
+  "initiallyReadOnly": {
+    "initialTools": [
+      "read",
+      "grep",
+      "find",
+      "ls"
+    ],
+    "before": {
+      "registered": [
+        "read",
+        "grep",
+        "find",
+        "ls"
+      ],
+      "active": [
+        "read",
+        "grep",
+        "find",
+        "ls"
+      ],
+      "system": "You are ArkCode, a terminal coding agent. Inspect the project before making changes. Follow project instructions. Keep changes focused, verify the result, and report what changed and what was checked. Never claim a command succeeded without its result. Tool permissions are enforced by the host. Do not bypass a denied tool action.\n\n<cwd>\nD:/ArkCode\n</cwd>"
+    },
+    "after": {
+      "registered": [
+        "read",
+        "grep",
+        "find",
+        "ls"
+      ],
+      "active": [
+        "read",
+        "grep",
+        "find",
+        "ls"
+      ],
+      "system": "You are ArkCode, a terminal coding agent. Inspect the project before making changes. Follow project instructions. Keep changes focused, verify the result, and report what changed and what was checked. Never claim a command succeeded without its result. Tool permissions are enforced by the host. Do not bypass a denied tool action.\n\n<cwd>\nD:/ArkCode\n</cwd>"
+    }
+  },
+  "initiallyWritable": {
+    "initialTools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "write",
+      "edit",
+      "bash"
+    ],
+    "before": {
+      "registered": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "grep",
+        "find",
+        "ls"
+      ],
+      "active": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "write",
+        "edit",
+        "bash"
+      ],
+      "system": "You are ArkCode, a terminal coding agent. Inspect the project before making changes. Follow project instructions. Keep changes focused, verify the result, and report what changed and what was checked. Never claim a command succeeded without its result. Tool permissions are enforced by the host. Do not bypass a denied tool action.\n\n<cwd>\nD:/ArkCode\n</cwd>"
+    },
+    "after": {
+      "registered": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "grep",
+        "find",
+        "ls"
+      ],
+      "active": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "write",
+        "edit",
+        "bash"
+      ],
+      "system": "You are ArkCode, a terminal coding agent. Inspect the project before making changes. Follow project instructions. Keep changes focused, verify the result, and report what changed and what was checked. Never claim a command succeeded without its result. Tool permissions are enforced by the host. Do not bypass a denied tool action.\n\n<cwd>\nD:/ArkCode\n</cwd>"
+    }
+  }
+}

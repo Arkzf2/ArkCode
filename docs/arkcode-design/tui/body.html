@@ -1,0 +1,266 @@
+<header class="intro" id="overview">
+ <p class="caption">历史方案 v2。权限、键位和命令规则已被 <a href="arkcode-tui.html">Codex 对齐版 v3</a> 替代。</p>
+ <div class="eyebrow">ARKCODE / PRODUCT SPECIFICATION / 02 · 2026.10.09</div>
+ <h1>ArkCode TUI</h1>
+ <p class="lead">在当前终端交代任务，随时理解执行，审阅真实改动后接手。</p>
+ <div class="intro-meta"><span>pi-coding-agent SDK</span><span>常规终端滚动记录</span><span>单工作区 · 单运行</span><a href="../arkcode-design.html">已有架构与源码研究 ↗</a></div>
+</header>
+
+<section id="prototype" class="prototype-section" aria-labelledby="prototype-title">
+ <div class="section-head compact"><h2 id="prototype-title">先看一次完整的终端任务</h2><p>交互原型。文件、时间、模型名和测试结果是演示数据。</p></div>
+ <div class="demo-controls"><label>场景 <select id="scene-select" aria-label="选择 TUI 场景">{{SCENES}}</select></label><div class="segments" role="group" aria-label="模拟终端宽度"><button type="button" data-width="wide" aria-pressed="true">宽终端</button><button type="button" data-width="narrow" aria-pressed="false">窄终端</button></div><button type="button" id="demo-step" class="action">推进演示</button><button type="button" id="demo-reset">重置</button></div>
+ <div id="terminal" class="terminal" role="region" aria-label="ArkCode TUI 交互原型">
+  <div class="terminal-top"><span class="terminal-brand">&gt;_ arkcode <span class="term-dim">v0.1 · 设计原型</span></span><span id="demo-directory">D:\checkout-web · main*</span></div>
+  <div class="terminal-content" id="demo-transcript"></div>
+  <div class="terminal-panel" id="demo-panel" hidden></div>
+  <div class="runtime-line"><span id="demo-state" class="state-label"></span><span class="term-dim" id="demo-operation"></span></div>
+  <div class="composer"><span class="prompt" aria-hidden="true">›</span><textarea id="demo-input" aria-label="演示任务输入" rows="2" placeholder="描述任务，或输入 / 打开命令"></textarea><button type="button" id="demo-send" class="send" title="提交演示输入">发送</button></div>
+  <div class="terminal-footer"><span id="demo-config"></span><span id="demo-keyhint"></span></div>
+ </div>
+ <div class="demo-explanation"><div><span class="eyebrow">当前设计意图</span><h3 id="scene-title"></h3><p id="scene-description"></p></div><p id="demo-feedback" role="status" aria-live="polite">输入任务后发送，或选择场景。此页不会调用模型或执行命令。</p></div>
+ <p class="caption">宽度切换模拟内容取舍，不是逐字符终端渲染。原型实现发送、运行草稿、命令过滤、模型/权限选择、审批、停止、审阅和恢复等关键路径。按键演示支持 Enter、Esc、Ctrl+C、Ctrl+J、Ctrl+O、候选方向键和 Tab；历史、外部编辑器、plain 模式、输出分页等是待实现规格。</p>
+</section>
+
+<section id="positioning" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">产品边界</div><h2>一个终端里的编码助手，围绕一次改动组织。</h2></div><p>目标用户已经在终端和编辑器中工作。ArkCode 负责把自然语言任务变成可检查的代码与执行证据，完成后让用户继续自己的编辑器和 Git 流程。</p></div>
+ <div class="principle-grid"><article><h3>过程紧凑，证据可打开。</h3><p>阅读、搜索、编辑用简短记录。执行命令和错误保留可访问输出。最终回复说明变更、验证范围与未完成事项。</p></article><article><h3>输入只有一个发送含义。</h3><p>空闲时 Enter 发送。运行中普通文字留为草稿，完成后仍须用户发送。Tab 只补全，恢复历史也不会再次执行。</p></article><article><h3>批准对象与执行对象一致。</h3><p>用户批准具体命令、目录与 shell。批准只适用于一次工具调用。停止撤销挂起批准，迟到的按键不会启动旧命令。</p></article><article><h3>终端习惯优先。</h3><p>保留原生 scrollback，退出后回到原 shell。没有常驻项目树、代理列表或活动仪表盘。复杂信息在需要时进入面板。</p></article></div>
+ <div class="notice">本规格替代前一报告中 Electron、React 窗口与桌面单实例的入口假设。Pi 历史、运行准入、审批、停止与审阅的所有权继续沿用。TUI 宿主监督一个 SDK worker；每次启动固定一个目录。不同目录可开不同终端，同目录只有一个可写宿主。</div>
+ <div class="table-wrap"><table><thead><tr><th>首版功能</th><th>完整首版范围</th><th>后续迭代</th></tr></thead><tbody>{{FEATURES}}</tbody></table></div>
+</section>
+
+<section id="references" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">借鉴与判断</div><h2>参考交互的理由，并重新确定边界。</h2></div><p>官方文档核实用户操作，固定提交源码核实实现。两者均在 2026-10-09 查阅，默认行为可能随版本变化；以下 ArkCode 规则均为提案。</p></div>
+ <div class="table-wrap"><table><thead><tr><th>参考中的事实</th><th>ArkCode 沉淀出的规则</th><th>选择的代价</th></tr></thead><tbody>
+ <tr><td>Codex 将目录、模型、权限与命令入口放在终端会话附近。[[D01 D02]]</td><td>启动条交代目录；输入区附近保留模型、模式与运行状态；设置按需打开。</td><td>不常驻显示所有诊断。详细信息需要 /status。</td></tr>
+ <tr><td>Codex 的工具摘要与详情不同，某些详情仍标明采集截断。[[C5 C6]]</td><td>区分“显示折叠”和“实际未采集”；失败首先展示退出码和尾部诊断。</td><td>必须管理输出文件、大小限制与过期规则。</td></tr>
+ <tr><td>Kimi 提供 / 补全、文件引用、审批以及多种权限模式。[[D04]]</td><td>复用输入与选择器习惯；只保留只读/编码，shell 逐次批准。</td><td>命令密集任务会多次批准，首版不提供会话内一律允许。</td></tr>
+ <tr><td>Kimi 的会话恢复、压缩与导出各有独立操作。[[D05]]</td><td>/new、/sessions、/compact、/export 含义独立；恢复对话不宣称恢复副作用。</td><td>无法自动接续上次未知命令，需用户重新交代下一步。</td></tr>
+ <tr><td>本地 Codex HEAD 的 alternate-screen 是 auto；Kimi 默认 regular；Pi 提供两种 renderer。[[C10 K1 P1]]</td><td>首版明确选 regular 单列，复用 TuiMainScreen。全屏留待实际需求。</td><td>终端掌管历史滚动。ArkCode 无法可靠显示全局“有新输出”或冻结原生滚动位置。</td></tr>
+ </tbody></table></div>
+ <details><summary>为什么不直接复制同名功能和快捷键？</summary><p>Codex 的运行中 Enter / Tab 与 Kimi 的 Ctrl+S 追加输入依赖各自执行模型。ArkCode 尚未实现队列的交付、保存与取消契约，首版只保存草稿。[[D02 D06]]</p><p>Codex 的 /review 是模型审查，/diff 是本地差异。ArkCode 以 /changes 打开事实审阅，AI 审查稍后再做。不同文档对 Ctrl+D 的说明也有差异，ArkCode 明确将它定义为编辑按键，退出使用 /exit。[[D02 D06]]</p></details>
+</section>
+
+<section id="startup" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">首次运行与入口</div><h2>从当前目录开始，先确认配置与写入范围。</h2></div><p>安装与启动要能在没有 Git、网络不可达和非 ASCII 路径中给出明确反馈。下面是产品接口提案，命令尚未发布。</p></div>
+ <div class="two-col"><div><h3>CLI 接口</h3><pre class="code">arkcode                         # 当前目录，新会话
+arkcode -C "D:\项目\checkout"   # 指定目录
+arkcode -c                      # 当前目录最近可恢复会话
+arkcode resume                  # 当前目录会话选择器
+arkcode resume &lt;session-id&gt;      # 恢复指定会话
+arkcode --plain                 # 无 ANSI 的交互降级
+arkcode --no-color              # 保留交互，关闭配色
+arkcode --help / --version</pre><p>首版建议 npm 分发，锁定受支持的 Node LTS 与 SDK 版本；最低 Node 版本以打包验收确定。首版不接受 -p、--yolo 或后台 daemon，非 TTY 时在调用模型前退出并解释当前仅支持交互模式。</p></div><div><h3>首次配置流程</h3><ol class="steps"><li>解析真实目录，检查读取权限、Git 状态与工作区锁。没有 Git 仍允许继续。</li><li>没有有效模型时打开 provider 配置。选官方 provider 或 SDK 支持的兼容协议，填写端点与模型。</li><li>密钥优先读取显式环境变量。持久保存优先使用系统凭据存储；不可用时提示选择仅本进程使用或权限受限文件。</li><li>校验连接，显示实际 shell 及编辑器。校验只发送认证/最小测试请求，不发送项目文件。</li><li>首次目录选择只读或编码。默认选只读；用户显式选编码后保存目录偏好。</li><li>显示已有文件改动，输入第一个任务。首次含模型请求时再建立持久会话。</li></ol></div></div>
+ <div class="table-wrap"><table><thead><tr><th>启动状态</th><th>界面与动作</th><th>必须保留的事实</th></tr></thead><tbody>
+ <tr><td>新用户 / 未配置</td><td>进入配置面板；取消可退出，不建立空会话或上传文件。</td><td>当前目录，凭据来源，端点 / 协议。</td></tr>
+ <tr><td>目录已有修改</td><td>启动摘要写“已有 3 个文件修改”；可 /changes 查看全量。无需额外逐文件批准读取。</td><td>后续运行基线包含 staged、unstaged、untracked。</td></tr>
+ <tr><td>同目录被占用</td><td>只读浏览历史/差异，显示占用 PID 和开始时间；禁止发送、新会话写入与设置会话元数据。</td><td>不得仅凭 PID 文件删除锁；先核实进程身份和旧命令。</td></tr>
+ <tr><td>恢复中断会话</td><td>显示历史、当前文件和未知命令；无法确认旧命令退出时执行锁定。</td><td>新 epoch，旧审批全部失效，草稿标为“未发送”。</td></tr>
+ <tr><td>认证 / 端点失败</td><td>说明无效凭据或网络问题；可编辑配置、重试或退出。</td><td>保存草稿，日志与错误不泄漏密钥。</td></tr>
+ </tbody></table></div>
+ <p class="caption">配置优先级建议为启动参数 &gt; 显式环境变量 &gt; 用户设置 &gt; 产品默认；项目只保存文本指令与已确认目录偏好，不自动读取可执行项目扩展。恢复会话不能覆盖本次明确配置。</p>
+</section>
+
+<section id="layout" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">界面构成</div><h2>连续对话，加上可以被临时替换的输入区。</h2></div><p>主界面是终端主缓冲区中的连续文档。启动摘要仅出现一次，可以随记录滚走。状态、输入和提示位于当前文档尾部，不承诺永久固定顶栏。</p></div>
+ <figure class="diagram"><svg viewBox="0 0 1040 350" role="img" aria-labelledby="layout-title layout-desc"><title id="layout-title">ArkCode TUI 主缓冲区布局与底部面板</title><desc id="layout-desc">启动摘要与对话属于原生滚动记录，尾部有活动状态、输入和配置提示。选择器和审批替换尾部输入区域。状态不依赖模型生成文字。</desc><defs><marker id="layout-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#7b8895"/></marker></defs><rect x="20" y="20" width="580" height="310" rx="6" fill="#f7f8fa" stroke="#ccd4dd"/><g fill="#20262e" font-size="15"><text x="42" y="52">启动摘要 · 目录 / 会话 / 已有修改</text><text x="42" y="95">用户任务 → 助手进度 → 紧凑工具记录</text><text x="42" y="135">工具完成事实 / 错误 / 最终结果</text></g><text x="390" y="172" font-size="13" fill="#687581">终端拥有 scrollback</text><path d="M35 191H585" stroke="#ccd4dd"/><rect x="36" y="205" width="548" height="35" fill="#e8f4f2"/><text x="48" y="228" font-size="14" fill="#087d72">状态：正在编辑 / 等待批准 / 正在停止</text><rect x="36" y="248" width="548" height="47" fill="#fff" stroke="#ccd4dd"/><text x="48" y="276" font-size="15" fill="#20262e">› 多行输入或下一条草稿</text><text x="44" y="315" font-size="12" fill="#687581">模型 · 模式 · 上下文 / 当前焦点快捷键</text><path d="M605 265H652" stroke="#7b8895" marker-end="url(#layout-arrow)"/><rect x="666" y="55" width="350" height="242" rx="6" fill="#fff" stroke="#ccd4dd"/><g fill="#20262e" font-size="15"><text x="687" y="88">临时尾部面板</text><text x="687" y="133">命令 / 模型 / 会话选择器</text><text x="687" y="174">工具批准 / 完整参数</text><text x="687" y="215">文件 diff / 工具输出分页</text></g><text x="687" y="272" font-size="13" fill="#687581">关闭后恢复草稿和输入焦点</text></svg><figcaption>所有面板共享一套选择与返回逻辑。首版仅允许一层查看面板，审批参数详情为该面板的内页，避免多个弹窗互相遮挡。</figcaption></figure>
+ <div class="table-wrap"><table><thead><tr><th>区域</th><th>信息层次与尺寸</th><th>交互</th></tr></thead><tbody>
+ <tr><td>启动摘要</td><td>4 行以内；版本、目录、分支与脏状态、会话标识。首次配置只出现必要项。</td><td>完整路径与诊断可 /status 查看；不重复打印 logo。</td></tr>
+ <tr><td>对话记录</td><td>用户正文、助手正文、工具摘要、结果。短段落，代码保持等宽，长工具输出折叠。</td><td>终端原生滚动与复制；被重新渲染的当前尾部不承诺永久位置。</td></tr>
+ <tr><td>状态行</td><td>状态词 + 当前动作 + 活跃耗时；等待批准不显示“执行命令中”。无进度数据不用百分比。</td><td>来自 SDK / 宿主事件；运行结束后加入结果摘要。</td></tr>
+ <tr><td>输入区</td><td>默认 3 行含边界，随正文增长到 6 行；更长内容内部滚动。候选菜单不挤没输入光标。</td><td>多行编辑、补全、粘贴、历史、外部编辑器。运行中保留编辑能力。</td></tr>
+ <tr><td>提示行</td><td>优先显示模式、模型，再显示上下文；窄屏先隐藏推理等级与非必要指标。</td><td>只提示当前焦点真正生效的按键。静态帮助从同一命令/按键注册表生成。</td></tr>
+ <tr><td>临时面板</td><td>最大使用可见区域，审批至少保留目标/范围/拒绝/详情。列表每页按剩余行数计算。</td><td>方向键、Enter、Esc；返回先恢复原草稿，禁止把确认键透传到输入区。</td></tr>
+ </tbody></table></div>
+ <details><summary>颜色、字符与状态词</summary><p>默认跟随终端背景，不强制全屏铺色。主题只有明、暗、无色；用终端前景为正文，弱色为参数，青色为完成，琥珀色为批准/警告，红色为失败。状态同时有文字，不能只靠色彩。</p><p>终端界面用 ›、✓、×、! 辅助阅读，ASCII 降级使用 &gt;、OK、ERR、!。不使用 emoji 作状态或 spinner。按 grapheme 与终端 cell width 排版，不能按字符串长度截断中文、组合字符或路径。代码行可以水平分页，说明文字换行。</p></details>
+</section>
+
+<section id="input" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">输入与上下文</div><h2>先让用户确认进入模型的文字和文件。</h2></div><p>ComposerDraft 保存正文、粘贴载荷与显式文件引用。命令菜单与输入历史都只改变草稿，直到用户提交。控制命令走宿主，不进入模型对话。</p></div>
+ <div class="two-col"><div><h3>普通任务与命令解析</h3><ul><li>Enter 提交前验证目录锁、模型、当前模式和输入大小；失败时保留完整草稿。</li><li>首个非空字符为 / 时解析本地命令；未知名称显示错误，不默默发送给模型。若要发送以 / 开头的文字，用 // 转义，提交时移除第一个 /。</li><li>输入 / 打开菜单，匹配名称与描述。Tab 插入命令名称；Enter 在菜单中确认候选，不再自动执行。完整命令在输入区再次 Enter 执行。</li><li>运行中的普通 Enter 留为草稿，并提示“当前任务进行中，草稿尚未发送”。任务结束不会自动发送。</li><li>首版无 ! shell 模式。要自行操作项目，另开终端；ArkCode 的 shell 始终作为可批准工具执行。</li></ul></div><div><h3>@ 文件引用</h3><ul><li>搜索工作区相对路径，尊重忽略规则，排除 .git、node_modules 与明确敏感文件。目录只用于导航，不整目录塞进请求。</li><li>候选确认形成可识别文件引用，而不是隐含上传。支持 @"含 空格/checkout.ts" 和可选行段 #L10-L30。</li><li>提交时解析真实路径，拒绝逃出工作区的符号链接，显示读取范围和大小。文件已经变化时发送提交时版本。</li><li>建议单文件不超过 256 KiB，总显式引用不超过 1 MiB。超限给出选择行段的入口，不静默截断。二进制/图片暂不支持。</li><li>实际读取成功的内容与来源进入本次上下文；历史召回路径必须重新校验。敏感文件被排除并给出原因，首版不提供隐藏放行。</li></ul></div></div>
+ <div class="table-wrap"><table><thead><tr><th>操作</th><th>规格</th><th>失败 / 边界</th></tr></thead><tbody>
+ <tr><td>多行与粘贴</td><td>bracketed paste 原子插入；超过 8 行或 2,000 字符折叠为“粘贴 N 行”，保留原文与展开入口。整体提交上限建议 64 KiB 文本。</td><td>粘贴中 Enter、Tab、/stop 都是文字，不发送、不批准。不支持 bracketed paste 的终端需经过验证的检测或 plain 模式安全粘贴入口。</td></tr>
+ <tr><td>中文输入法</td><td>组合阶段不发送；提交候选只完成文本输入。terminal backend 需验证实际 IME 编码，不能套用浏览器 composition 事件。</td><td>原型只验证浏览器输入契约，原生 Windows Terminal 仍需测试。</td></tr>
+ <tr><td>历史</td><td>Up/Down 在编辑边界召回当前目录已发送文本；Ctrl+R 检索。取消恢复搜索前草稿。</td><td>未发送草稿不冒充历史；引用和粘贴载荷丢失时不能只恢复占位符。</td></tr>
+ <tr><td>外部编辑器</td><td>Ctrl+G /open 使用显式配置或 VISUAL &gt; EDITOR。暂停 raw mode，使用 argv 启动；返回后恢复终端和原视图。</td><td>编辑器退出失败保留原草稿和临时文件恢复入口。禁止编辑器字符串拼接 shell。</td></tr>
+ <tr><td>草稿保存</td><td>每个会话有本地草稿 sidecar；短延迟原子替换，标记未发送。首次尚无会话时按工作区保存。</td><td>不保证断电零丢失。只读占用浏览器不写 sidecar。认证面板的密钥不进入草稿。</td></tr>
+ <tr><td>文本指令</td><td>/context 列明读取的 AGENTS.md 与用户明确选择的文本来源。当前运行开始后固定来源及工具集合。</td><td>项目内容不能设置凭据、批准工具或执行扩展代码。首版敏感文件 deny 规则属于文件工具策略，不是整个 shell 的 OS 沙箱。</td></tr>
+ </tbody></table></div>
+</section>
+
+<section id="execution" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">执行与反馈</div><h2>运行状态与验证结果使用两套事实。</h2></div><p>任务可能已结束但验证失败，也可能已写入文件却未执行测试。界面同时表达执行是否空闲、改动是什么和验证到了什么范围。</p></div>
+ <figure class="diagram"><svg viewBox="0 0 1040 290" role="img" aria-labelledby="run-title"><title id="run-title">运行状态与停止路径</title><defs><marker id="run-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#7b8895"/></marker></defs><g stroke="#ccd4dd" fill="#f7f8fa"><rect x="12" y="90" width="140" height="55" rx="6"/><rect x="204" y="90" width="145" height="55" rx="6"/><rect x="410" y="90" width="165" height="55" rx="6"/><rect x="410" y="10" width="165" height="48" rx="6" fill="#fff5df"/><rect x="638" y="90" width="170" height="55" rx="6"/><rect x="866" y="90" width="160" height="55" rx="6"/><rect x="410" y="214" width="165" height="55" rx="6" fill="#fff5df"/><rect x="642" y="214" width="170" height="55" rx="6" fill="#e8f4f2"/></g><g font-size="15" text-anchor="middle" fill="#20262e"><text x="82" y="123">空闲</text><text x="276" y="123">准备 · 固定配置</text><text x="492" y="123">执行 / 重试 / 压缩</text><text x="492" y="40">等待工具批准</text><text x="723" y="123">整理实际结果</text><text x="946" y="123">空闲 + 结果摘要</text><text x="492" y="247">正在停止</text><text x="727" y="247">停止已确认</text></g><g stroke="#7b8895" fill="none" marker-end="url(#run-arrow)"><path d="M153 117H198"/><path d="M350 117H404"/><path d="M576 117H632"/><path d="M809 117H860"/><path d="M492 87V62"/><path d="M570 60V84"/><path d="M492 148V208"/><path d="M577 241H636"/></g><g font-size="12" fill="#687581"><text x="587" y="79">agent_settled</text><text x="590" y="195">未确认退出：保持占用</text><text x="20" y="198">任一活跃状态均可请求停止。</text><text x="20" y="226">崩溃记录为中断，不自动重放。</text></g></svg><figcaption>SDK 的 agent_end 可能后接自动重试或压缩续跑；使用 agent_settled 确认循环结束，再收敛审批与命令清理。[[A06 A07]]</figcaption></figure>
+ <div class="table-wrap"><table><thead><tr><th>阶段</th><th>显示内容</th><th>用户能做什么</th></tr></thead><tbody>
+ <tr><td>准备</td><td>检查目录、建立文件基线、固定 model/mode/tools、分配 runId。</td><td>可停止；重复提交返回原运行身份，不能开始第二个。</td></tr>
+ <tr><td>模型输出</td><td>助手流式正文与“正在分析”；不显示未经执行的“已测试”。</td><td>写下一条草稿，打开状态/上下文/已有改动。</td></tr>
+ <tr><td>工具执行</td><td>read/search 用路径与计数；edit/write 用文件及统计；shell 用命令、开始时间和实时尾部。</td><td>Ctrl+O 详情；查看面板关闭后当前运行继续。</td></tr>
+ <tr><td>批准等待</td><td>“等待批准”，展示完整最终参数；耗时是等待时间，命令未开始。</td><td>允许一次、拒绝一次、停止整个任务。草稿暂不获取键盘焦点。</td></tr>
+ <tr><td>重试 / 自动压缩</td><td>真实重试次数或“正在压缩”；有已知延迟才显示倒计时。</td><td>停止。不开放新建、切模型或权限变更；普通输入仍留草稿。</td></tr>
+ <tr><td>结果整理</td><td>收集最新文件差异与命令结果；直到工作区可安全再次使用才释放运行槽。</td><td>查看证据，不能提前提交。</td></tr>
+ <tr><td>空闲</td><td>变更摘要 + 验证通过/失败/未执行/未知 + 后续事项。</td><td>主动发送草稿、新会话、切模型、导出或自行接手。</td></tr>
+ </tbody></table></div>
+ <div class="notice">工具串行是 ArkCode 的显式配置。运行前设置 <code>session.agent.toolExecution = "sequential"</code>，不另建工具调度器。拒绝一次工具不会保证模型立即结束，它可以解释或调整方案；UI 仍等待真正 settled。[[A21]]</div>
+ <div class="two-col"><div><h3>输出密度</h3><p>连续读取与搜索可以合并显示计数，原工具身份仍可展开。命令运行只更新最多 4 行尾部；结束显示 exit code、时长和至多 6 行关键输出。失败保留诊断，不只显示红色图标。</p><p>输出全文建议写 sidecar 工件，每次调用上限 10 MiB，达到上限保留首尾并标“采集已截断”。会话只保存 SDK 所需结果与工件引用。超过保留期限后详情标“日志已清理”，不称完整日志。</p></div><div><h3>最终回复模板</h3><pre class="code">已修改
+  src/checkout.ts：阻止重复提交，失败后复位
+验证
+  npm test -- checkout · exit 0
+  仅结账模块；未运行端到端测试
+仍需注意
+  README.md 是运行前已有修改
+查看 /changes   证据 /checks</pre><p>这只是呈现建议，系统中的验证状态来自命令事实，不能从模型文本推断需求已经满足。</p></div></div>
+</section>
+
+<section id="permissions" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">模式与批准</div><h2>先确定编码范围，再批准一次具体命令。</h2></div><p>只读/编码是能力选择，shell 批准是一次执行决策。二者独立。首版没有 YOLO、永远允许或“按 Enter 放行所有操作”。</p></div>
+ <div class="table-wrap"><table><thead><tr><th>模式</th><th>自动允许</th><th>需要批准 / 不提供</th><th>如何进入</th></tr></thead><tbody>
+ <tr><td>只读</td><td>受控 workspace read、搜索、查看历史、当前 diff。</td><td>无 shell、edit/write。分析回复仍可消耗模型 token。</td><td>新目录默认选择；/permissions 空闲时确认。</td></tr>
+ <tr><td>编码</td><td>本次提交授权工作区根内的受控 edit/write；工具边界仍验证路径与 deny 规则。</td><td>每次 shell 请求批准；根外写入与敏感文件拒绝。shell 不受文件工具路径规则完全隔离。</td><td>用户显式选择后，再用 Enter 发起本次编码任务。</td></tr>
+ </tbody></table></div>
+ <div class="two-col"><div><h3>批准面板</h3><pre class="code">等待批准 · shell #t17
+命令   npm test -- checkout
+目录   D:\checkout-web
+Shell  PowerShell · C:\...\pwsh.exe
+范围   仅这一次；以当前用户权限执行
+
+› 拒绝这次
+  允许这次
+  停止整个任务
+
+Up/Down 选择 · Enter 确认
+Esc 拒绝这次 · Ctrl+C 停止任务</pre><p>默认选中拒绝，用户必须主动选择允许。可用按键来自面板上下文，粘贴与长按重复不会触发选择。选择后立即标明已处理，并将决策加入运行记录。</p></div><div><h3>长命令与故障</h3><ul><li>命令、cwd、shell 与一次性范围不可被摘要隐藏。过长参数进入分页详情；显示不完整时允许入口禁用，查看完整参数后再返回选择。</li><li>审批绑定 epoch、sessionId、runId、toolCallId、最终参数摘要。失效或不一致只返回过期结果。</li><li>Esc 拒绝本次工具，Ctrl+C 请求停止整个运行。两者都不会回滚已经写入的文件。</li><li>在当前查看面板中到达批准，保存面板位置与草稿，批准接管焦点；处理后可返回原查看面板。</li><li>批准等待无自动允许超时；宿主退出、worker 失联或停止会撤销等待。</li></ul></div></div>
+ <p class="caption">批准 broker 由宿主管理，SDK hook 只请求决策。仅加载受控处理器，避免批准后参数再被修改。worker 隔离是故障隔离，不是 OS 沙箱；所有 shell 都必须显示当前用户执行权限。[[A12 A13 A17 A18]]</p>
+ <details><summary>模型主动提问如何呈现？</summary><p>首版不新增结构化 AskUser 工具。模型问题以普通助手正文显示，在 settled 后由用户回复。工具批准面板只处理执行许可，不能把需求回答伪装成工具授权。结构化问题与 Plan 模式有明确需求后再引入。</p></details>
+</section>
+
+<section id="changes" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">改动与证据</div><h2>每个差异都交代比较的两端。</h2></div><p>/changes 是本地查看，不调用模型审查、不再次应用补丁。默认比较最近运行前的文件基线与当前文件。工作目录全量与命令证据分别切换查看。</p></div>
+ <div class="table-wrap"><table><thead><tr><th>视图</th><th>用户看到什么</th><th>允许的操作</th></tr></thead><tbody>
+ <tr><td>运行增量</td><td>基线时间 → 当前时间；modified/added/deleted、增删行与“来源可能混合”。运行中显示“未定稿”。</td><td>选择文件，逐段 unified diff；n/p 下一/上一文件；Esc 返回。</td></tr>
+ <tr><td>工作目录全量</td><td>Git 下区分 staged、unstaged、untracked；同一文件可出现在多个类别。显示 rename、二进制、删除和不可读取。</td><td>切换分类查看，不 stage/unstage，不重置文件。</td></tr>
+ <tr><td>非 Git 目录</td><td>只能有已采集运行基线的增量；首次启动全量说明无 Git 比较基准。</td><td>查看本次运行采集文件；未建立基线的文件不编造全量差异。</td></tr>
+ <tr><td>命令证据 /checks</td><td>命令、cwd、shell、起止时间、exit、取消/拒绝/未知、采集限制、验证范围与新鲜度。</td><td>打开输出，复制命令文字。复制不会执行；首版不提供一键重新运行。</td></tr>
+ <tr><td>工具记录详情</td><td>执行参数及那一次工具结果，不等同于当前工作目录所有变化。</td><td>分页与本地搜索；过期工件明确标记，模型可见摘要和本地原始输出有区别。</td></tr>
+ </tbody></table></div>
+ <div class="two-col"><div><h3>审阅操作</h3><p>先选比较范围，再选文件。文件列表保持路径、状态与来源说明；增删行是辅助信息。宽窄终端都使用“文件列表 → 单文件 diff”的同一流程，首版不做双栏 side-by-side diff。</p><p>diff 中 Up/Down 按行、PgUp/PgDn 按页，n/p 切文件，/ 搜索当前内容。长代码行水平移动，不截掉导致行为变化的字符。返回列表保留选择与页码。</p></div><div><h3>证据新鲜度</h3><p>测试通过只证明当时命令在对应文件状态下 exit 0。后续文件变动使证据标为“可能过期”。已知验证输入保存指纹；无法精确识别依赖时任何工作区源码变化都保守标记可能过期。</p><p>运行基线只覆盖可观察文件变化。用户外部编辑或 shell 期间变更标来源可能混合。没有足够依据时显示未知，不宣称全部由 Agent 创建。</p></div></div>
+ <div class="notice">基线采集应有预算。建议单文件 1 MiB、单次基线总内容 50 MiB；大文件保留 hash/大小而不生成正文 diff，超预算明确列出未覆盖路径。二进制、忽略目录和删除文件显示状态。预算是首版建议默认值，待真实仓库验收调整，不能以跳过采集掩盖变更。</div>
+</section>
+
+<section id="sessions" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">会话与长对话</div><h2>对话能继续，旧命令不会随恢复再执行。</h2></div><p>Pi SessionManager 仍是会话事实的唯一来源。ArkCode 只保存索引、草稿、批准、运行收据与变更工件。会话索引可重建，不另设第二套 messages 数据库。</p></div>
+ <div class="two-col"><div><h3>会话选择器</h3><pre class="code">当前目录会话 · 3
+搜索  checkout
+
+› 修复重复提交    今天 09:42 · 验证通过
+  理解支付流程    昨天 18:20 · 未执行验证
+  重试提交失败    昨天 16:10 · 上次中断
+
+预览：3 个运行 · 2 个变更文件
+Enter 恢复记录 · Esc 返回</pre><p>只检索当前真实目录；默认时间倒序。标题、日期与上次结果可扫描，选中后预览。空列表直接提供新建。损坏历史只读展示可解析部分，并标记恢复失败；不能静默另开空会话冒充恢复成功。</p></div><div><h3>切换、命名与草稿</h3><p>新建与切换只在空闲时进行。先处理草稿，然后 dispose 旧实例、解绑监听并绑定新 SDK session。旧 epoch 的事件不能更新新会话。</p><p>默认标题取第一条有效任务，最多 80 字符；用户可 /rename。空白标题拒绝，原输入保留。会话切换恢复各自未发送草稿，文件改动仍在同一工作目录。</p><p>首版不暴露分支树、/undo、会话永久删除或自动回滚。导出与复制满足接手、备份和分享需求。跨项目恢复必须在对应目录重新启动。</p></div></div>
+ <div class="table-wrap"><table><thead><tr><th>上下文操作</th><th>行为契约</th><th>呈现</th></tr></thead><tbody>
+ <tr><td>/context</td><td>来源清单、模型窗口、最新可得 usage、压缩时间、显式引用。不会展示 API Key 或系统凭据。</td><td>区分实际用量、估算与未知。显示当前模型上下文与完整本地历史不是同一内容。</td></tr>
+ <tr><td>自动压缩</td><td>SDK 自行触发，属于当前运行；只改变模型使用的有效上下文。</td><td>显示压缩中与成功摘要；老对话仍可在保存历史/导出中查阅。</td></tr>
+ <tr><td>/compact</td><td>空闲时确认会触发模型调用，期间占用执行槽，可停止。</td><td>报告成功/失败/取消；失败保留旧有效上下文，不声称腾出固定 token 数。</td></tr>
+ <tr><td>Prompt cache</td><td>稳定 schema、系统指令与 Pi provider 管线，默认无需用户开关。</td><td>仅 /status 高级区显示 provider 报告的 cache read/write。缺少 usage 不显示缓存命中率。[[A20]]</td></tr>
+ <tr><td>本地工件保留</td><td>会话历史默认保留；草稿原子替换；输出/基线工件建议保留 7 天或总 500 MiB，先清旧工件。</td><td>清理不删除会话正文。被清理详情显示不可用；历史验证仍保留 exit 事实但不称可复查完整证据。</td></tr>
+ </tbody></table></div>
+</section>
+
+<section id="stop" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">停止、退出与恢复</div><h2>收到停止请求，与确认停止，是两个状态。</h2></div><p>Esc 在输入区或 Ctrl+C 请求停止；界面立即响应，但只有审批、SDK 和受管命令都收敛后才能开放新任务。已完成的写入保留。</p></div>
+ <ol class="steps stop-steps"><li>宿主进入“正在停止”，不再接受新运行，固定本次取消意图。</li><li>审批 broker 撤销等待，拒绝迟到批准；把尚未提交输入保留为草稿。</li><li>调用 SDK abort，显式处理队列。首版不入 steer/follow-up 队列。</li><li>监督 shell 及子进程退出；worker 退出本身不能证明命令停止。</li><li>保存可保存运行收据，刷新真实 diff。确认完成则显示已停止；无法确认则显示停止未确认并保持执行锁。</li></ol>
+ <div class="table-wrap"><table><thead><tr><th>动作 / 事件</th><th>产品结果</th><th>后续入口</th></tr></thead><tbody>
+ <tr><td>停止超过 5 秒</td><td>变为“仍在停止”，列明等待的是审批、SDK 或命令。5 秒是提示阈值，不是强行解锁。</td><td>查看状态/当前改动。首版不把第二次 Ctrl+C 当作强制退出捷径。</td></tr>
+ <tr><td>等待批准时退出</td><td>先用 Ctrl+C 或“停止整个任务”撤销批准并停止，再执行 /exit。审批焦点不接受普通命令输入。</td><td>只有清理确认后退出。普通运行输入区可用 /exit 打开停止并退出确认。</td></tr>
+ <tr><td>退出锁定的只读查看器</td><td>被占用目录的查看器可退出，不影响另一宿主。恢复查看器退出时明确提示旧执行仍未知。</td><td>不写会话/草稿，不移除执行占用，不宣称旧命令已清理。活跃执行宿主仍须确认停止。</td></tr>
+ <tr><td>空闲退出</td><td>有草稿先保存或明确放弃；失败给出重试、导出草稿和明确放弃。</td><td>恢复终端 raw mode、鼠标/键盘协议与光标，输出短摘要、sessionId 和恢复命令。</td></tr>
+ <tr><td>worker 异常</td><td>宿主仍能显示中断；不自动重启并续跑。存储不一致保留未知状态。</td><td>确认旧命令退出后重建 worker，只由用户新指令开始运行。</td></tr>
+ <tr><td>整个 TUI 宿主崩溃</td><td>重启先校验工作区占用和受管命令；确认退出前只读展示历史。</td><td>Windows Job Object 等机制作为实现候选，需验收崩溃清理。不能通过删除锁文件解锁。</td></tr>
+ <tr><td>存储写入失败</td><td>显示“记录未确认保存”，后续有副作用的任务暂不启动；文件可能已经变化。</td><td>重试保存、检查目录、导出能读取内容。流式 message_end 不作为保存确认。[[A05]]</td></tr>
+ </tbody></table></div>
+ <p class="caption">普通 /exit 成功为进程 exit 0。启动/配置致命失败为非 0。运行测试的 exit 1 是工具事实，不自动作为整个 TUI 的退出码。强制结束 OS 进程属于用户外部操作，重启必须按中断处理。</p>
+</section>
+
+<section id="commands" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">命令参考</div><h2>18 个命令，覆盖首版完整使用闭环。</h2></div><p>运行中只开放本地查看、复制、停止和安全退出。会话、模型、工具和权限设置保持整次运行固定。被禁用的命令仍可检索，说明原因，不排队自动执行。</p></div>
+ <label class="filter-label">检索命令 <input id="command-filter" type="search" placeholder="输入命令、用途或运行中" aria-label="检索 ArkCode 命令"></label><span id="command-count" class="count"></span>
+ <div class="table-wrap"><table id="command-table"><thead><tr><th>命令</th><th>用途</th><th>运行中</th><th>实际影响与边界</th></tr></thead><tbody>{{COMMANDS}}</tbody></table></div><p id="command-empty" hidden>没有匹配的命令。</p>
+ <p class="caption">状态锁定时，/new、/sessions、/rename、/export 等写入或切换入口禁用。当前恢复记录仍可浏览。/provider 与 /settings 可浏览但不保存。纯查看、复制和退出查看器仍可用。运行可用性与锁定可用性同属命令注册表。</p>
+</section>
+
+<section id="keyboard" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">操作参考</div><h2>按键含义由焦点决定，提示也由同一处生成。</h2></div><p>焦点优先级为批准 → 普通面板/候选 → 输入区。Ctrl+C 在活跃期间始终请求停止。普通面板中的 Esc 只返回；批准面板中的 Esc 明确拒绝。</p></div>
+ <div class="table-wrap"><table><thead><tr><th>按键</th><th>作用域</th><th>动作</th></tr></thead><tbody>{{SHORTCUTS}}</tbody></table></div>
+ <div class="notice">一个物理按键只消费一次。关闭菜单/完成批准后，原事件不能继续传入 composer。不依赖数字键批准，防止粘贴残留或键盘重复误选。浏览器原型只捕获自身输入与面板焦点，避免拦截整个报告的导航按键。</div>
+</section>
+
+<section id="compatibility" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">终端与无障碍</div><h2>空间少了，优先保留任务和操作对象。</h2></div><p>常规模式是首版默认。终端掌管 scrollback，面板只占当前可见区域。无色与 plain 的作用不同；前者仅移除颜色，后者同时避免光标控制与弹出菜单。</p></div>
+ <div class="table-wrap"><table><thead><tr><th>条件</th><th>布局与输入</th><th>保持可用</th></tr></thead><tbody>
+ <tr><td>≥ 100 列，≥ 24 行</td><td>完整模型/模式/上下文状态；列表带描述；正文不超过约 100 列，代码单独处理。</td><td>单列对话与逐文件 diff，不增加固定侧栏。</td></tr>
+ <tr><td>60–99 列，≥ 18 行</td><td>描述换行，简化非必要配置；面板页数按高度计算；编辑至少保留 3 行。</td><td>完整命令/路径可分页访问，批准对象与拒绝选项可见。</td></tr>
+ <tr><td>40–59 列或低于 18 行</td><td>紧凑面板一次一个信息块；详情分页；隐藏 logo 和测试统计等辅助内容。</td><td>如果批准目标无法完整访问，允许禁用；停止和拒绝仍可操作。</td></tr>
+ <tr><td>&lt; 40 列或 &lt; 8 行</td><td>显示“终端过小”，保留当前状态与 Ctrl+C。尺寸恢复后重绘，草稿和选择不丢。</td><td>不批准、不开始新任务。不能因此释放工作区锁。</td></tr>
+ <tr><td>--no-color / NO_COLOR</td><td>无色但仍使用交互组件；状态词、符号和边界保留。</td><td>颜色不承担唯一信息。</td></tr>
+ <tr><td>--plain / TERM=dumb</td><td>顺序文本 + 行输入；命令参数直接输入；菜单打印编号。多行用显式 /paste 与独占一行的 /end 采集。采集内 //end 转义为文字 /end，其余行不解析命令。结束后仍需显式发送确认。</td><td>批准输入完整的 allow &lt;request-id&gt; 或 deny &lt;request-id&gt;；默认拒绝，不接受裸 y。/paste、/end 仅作为 plain 输入控制符，不是模型命令。</td></tr>
+ <tr><td>无 enhanced keyboard / 无鼠标</td><td>Ctrl+J 换行、方向键菜单；原生终端复制优先，剪贴板不支持时 export。</td><td>所有核心操作有命令或基础键盘路径。Shift+Enter 不作为唯一入口。</td></tr>
+ <tr><td>窗口 resize / SSH / tmux</td><td>重算 cell width 与面板页；不根据 resize 重发任务或批准。断开输入通道按退出停止流程处理。</td><td>宿主活着也不得后台续跑；SIGHUP、stdin end、终端不可写需要取消请求并核实命令。</td></tr>
+ </tbody></table></div>
+ <p class="caption">工具输出、路径与模型文字须过滤 ESC/OSC 等终端控制序列。只保留批准的颜色序列或纯文本，不能让仓库输出重写批准面板、注入链接或改剪贴板。链接由 ArkCode 显式生成并校验协议；默认不在工具原文中执行 OSC。</p>
+</section>
+
+<section id="architecture" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">TUI 实现边界</div><h2>替换产品入口，保持会话与执行规则集中。</h2></div><p>建议 TypeScript + Pi TUI 公共组件，直接使用 pi-coding-agent SDK。先实现产品状态 reducer 与命令注册表，再把状态映射为组件；无需引入第二个 Agent 循环。</p></div>
+ <figure class="diagram"><svg viewBox="0 0 1040 330" role="img" aria-labelledby="arch-title"><title id="arch-title">TUI 宿主、SDK worker 与存储所有权</title><defs><marker id="arch-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#7b8895"/></marker></defs><rect x="15" y="15" width="1010" height="85" rx="6" fill="#e8f4f2" stroke="#bddbd4"/><g fill="#20262e"><text x="38" y="47" font-size="17">TUI supervisor · 用户入口与本地生命周期</text><text x="38" y="77" font-size="14">Pi TUI renderer / 输入与面板 / 凭据 / workspace OS 锁 / 审批 broker / worker 与命令监督</text></g><path d="M520 101V139" stroke="#7b8895" marker-end="url(#arch-arrow)"/><text x="540" y="126" font-size="12" fill="#687581">命令 + 快照 + 带 epoch/seq 的事件</text><rect x="15" y="145" width="1010" height="90" rx="6" fill="#eef2ff" stroke="#c8d4f1"/><g fill="#20262e"><text x="38" y="177" font-size="17">SDK worker · 单会话、单运行</text><text x="38" y="206" font-size="14">运行准入 / 配置固定 / 受控工具 / Pi AgentSession / agent_settled / 变更与命令证据</text></g><path d="M271 236V271M764 236V271" stroke="#7b8895" marker-end="url(#arch-arrow)"/><rect x="15" y="278" width="490" height="42" rx="6" fill="#fff" stroke="#ccd4dd"/><rect x="535" y="278" width="490" height="42" rx="6" fill="#fff" stroke="#ccd4dd"/><text x="37" y="305" font-size="14" fill="#20262e">Pi JSONL · 对话、有效分支、压缩历史</text><text x="557" y="305" font-size="14" fill="#20262e">ArkCode sidecar · 草稿、收据、批准、审阅工件</text></svg><figcaption>只有 worker 持有可写 AgentSession，TUI 宿主管理草稿和批准。两个存储之间没有联合事务，异常时必须承认不一致。</figcaption></figure>
+ <div class="table-wrap"><table><thead><tr><th>模块</th><th>拥有的数据与动作</th><th>对外接口建议</th></tr></thead><tbody>
+ <tr><td>cli / terminal</td><td>argv、TTY 能力、信号、raw mode 与退出恢复。</td><td>解析启动参数；进入/退出终端；维护当前目录。</td></tr>
+ <tr><td>ui / composer</td><td>草稿、载荷、焦点、候选、详情页与展示密度。</td><td>dispatch UserIntent；render ViewState。不能直接启动 shell。</td></tr>
+ <tr><td>commands</td><td>命令名称、参数 schema、活跃可用性、锁定可用性、帮助与绑定。</td><td>parse / validate / execute；从同一表生成菜单、帮助与禁用原因。</td></tr>
+ <tr><td>supervisor</td><td>工作区跨进程锁、epoch、worker 心跳与快照、凭据和受管子进程。</td><td>submit、cancel、inspect、resolveApproval；断线不继续接受副作用任务。</td></tr>
+ <tr><td>session runtime</td><td>SDK 装配、订阅、序号、运行准入与配置冻结。</td><td>openSession、startRun、stopRun、switchSession；不暴露 agent.state.messages 赋值。</td></tr>
+ <tr><td>approvals</td><td>宿主持有决策等待与有效性；worker 最终执行入口再次核验。</td><td>request / decide / revoke；相同请求只产生一次有效决策。</td></tr>
+ <tr><td>workspace / review</td><td>真实路径、基线、增量、原输出与验证记录。</td><td>getChanges(scope)、getToolOutput(id)、getChecks；无 apply/rollback。</td></tr>
+ </tbody></table></div>
+ <details><summary>产品数据形状与关键不变量</summary><pre class="code">RunPhase = idle | preparing | running | awaitingApproval
+         | compacting | stopping | settling | interrupted
+RunResult = ended | failed | stopped | interrupted
+Verification = passed | failed | notRun | unknown | stale
+View = composer | picker | approval | detail | setup
+WorkspaceAccess = writer | viewer | executionUnconfirmed
+
+RunConfig = { model, mode, cwd, tools, instructionSources }
+Approval = { epoch, sessionId, runId, toolCallId, argsDigest }
+ComposerDraft = { text, pastePayloads, fileRefs, unsent: true }
+ChangeScope = runBaselineToCurrent | workspaceGitStatus</pre><p>View 关闭不改变 RunPhase；RunPhase 空闲不代表 Verification 通过；恢复 history 不把 executionUnconfirmed 改成 writer。消息草稿与配置字段不得跨会话混用。这些是拟议领域模型，不是当前已实现类型。</p></details>
+ <p>Pi TUI 已导出 Editor、Markdown、Input、SettingsList 和主缓冲区 renderer。建议复用输入解析、中文 cell width、增量重绘和 overlay；ArkCode 只实现产品策略与内容组件。不依赖 coding-agent 的私有 InteractiveMode 或复制其 Agent 循环。终端特性须以锁定版本验收。[[P1 P2]]</p>
+</section>
+
+<section id="delivery" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">实施与验收</div><h2>先走通任务，再验收输入、失败和终端边界。</h2></div><p>详细规格不意味着所有功能同一天实现。下面三段都在首版闭环内，复杂功能继续留在范围外。无工期和性能数字承诺。</p></div>
+ <div class="delivery-grid"><article><span class="phase">第一段</span><h3>真实编码闭环</h3><p>启动、模型配置、目录锁、单列输入、流式正文、受控工具、逐次批准、停止、结果与 diff。</p><p class="gate">小型真实仓库中完成修改与测试；拒绝后命令未执行；停止等待审批可结束。</p></article><article><span class="phase">第二段</span><h3>可重复日常工作</h3><p>草稿、@ 文件、提示历史、会话恢复、逐文件审阅、输出工件、/checks、上下文与压缩。</p><p class="gate">dirty workspace、外部编辑、worker 中断和存储故障都能正确接手。</p></article><article><span class="phase">第三段</span><h3>终端发布质量</h3><p>中文 IME、粘贴、resize、无色/plain、外部编辑器、凭据存储、Windows 子进程清理、导出。</p><p class="gate">所有基础键盘路径可用，未知停止不放新运行；终端退出后恢复 shell。</p></article></div>
+ <div class="table-wrap"><table><thead><tr><th>验收场景</th><th>必须观察的结果</th></tr></thead><tbody>
+ <tr><td>用户 Enter 提交后再次 Enter</td><td>只开始一个 run；第二次文字保留草稿。任务结束也不自动发送。</td></tr>
+ <tr><td>粘贴带 Enter、Tab、/stop 的 200 行文本</td><td>全部作为文本载荷；无发送/停止/批准。恢复历史时占位符对应原文。</td></tr>
+ <tr><td>Windows 中文 IME、组合字符、中文路径与空格</td><td>候选提交不发送任务；路径与 diff 不截断字符；cwd 和 argv 正确。</td></tr>
+ <tr><td>候选 Enter、关闭详情 Esc、批准 Esc</td><td>分别为确认候选、返回视图、拒绝一次工具；原按键不透传。</td></tr>
+ <tr><td>批准时 Ctrl+C，随后旧卡允许</td><td>Promise 被撤销，停止可完成，迟到允许无效，未执行命令。</td></tr>
+ <tr><td>长命令在 40×8、80×24 中批准</td><td>可访问完整对象、cwd、shell 与范围；无法查看完整参数时允许禁用。</td></tr>
+ <tr><td>SDK retry、auto compact、同批双工具</td><td>同一次运行，agent_settled 才结束，工具显式 sequential。</td></tr>
+ <tr><td>同目录从两个终端启动</td><td>真实路径 alias 也识别为同目录；一个 writer，另一个 viewer，不重复写 JSONL。</td></tr>
+ <tr><td>shell/子进程写入时杀 worker、杀整个宿主</td><td>重启确认旧命令退出前锁定；不自动重放；Job Object / 进程树机制真实生效。</td></tr>
+ <tr><td>staged、unstaged、untracked、非 Git、大文件与二进制</td><td>比较范围正确，未覆盖路径可见，没有虚构归因或差异。</td></tr>
+ <tr><td>测试 exit 0 后外部改文件</td><td>/checks 证据变为可能过期，模型文本不能写通过状态。</td></tr>
+ <tr><td>输出超过限制，含 ESC/OSC 链接与剪贴板序列</td><td>采集截断可见；内容不能改控制面板或剪贴板；日志不能假称完整。</td></tr>
+ <tr><td>断网、401、429、日志目录只读、磁盘满</td><td>草稿保留，重试/失败可解释；不将未保存消息称已持久化。</td></tr>
+ <tr><td>外部编辑器异常、退出、SIGHUP、stdin end</td><td>raw mode 与光标恢复；命令清理先完成；无隐藏后台运行。</td></tr>
+ <tr><td>无鼠标、无 enhanced keys、NO_COLOR、plain</td><td>发送、批准/拒绝、停止、恢复与审阅仍有可用路径。</td></tr>
+ </tbody></table></div>
+ <div class="notice positive">本页可直接作为首版 PRD 与交互规格。现有 Pi 契约与本地源码检查是设计依据；真实 TUI、模型调用、IME 和故障注入须在实施阶段按上述门槛验收。</div>
+ <div id="review-note">{{REVIEW}}</div>
+</section>
+
+<section id="sources" class="chapter">
+ <div class="section-head"><div><div class="eyebrow">证据索引</div><h2>官方文档与固定提交，分别标记。</h2></div><p>查阅日期 2026-10-09。官方文档说明当前发布体验；源码快照说明本地提交行为，不保证每项已在发布版启用。浏览器原型不是原生 TUI 运行截图。</p></div>
+ <div class="source-list">{{SOURCES}}</div>
+ <p class="caption">研究记录和重新构建说明见本目录 README。原来的桌面设计仍保留为历史方案，入口变更以本页为准。</p>
+</section>
+<footer class="page-footer"><strong>arkcode / tui specification 02</strong><span>以一次可接手的改动为交付单位。</span><a href="#overview">返回顶部 ↑</a></footer>

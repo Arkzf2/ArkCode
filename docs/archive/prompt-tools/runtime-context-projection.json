@@ -1,0 +1,50 @@
+{
+  "date": "2026-10-12",
+  "sdk": "pi-ai 1.1.0",
+  "scope": "in-memory transcript projection only; no network or tools executed; no cache measurement",
+  "cases": [
+    {
+      "native": false,
+      "name": "system_update",
+      "headEqual": false,
+      "toolDeclarationsEqual": true,
+      "roles": [
+        "system",
+        "user"
+      ]
+    },
+    {
+      "native": false,
+      "name": "user_reminder",
+      "headEqual": true,
+      "toolDeclarationsEqual": true,
+      "roles": [
+        "system",
+        "user",
+        "user"
+      ]
+    },
+    {
+      "native": true,
+      "name": "system_update",
+      "headEqual": true,
+      "toolDeclarationsEqual": true,
+      "roles": [
+        "system",
+        "user",
+        "system"
+      ]
+    },
+    {
+      "native": true,
+      "name": "user_reminder",
+      "headEqual": true,
+      "toolDeclarationsEqual": true,
+      "roles": [
+        "system",
+        "user",
+        "user"
+      ]
+    }
+  ]
+}

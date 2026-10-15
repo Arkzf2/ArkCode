@@ -126,15 +126,15 @@ MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目�
 
 Read、Write、Edit、Grep、Glob、Bash 复用 Pi SDK 工具定义，宿主仅保留路径保护、审批和进程管理适配。Read 支持图片，文本采用 SDK 输出格式。Edit 使用 `edits: [{oldText,newText}]`，SDK 仍接受旧的单段参数。Grep 使用 rg 的正则及 gitignore 行为，排除元数据、凭据与依赖目录，跳过超过 2 MiB 的文件。Glob 保留安全目录遍历，超过 10000 个文件明确报错并要求缩小路径。Bash 在 Windows 实际运行 PowerShell，取消调用的工具退出码为 130，原始进程退出码保留在 receipt 中。
 
-安装、开发、检查及构建时会运行固定版本的 [SDK 接入补丁](scripts/pi-sdk-patch/README.md)。补丁补充宿主生命周期、审批、凭据目录和搜索限制接口，校验 SDK 版本与文件 SHA-256，遇到不匹配立即失败。升级 Pi 时需要审查并删去上游已提供的补丁。源码分层与验证入口见 [架构说明](ARCHITECTURE.md)。
+安装、开发、检查及构建时会运行固定版本的 [SDK 接入补丁](docs/development/PI_SDK_PATCH.md)。补丁补充宿主生命周期、审批、凭据目录和搜索限制接口，校验 SDK 版本与文件 SHA-256，遇到不匹配立即失败。升级 Pi 时需要审查并删去上游已提供的补丁。源码分层与验证入口见 [架构说明](docs/architecture/ARCHITECTURE.md)，全部项目文档见 [文档目录](docs/README.md)。外部项目研究按主题保存在被 Git 忽略的 `research/`。
 
 ## 模型上下文
 
-完整机制、刷新规则和实现入口见 [静态与动态上下文说明](CONTEXT.md)。
+完整机制、刷新规则和实现入口见 [静态与动态上下文说明](docs/architecture/CONTEXT.md)。
 
 静态 system prompt 定义任务范围、工具使用、保留用户改动、遵守拒绝、验证和沟通要求。动态信息不写入此静态文本。每次对话模型请求准备时，包括工具续跑，宿主读取工作目录、平台/OS、实际 shell、日期/时区、Git 分支、执行恢复状态、全局 AGENTS.md 和可信项目的 AGENTS.md。
 
-项目规则按 Git 根到 workspace 的祖先顺序加载，再按目录名排序深度优先扫描 workspace 子目录。每份规则只约束所在目录及后代，更具体规则在其范围内优先，同级目录规则互不影响。仅识别 `AGENTS.md`，不读取 override 或备用名称。项目文件共享默认 32 KiB 的原始内容预算，可在 `settings.json` 设置 `"projectDocMaxBytes": 65536`；全局文件全量读取且不占项目预算。空文件跳过，超限文件保留前缀并提示，预算耗尽后停止。递归不进入 `.git`，目录链接只在 workspace 内跟随，并按真实路径去重以避免循环。详见 [上下文机制说明](CONTEXT.md)。
+项目规则按 Git 根到 workspace 的祖先顺序加载，再按目录名排序深度优先扫描 workspace 子目录。每份规则只约束所在目录及后代，更具体规则在其范围内优先，同级目录规则互不影响。仅识别 `AGENTS.md`，不读取 override 或备用名称。项目文件共享默认 32 KiB 的原始内容预算，可在 `settings.json` 设置 `"projectDocMaxBytes": 65536`；全局文件全量读取且不占项目预算。空文件跳过，超限文件保留前缀并提示，预算耗尽后停止。递归不进入 `.git`，目录链接只在 workspace 内跟随，并按真实路径去重以避免循环。详见 [上下文机制说明](docs/architecture/CONTEXT.md)。
 
 首次注入完整上下文，随后仅在值变化时追加差量；跨日只追加新日期，AGENTS.md 修改或删除时追加当前指令集合的替换声明。消息转换为 `user` role，并以隐藏消息保存到 Pi 历史，TUI 转录与恢复视图不显示。权限模式不写入动态上下文，审批由工具执行入口处理。
 

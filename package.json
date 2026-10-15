@@ -4,7 +4,7 @@
   "description": "A focused terminal coding agent powered by Pi",
   "type": "module",
   "bin": { "arkcode": "dist/cli.js" },
-  "files": ["dist", "scripts", "README.md", "ARCHITECTURE.md", "CONTEXT.md", "docs/implementation/VERIFICATION.md"],
+  "files": ["dist", "scripts", "README.md", "docs/README.md", "docs/architecture", "docs/development", "docs/implementation/VERIFICATION.md"],
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "node scripts/build.mjs",

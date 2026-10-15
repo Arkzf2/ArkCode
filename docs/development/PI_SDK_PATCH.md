@@ -1,6 +1,6 @@
 # Pi SDK 1.2.0 host hooks
 
-ArkCode uses Pi's public `createMcpExtension()` and tool factories. Pi 1.2.0 does not expose all hooks needed by an embedding host, so `../patch-pi-sdk.mjs` adds these hooks to this package's installed SDK. It does not change the separate Pi checkout or an independently installed Pi CLI.
+ArkCode uses Pi's public `createMcpExtension()` and tool factories. Pi 1.2.0 does not expose all hooks needed by an embedding host, so [`scripts/patch-pi-sdk.mjs`](../../scripts/patch-pi-sdk.mjs) adds these hooks to this package's installed SDK. It does not change the separate Pi checkout or an independently installed Pi CLI.
 
 The patch adds:
 
@@ -13,7 +13,7 @@ The patch adds:
 
 The extension continues to own MCP transport setup, discovery, reconnection, OAuth, names, output schemas, and result conversion. The patch does not add a second MCP client manager.
 
-The installer checks the package version and normalized SHA-256 digests in `manifest.json`. It accepts an original file, the exact patched file, or an explicitly listed earlier patch digest, and refuses unexpected contents. Earlier patches are upgraded using their verified upstream backups. Original bytes are preserved under the dependency's `.arkcode-sdk-originals/` directory. All output digests are checked before writes. A rerun completes partial application and is otherwise a no-op.
+The installer checks the package version and normalized SHA-256 digests in [`manifest.json`](../../scripts/pi-sdk-patch/manifest.json). It accepts an original file, the exact patched file, or an explicitly listed earlier patch digest, and refuses unexpected contents. Earlier patches are upgraded using their verified upstream backups. Original bytes are preserved under the dependency's `.arkcode-sdk-originals/` directory. All output digests are checked before writes. A rerun completes partial application and is otherwise a no-op.
 
 When upgrading Pi, first check whether its public API now provides these hooks. Remove superseded patches. Review the remaining transformations against the new published package and update the version and digests deliberately. Run `test/sdk-patch.test.ts` and the MCP/runtime permission regressions. Do not update checksums merely to suppress an installation failure.
 

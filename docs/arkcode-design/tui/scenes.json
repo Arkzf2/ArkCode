@@ -1,0 +1,195 @@
+{
+  "ready": {
+    "label": "空闲 · 当前目录",
+    "phase": "idle",
+    "state": "空闲",
+    "operation": "已有修改已记录 · 可以发送任务",
+    "title": "任务从当前目录开始。",
+    "description": "已配置模型与编码模式。输入任务后发送；已有 README 修改会成为运行基线的一部分。"
+  },
+  "reading": {
+    "label": "执行 · 只读分析",
+    "phase": "running",
+    "state": "正在分析",
+    "operation": "read / search · 不含写入与 shell",
+    "title": "只读模式只分析与解释。",
+    "description": "这一轮没有 edit/write/shell 工具。模型可以提出修改建议，但不会写文件或执行测试。"
+  },
+  "readresult": {
+    "label": "结果 · 只读建议",
+    "phase": "idle",
+    "state": "分析结束",
+    "operation": "未改文件 · 未执行测试",
+    "title": "建议与已完成的改动分开。",
+    "description": "只读分析不会生成测试通过证据。若需要修改，用户显式切换编码模式并提交新任务。"
+  },
+  "setup": {
+    "label": "首次配置",
+    "phase": "setup",
+    "state": "需要配置模型",
+    "operation": "尚未调用模型",
+    "panel": "provider",
+    "title": "先完成最少的配置。",
+    "description": "选择 API 来源、凭据和模型。这里使用固定演示配置，不要求填写真实密钥。"
+  },
+  "working": {
+    "label": "执行 · 修改文件",
+    "phase": "running",
+    "state": "正在修改",
+    "operation": "edit · src/checkout.ts",
+    "title": "状态与工具事实相邻。",
+    "description": "读取、编辑与测试分开显示。运行中可以起草下一条文字，Enter 不会自动追加到当前任务。"
+  },
+  "approval": {
+    "label": "批准 · 一次 shell",
+    "phase": "approval",
+    "state": "等待批准",
+    "operation": "shell #t17 · 命令尚未执行",
+    "panel": "approval",
+    "title": "批准一次明确的执行。",
+    "description": "默认选中拒绝。方向键选择后确认；Esc 拒绝这次工具，Ctrl+C 请求停止整个任务。"
+  },
+  "verifying": {
+    "label": "执行 · 运行测试",
+    "phase": "running",
+    "state": "正在验证",
+    "operation": "npm test -- checkout · 运行中",
+    "title": "批准后才显示命令执行。",
+    "description": "批准只关联本次工具。输出详情和退出结果独立，不能因批准就显示测试通过。"
+  },
+  "passed": {
+    "label": "结果 · 验证通过",
+    "phase": "idle",
+    "state": "本次运行结束",
+    "operation": "结账模块 · exit 0",
+    "title": "结果交代验证范围。",
+    "description": "演示中的测试通过仅覆盖结账模块。改动已经写入工作目录，打开差异不会再次应用补丁。"
+  },
+  "failed": {
+    "label": "结果 · 测试失败",
+    "phase": "idle",
+    "state": "需要继续处理",
+    "operation": "结账模块 · exit 1",
+    "title": "失败保留具体证据。",
+    "description": "修改保留，测试失败可打开输出。用户可以给新指令继续修复，运行结束不代表需求已完成。"
+  },
+  "denied": {
+    "label": "结果 · 批准拒绝",
+    "phase": "idle",
+    "state": "验证未执行",
+    "operation": "shell #t17 · 被拒绝",
+    "title": "拒绝与文件改动分开。",
+    "description": "本场景演示模型接受拒绝后结束。真实产品仍须等 SDK settled，不能在点击拒绝时提前释放执行槽。"
+  },
+  "stopping": {
+    "label": "停止 · 清理中",
+    "phase": "stopping",
+    "state": "正在停止",
+    "operation": "等待 SDK 与受管命令退出",
+    "title": "停止有请求与确认两步。",
+    "description": "旧批准立即撤销。只有 SDK 与命令进程树确认空闲，才会开放下一次运行。重复 Ctrl+C 不绕过清理。"
+  },
+  "stopped": {
+    "label": "停止 · 已确认",
+    "phase": "idle",
+    "state": "已停止",
+    "operation": "SDK 与受管命令已确认空闲",
+    "title": "停止后的文件保持现状。",
+    "description": "已写入文件不自动回滚。草稿仍是未发送输入，用户检查差异后主动提交下一次任务。"
+  },
+  "recovered": {
+    "label": "恢复 · 旧执行未知",
+    "phase": "locked",
+    "state": "旧执行状态未确认",
+    "operation": "只读恢复记录 · 执行锁定",
+    "title": "先恢复记录，再确认执行准入。",
+    "description": "新 epoch 使旧批准失效，但不能终止旧 OS 进程。旧命令退出确认前只能浏览，不会自动重放。"
+  },
+  "locked": {
+    "label": "占用 · 另一终端",
+    "phase": "locked",
+    "state": "当前目录已被占用",
+    "operation": "writer PID 8124 · 本终端仅查看",
+    "title": "同目录只有一个可写宿主。",
+    "description": "不同终端也不能同时修改同一会话或工作目录。本实例不写草稿 sidecar，不通过删除 PID 文件接管。"
+  },
+  "compacting": {
+    "label": "上下文 · 压缩中",
+    "phase": "compacting",
+    "state": "正在压缩上下文",
+    "operation": "SDK compact · 保留本地历史",
+    "title": "压缩属于可停止的模型操作。",
+    "description": "原始历史保留，有效模型上下文交给 SDK 管理。自动压缩与当前运行同属一个生命周期。"
+  },
+  "error": {
+    "label": "失败 · 认证错误",
+    "phase": "idle",
+    "state": "模型连接失败",
+    "operation": "401 · 检查 API 来源与凭据",
+    "title": "错误提供接手入口。",
+    "description": "未发送任务仍保留在输入区。配置错误不回显密钥，允许编辑配置并重新尝试。"
+  },
+  "sessions": {
+    "label": "面板 · 会话恢复",
+    "phase": "idle",
+    "state": "空闲",
+    "operation": "当前目录的已保存会话",
+    "panel": "sessions",
+    "title": "恢复会话不等于重跑工具。",
+    "description": "按标题筛选，查看最后结果与时间。切换恢复已保存历史，文件仍是当前工作目录的实际状态。"
+  },
+  "changes": {
+    "label": "面板 · 逐文件 diff",
+    "phase": "idle",
+    "state": "空闲",
+    "operation": "本次运行增量 · 来源可能混合",
+    "panel": "changes",
+    "title": "先说明比较范围，再看文件。",
+    "description": "运行前基线与当前文件的增量、Git 全量、命令证据是不同视图。不能把已有修改全部归给 Agent。"
+  },
+  "context": {
+    "label": "面板 · 上下文来源",
+    "phase": "idle",
+    "state": "空闲",
+    "operation": "来源与使用量",
+    "panel": "context",
+    "title": "用户能检查输入来源。",
+    "description": "显示 AGENTS.md、显式文件、最近压缩与实际可得 usage。不把缓存路由当作命中率。"
+  },
+  "models": {
+    "label": "面板 · 模型选择",
+    "phase": "idle",
+    "state": "空闲",
+    "operation": "切换后只影响新运行",
+    "panel": "model",
+    "title": "选项与模型能力一致。",
+    "description": "只显示已配置来源的模型。选择不同模型后，输入区附近的配置提示立即更新。"
+  },
+  "permissions": {
+    "label": "面板 · 能力模式",
+    "phase": "idle",
+    "state": "空闲",
+    "operation": "后续运行的能力范围",
+    "panel": "permissions",
+    "title": "模式与命令批准各有作用。",
+    "description": "只读工具集合没有 shell 或写入工具。编码模式允许本次任务文件编辑，shell 仍逐次批准。"
+  },
+  "help": {
+    "label": "面板 · 命令与帮助",
+    "phase": "idle",
+    "state": "空闲",
+    "operation": "可检索命令",
+    "panel": "help",
+    "title": "帮助与可用性来自同一注册表。",
+    "description": "命令的用途、禁用条件与提示一致。查看后返回恢复输入草稿。"
+  },
+  "tools": {
+    "label": "面板 · 工具输出",
+    "phase": "idle",
+    "state": "空闲",
+    "operation": "shell #t17 · exit 1",
+    "panel": "tools",
+    "title": "折叠与实际截断必须区分。",
+    "description": "这个示例保存了短输出。真实产品只有成功采集且尚未清理工件时，才提供完整输出。"
+  }
+}

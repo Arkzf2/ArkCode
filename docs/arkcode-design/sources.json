@@ -1,0 +1,252 @@
+[
+  {
+    "id": "A01",
+    "repo": "pi",
+    "path": "packages/coding-agent/docs/sdk.md",
+    "start": 28,
+    "end": 40,
+    "claim": "AgentSession 管一段对话及运行状态，SessionManager 对最终模型上下文有权威性；ArkCode 不另写一份 messages 权威库。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/docs/sdk.md#L28-L40",
+    "excerpt_sha256": "e4d655a90bd1b967722ac5287c0f96bfbd737737b5370e717ce71be336da4cf1"
+  },
+  {
+    "id": "A02",
+    "repo": "pi",
+    "path": "packages/coding-agent/docs/sdk.md",
+    "start": 54,
+    "end": 60,
+    "claim": "显式指定 cwd；AgentSessionRuntime 切换会话会替换 AgentSession，订阅必须重新绑定。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/docs/sdk.md#L54-L60",
+    "excerpt_sha256": "87aeba60922a1d0c28a34f71500af9680d9a8b07e5cdc1b73d803ff8a343f759"
+  },
+  {
+    "id": "A03",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/sdk.ts",
+    "start": 194,
+    "end": 211,
+    "claim": "默认工厂创建文件设置、持久会话和自动加载资源；ArkCode 应显式注入配置与资源加载器。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/sdk.ts#L194-L211",
+    "excerpt_sha256": "703f55c54f01ece31ed37807be4c28b79f003a2b5681ee234cf8ac57b8e2813e"
+  },
+  {
+    "id": "A04",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/session-manager.ts",
+    "start": 1172,
+    "end": 1195,
+    "claim": "会话 JSONL 同步追加；首次有对话时创建文件，未见此路径 fsync 或跨进程锁，不能宣传事务数据库式持久保证。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/session-manager.ts#L1172-L1195",
+    "excerpt_sha256": "f95c6783d6222a6730dcf4fb5a5ef6fdf4bc159dc0ae195e7f567622a5630880"
+  },
+  {
+    "id": "A05",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/agent-session.ts",
+    "start": 1139,
+    "end": 1164,
+    "claim": "message_end 先发公共事件再追加持久记录；收到事件不等于获得落盘确认。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/agent-session.ts#L1139-L1164",
+    "excerpt_sha256": "bf617cc6ef20aa03d92a8aab67a60b5365e042a763f9d3025be4a104646a8736"
+  },
+  {
+    "id": "A06",
+    "repo": "pi",
+    "path": "packages/coding-agent/docs/sdk.md",
+    "start": 64,
+    "end": 94,
+    "claim": "agent_end 仅结束一次低层运行；UI 应以 agent_settled 识别 SDK 自动续跑已结束，另行区分成功、失败与取消。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/docs/sdk.md#L64-L94",
+    "excerpt_sha256": "0fe06422b4bf65533b475459f1f9ce4be2983b98c4130449b9f8779e017803b7"
+  },
+  {
+    "id": "A07",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/agent-session.ts",
+    "start": 2431,
+    "end": 2450,
+    "claim": "abort 取消重试、压缩、分支摘要及 Agent 并等待 idle；宿主还需取消自己等待中的审批。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/agent-session.ts#L2431-L2450",
+    "excerpt_sha256": "4c5260111a17fbaead4c87148096ff1ff96625ad4272638bd304aa0d998b0912"
+  },
+  {
+    "id": "A08",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/agent-session.ts",
+    "start": 2202,
+    "end": 2263,
+    "claim": "steer 在当前 assistant turn 及工具之后交付；followUp 等待无剩余工具和 steer，均不是立即打断工具。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/agent-session.ts#L2202-L2263",
+    "excerpt_sha256": "5c91ed3e3c34adfdc1bbede70a348b6eaae947e221f7ae2eb542ffbc9e784da0"
+  },
+  {
+    "id": "A09",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/agent-session.ts",
+    "start": 2397,
+    "end": 2414,
+    "claim": "clearQueue 是独立操作，返回待交付文本；停止策略需显式处理队列，不能假定 abort 会清空。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/agent-session.ts#L2397-L2414",
+    "excerpt_sha256": "c754194951ce97fec66c26c328d9129cfbf6a8cff56025f6c1db336f8d133dea"
+  },
+  {
+    "id": "A10",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/agent-session.ts",
+    "start": 2238,
+    "end": 2263,
+    "claim": "待发送输入保存在进程队列，入队路径未写 SessionManager；崩溃恢复不得承诺自动恢复未交付输入。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/agent-session.ts#L2238-L2263",
+    "excerpt_sha256": "3d451f7cfdff08f34a3f14406a1c29a6925e9192555dde06b26c3a1619f44b6d"
+  },
+  {
+    "id": "A11",
+    "repo": "pi",
+    "path": "packages/ai/src/api/transform-messages.ts",
+    "start": 158,
+    "end": 232,
+    "claim": "模型消息转换能为无结果工具补错误结果并跳过 error/aborted assistant；此为协议修复，不是工具副作用恢复。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/ai/src/api/transform-messages.ts#L158-L232",
+    "excerpt_sha256": "ec80303cede3dfc120e92e7be9374627eb60bdb817866091a123243433678f3f"
+  },
+  {
+    "id": "A12",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/agent-session.ts",
+    "start": 652,
+    "end": 680,
+    "claim": "tool_call 是工具执行前权限接入点，异常传播为阻止执行；宿主审批 broker 需确定地返回允许或拒绝。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/agent-session.ts#L652-L680",
+    "excerpt_sha256": "39af176c41baca9e71ccf51a6fa1839749c7b9751d1abf6442fff39a7b428804"
+  },
+  {
+    "id": "A13",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/extensions/types.ts",
+    "start": 1222,
+    "end": 1226,
+    "claim": "tool_call 参数可被后续处理器修改且不重校验；v1 应只加载自有可信扩展，保证审批内容等于最终执行内容。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/extensions/types.ts#L1222-L1226",
+    "excerpt_sha256": "312e0dd5474f3eb504c1ee9f9b37d096a72ae64277b8b1f9c9824b8978d44571"
+  },
+  {
+    "id": "A14",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/extensions/runner.ts",
+    "start": 324,
+    "end": 339,
+    "claim": "无 UI 时 confirm 默认 false；SDK 宿主须绑定自身审批 UI 或实现自己的审批 broker，不能假定自动弹窗。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/extensions/runner.ts#L324-L339",
+    "excerpt_sha256": "6f19d2c6e0a39d969df6195498fd710c46a549bf044f49c43fa35a23352196e4"
+  },
+  {
+    "id": "A15",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/extensions/types.ts",
+    "start": 375,
+    "end": 394,
+    "claim": "嵌套工具通过 ctx.executeTool 复用验证、hook 和权限路径；直接调用工具或扩展内任意系统操作不受这一保证保护。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/extensions/types.ts#L375-L394",
+    "excerpt_sha256": "1ce9bcf727acfb644d3521360bb5d7beba2e7db2cb8dfb9e7ca45d84a255c4b0"
+  },
+  {
+    "id": "A16",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/settings-manager.ts",
+    "start": 459,
+    "end": 467,
+    "claim": "项目设置默认 trusted=true；SDK 默认工厂调用不等价于产品已完成项目可信确认。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/settings-manager.ts#L459-L467",
+    "excerpt_sha256": "5a01145d4b46450649e1a458415b57ce62d106675c41e6b938f74ca63bdc7966"
+  },
+  {
+    "id": "A17",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/resource-loader.ts",
+    "start": 501,
+    "end": 524,
+    "claim": "ResourceLoader 可先加载受控信任扩展再 resolveProjectTrust；v1 可直接提供仅加载自有扩展和显式文本资源的受控加载器。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/resource-loader.ts#L501-L524",
+    "excerpt_sha256": "d030114067f8f3eb6ed2d9c7c9266376f992a2ff4ab629229a8c432613efd433"
+  },
+  {
+    "id": "A18",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/resource-loader.ts",
+    "start": 573,
+    "end": 592,
+    "claim": "extensionsOverride 在 loadFinalExtensionSet 后执行，不能用它阻止不可信扩展代码首次执行。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/resource-loader.ts#L573-L592",
+    "excerpt_sha256": "b37159dcff66b30f91f15496f62f1b7c7ba6985e0d64e383e26f542decd3908e"
+  },
+  {
+    "id": "A19",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/agent-session.ts",
+    "start": 3495,
+    "end": 3528,
+    "claim": "customTools 与扩展工具加入定义注册表且同名覆盖内置定义；工具集合应由 ArkCode 显式列出并测试覆盖关系。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/agent-session.ts#L3495-L3528",
+    "excerpt_sha256": "32ef3ef8cc82db56c212397258412793edf39a63e2bad68e2a267d67c2511920"
+  },
+  {
+    "id": "A20",
+    "repo": "pi",
+    "path": "packages/coding-agent/src/core/sdk.ts",
+    "start": 420,
+    "end": 440,
+    "claim": "SDK 自行处理模型调用、上下文投影、session routing 与 cache warming；保留其管线，缓存收益依据 provider usage，不能把 sessionId 当缓存命中保证。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/coding-agent/src/core/sdk.ts#L420-L440",
+    "excerpt_sha256": "9ad090054d64ff1573cc016cd6b7853bc55c70e18683c2095d1d389c8c2d787a"
+  },
+  {
+    "id": "A21",
+    "repo": "pi",
+    "path": "packages/agent/src/agent.ts",
+    "start": 228,
+    "end": 253,
+    "claim": "Agent 暴露公共 toolExecution 属性，构造时默认 parallel。ArkCode 要求在运行前显式设为 sequential，并验证同批工具顺序执行。",
+    "url": "https://github.com/earendil-works/pi/blob/1cedd32724abfcb0915f76cc61b6827e2c16dbad/packages/agent/src/agent.ts#L228-L253",
+    "excerpt_sha256": "0d5fcd1b6accc4d4475b735aff7368f7825f1e6cdc4df775bd6f7f80b5466a63"
+  },
+  {
+    "id": "C03",
+    "repo": "codex",
+    "path": "codex-rs/core/src/session/turn.rs",
+    "start": 450,
+    "end": 756,
+    "claim": "Codex 的模型回合使用 StepContext 组织执行时的工具与上下文。ArkCode 据此提出固定整次运行设置。",
+    "url": "https://github.com/openai/codex/blob/be2e129ecd67d900c016eda12d5d193e33d9c3da/codex-rs/core/src/session/turn.rs#L450-L756",
+    "excerpt_sha256": "14ea6ecdc75cfd0044573a3bf10615c232094fbe4c8ab6dc1b82889418d29fa4"
+  },
+  {
+    "id": "K06",
+    "repo": "kimi-code",
+    "path": "packages/agent-core-v2/src/state/eventDispatcherService.ts",
+    "start": 564,
+    "end": 635,
+    "claim": "Kimi 将状态归约、持久记录与可观察事件组织为明确流程。不能据事件发布推断 fsync 完成。",
+    "url": "https://github.com/MoonshotAI/kimi-code/blob/5b936697670ed15444bcb4720bd91e6ee776a941/packages/agent-core-v2/src/state/eventDispatcherService.ts#L564-L635",
+    "excerpt_sha256": "aced63815d495c38d29e2d99534a22a0ccaca45de305773fea1a4c1a2993d367"
+  },
+  {
+    "id": "K24",
+    "repo": "kimi-code",
+    "path": "packages/kap-server/src/transport/ws/v1/sessionEventJournal.ts",
+    "start": 8,
+    "end": 128,
+    "claim": "Kimi 的客户端事件 envelope 区分 epoch、seq 与 session，用于识别事件流和恢复范围。",
+    "url": "https://github.com/MoonshotAI/kimi-code/blob/5b936697670ed15444bcb4720bd91e6ee776a941/packages/kap-server/src/transport/ws/v1/sessionEventJournal.ts#L8-L128",
+    "excerpt_sha256": "be8f2b68842d1a38522156f5f04af215981859fa6bd2f508ed1869b3de04afe8"
+  },
+  {
+    "id": "Z02",
+    "repo": "ZCode",
+    "path": "apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/command-inbox.ts",
+    "start": 99,
+    "end": 196,
+    "claim": "ZCode 的 CommandInbox 对命令去重并按会话准入，运行中的命令保持有效记录。",
+    "url": "https://github.com/zai-org/ZCode/blob/29628c9acdb81b703bbd4080c207a0e7ce5e276e/apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/command-inbox.ts#L99-L196",
+    "excerpt_sha256": "fb63f3820d3d7cdc6e98b2814440fc75cfadae94cee5a54fe81e2a81c573460d"
+  }
+]
