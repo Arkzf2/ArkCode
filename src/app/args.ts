@@ -71,6 +71,7 @@ Ask When Needed allows ordinary built-in actions; dangerous commands and MCP too
 Never Ask runs without tool approval. Untrusted directories skip project AGENTS.md and MCP; user configuration still applies.
 Use /connect to configure a Pi provider or custom endpoint.
 Use /mcp to inspect servers and tools, reload configuration, reconnect, or enable/disable servers.
+Use /tool-mode to choose direct, codemode, or codemode-only for built-in tools; changes apply after compact or to new sessions.
 Print mode requires --model or a saved default model.
 In the TUI, press Left on an empty idle composer or use /resume to browse sessions.
 `;

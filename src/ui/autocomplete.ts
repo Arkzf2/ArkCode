@@ -7,6 +7,7 @@ import {
   type AutocompleteSuggestions,
 } from "@earendil-works/pi-tui";
 import { slashCommands } from "./commands.js";
+import { toolModeSchema } from "../tools/mode.js";
 import { workspacePath } from "../tools/workspace.js";
 
 const ignoredDirectories = new Set([".git", ".arkcode", "node_modules"]);
@@ -20,7 +21,10 @@ export class WorkspaceAutocompleteProvider implements AutocompleteProvider {
   private readonly commands: CombinedAutocompleteProvider;
 
   constructor(private readonly cwd: string, mcpServers: () => readonly string[] = () => []) {
-    this.commands = new CombinedAutocompleteProvider(slashCommands.map((command) => command.name !== "mcp" ? command : {
+    this.commands = new CombinedAutocompleteProvider(slashCommands.map((command) => command.name === "tool-mode" ? {
+      ...command, getArgumentCompletions: (prefix: string) => toolModeSchema.options.filter((value) => value.startsWith(prefix))
+        .map((value) => ({ value, label: value })),
+    } : command.name !== "mcp" ? command : {
       ...command,
       getArgumentCompletions: (prefix: string) => {
         const exposure = /^exposure\s+(\S+)\s+(\S*)$/.exec(prefix);

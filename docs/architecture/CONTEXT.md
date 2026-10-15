@@ -1,6 +1,6 @@
 # ArkCode 静态与动态上下文机制
 
-本文记录当前实现，更新于 2026-10-13。ArkCode 使用稳定的 system 行为准则、常驻工具声明和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。
+本文记录当前实现，更新于 2026-10-16。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。
 
 ## 请求由哪些部分组成
 
@@ -8,13 +8,17 @@
 | --- | --- | --- | --- |
 | 静态行为准则 | ArkCode 身份、任务范围、工具使用、用户改动保护、拒绝处理、验证与沟通要求 | `SYSTEM_PROMPT`，由 Pi 构建 system prompt | 创建或替换 AgentSession 时使用当前代码中的版本 |
 | Pi 工作目录段 | 当前会话的 cwd | SDK 添加的 system prompt `cwd` 段 | 创建或替换会话时确定 |
-| 工具声明 | Read、Write、Edit、Grep、Glob、Bash 的名称、描述及参数 schema | 请求的工具声明，由 Pi 管理 | 同一工作区、相同 shell 下保持常驻；权限切换不改变声明 |
+| 工具声明 | 基础工具、CodeMode／搜索入口与 MCP 的名称、描述及参数 schema | 由 Pi 按实际协议序列化 | 模式在新会话／成功 compact 更新；MCP 发现与目录变化按运行时处理；权限切换不改变声明 |
 | 对话历史 | 用户输入、模型回答、工具调用及结果、compact 摘要 | Pi 会话历史的有效投影 | 随对话追加，compact 可改变模型可见的历史 |
 | 动态上下文 | 环境信息、全局 AGENTS.md 及可信项目 AGENTS.md | 内部隐藏 custom 消息，发送前转换为 user role | 每次对话模型请求准备时检查，仅有变化时追加 |
 
 “静态”指行为文本不随日期、权限模式和 AGENTS.md 改写。当前 SDK 仍会添加 cwd 段，因此不同工作区的完整 system prompt 可以不同。
 
 目前 ArkCode 不自动加载项目 skills、prompt templates、主题或扩展。用于 compact 文件操作跟踪的内置扩展由宿主显式注册。
+
+工具策略以 `arkcode-tool-settings` custom entry 保存，不参与模型上下文。resume／fork 读取当前分支的快照。基础工具模式和 MCP exposure 在成功 compact 后一起更新，失败或取消保留旧策略。`arkcode-tool-catalog` 保存可用工具名称，发生停用时追加隐藏的 user-role 通知；执行资格仍由 SDK 路由及宿主执行前检查强制控制。
+
+新增工具声明复用 Pi 的兼容能力：支持时使用追加声明，否则发送当前顶层工具列表。Pi 当前 Responses／Chat Completions 增量路径遇到移除或同名重定义会回退完整列表；具备相应能力的 Anthropic 模型有原生变更块。当前内置 DeepSeek Flash 使用 Chat Completions，未开启工具增量能力。不能由协议名称推断缓存稳定性，compact 也可能改变可复用的前缀。
 
 ## 静态 system prompt
 

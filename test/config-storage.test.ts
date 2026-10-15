@@ -22,7 +22,7 @@ test("settings persist defaults and reject unknown permission values", async () 
     assert.equal(loadConfig(home).permission, "ask-when-needed");
     await writeFile(join(home, "settings.json"), JSON.stringify({ permission: "ask", theme: "light", statusline: "expanded" }));
     const migrated = loadConfig(home);
-    assert.deepEqual(migrated, { permission: "always-ask", thinking: "medium", trustedWorkspaces: [], projectDocMaxBytes: 32 * 1024 });
+    assert.deepEqual(migrated, { permission: "always-ask", thinking: "medium", toolMode: "codemode", trustedWorkspaces: [], projectDocMaxBytes: 32 * 1024 });
     saveConfig(home, migrated);
     assert.deepEqual(JSON.parse(await readFile(join(home, "settings.json"), "utf8")), migrated);
     await writeFile(join(home, "settings.json"), JSON.stringify({ permission: "ask", unexpected: true }));

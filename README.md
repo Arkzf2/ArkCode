@@ -66,7 +66,7 @@ arkcode --model local/my-model
 | Ask When Needed (`ask-when-needed`) | 普通 Write/Edit/Bash 自动允许，高危命令询问；MCP 默认询问，用户级 `autoApproveTools` 中的工具可自动批准，服务标记为 destructive 的工具仍询问 |
 | Never Ask (`never-ask`) | 使用当前用户的 OS 权限执行，内建工具和 MCP 不等待调用审批；仍遵守服务器启用状态、工具过滤、viewer 和恢复保护 |
 
-六个内建工具 `Read`、`Write`、`Edit`、`Grep`、`Glob`、`Bash` 在所有模式中常驻。MCP 工具由已连接服务器的当前目录动态注册，名称为 `mcp__<server>__<tool>`，清洗或超长名称加 hash。权限切换不会改变工具 schema。原 `find` 改名为 `Glob`，原 `ls` 工具删除；目录列表使用 Bash。Windows 默认执行 PowerShell，因此 `Bash` 是工具名，实际 shell 由环境上下文提供。Always Ask 也允许独立的 `Get-ChildItem`；重定向、管道、命令替换和串联命令不属于列表豁免。
+六个内建工具 `Read`、`Write`、`Edit`、`Grep`、`Glob`、`Bash` 在三种权限模式中都可使用，暴露形式由 `/tool-mode` 决定。MCP 工具由已连接服务器的当前目录动态注册，名称为 `mcp__<server>__<tool>`，清洗或超长名称加 hash。权限切换不会改变工具 schema。原 `find` 改名为 `Glob`，原 `ls` 工具删除；目录列表使用 Bash。Windows 默认执行 PowerShell，因此 `Bash` 是工具名，实际 shell 由环境上下文提供。Always Ask 也允许独立的 `Get-ChildItem`；重定向、管道、命令替换和串联命令不属于列表豁免。
 
 未信任目录跳过项目 AGENTS.md，保留全局规则，默认 Always Ask；显式 CLI 权限仍生效。通过 `/permissions` 选择的模式会保存，下次启动自动恢复；`--permissions always-ask/ask-when-needed/never-ask` 可覆盖当次启动的模式。旧 `ask`、`full-access` 和 `--full-access` 仍映射到相应新模式；旧 `read-only` 配置及 `--read-only` 会报错，要求明确选择新模式。
 
@@ -78,7 +78,7 @@ MCP 会话授权还绑定原始 server/tool、配置来源、配置与 schema �
 
 同一真实工作区只有一个 writer。第二个宿主进入 Read-only viewer，不能运行 agent 或修改历史。历史恢复不重放工具、草稿或队列；中断不会回滚文件。上一宿主在执行期间崩溃时，恢复显示 Execution unconfirmed，需要检查现有文件和残留命令。
 
-强制结束宿主不能保证所有子进程已退出。启动时发现该配置目录下的 active 运行标记后，工作区限制为文件检查，新会话也不能绕过。工具仍常驻，写入和 shell 在执行入口拒绝；这是恢复状态，不是第四种权限模式。确认旧命令已结束后，才能手动将对应 `runs/` 标记改为 `interrupted`，补上 `endedAt` 时间戳并去掉 `pid`，然后重启。不同 `--home` 共享 writer 锁，但不共享运行标记；不要用换配置目录绕过恢复检查。
+强制结束宿主不能保证所有子进程已退出。启动时发现该配置目录下的 active 运行标记后，工作区限制为文件检查，新会话也不能绕过。工具暴露形式保持不变，写入和 shell 在执行入口拒绝；这是恢复状态，不是第四种权限模式。确认旧命令已结束后，才能手动将对应 `runs/` 标记改为 `interrupted`，补上 `endedAt` 时间戳并去掉 `pid`，然后重启。不同 `--home` 共享 writer 锁，但不共享运行标记；不要用换配置目录绕过恢复检查。
 
 首次执行还未创建会话历史时，带工作区路径的运行标记也会触发上述保护。如果宿主在创建或回收 writer 锁时崩溃，CLI 可能保持 viewer。启动消息给出残留锁文件的完整路径。确认没有进程持有或正在恢复该工作区后，才能手动清理残留锁文件。程序不自动清理无法确认归属的锁。
 
@@ -112,7 +112,7 @@ MCP 会话授权还绑定原始 server/tool、配置来源、配置与 schema �
 
 启动以及新建、恢复或切换会话时，composer 等待全部已启用且允许连接的 MCP 完成连接和工具发现，等待期间不接收对话输入，Ctrl+C 可退出。单个服务失败不阻止其他服务连接，但交互模式会停留在失败处理页，明确选择重试或使用当前可用工具继续后才开放 composer；非交互模式直接报错，不发送工具不完整的首轮请求。禁用、viewer 或恢复保护阻止的连接不参与等待。服务器的 tools/list_changed 更新目录，禁用或删除后旧工具不可调用；断线后 SDK 可在下次调用时重新连接，并对新连接重新审批。审批期间 schema 改变会取消旧调用。新建、恢复、fork 和退出会等待旧连接关闭；历史恢复不重放调用或恢复旧授权。中断发送协议取消请求，但外部服务未必能撤销已发生的副作用。普通失败和超时不自动重放工具；SDK 对服务器明确返回 session expired 的请求可重建会话后再尝试一次，仍需经过新连接的授权检查。
 
-MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目录更新和结果转换。`exposure` 默认 `codemode`，工具只在脚本中按需发现；设为 `direct` 可直接声明给模型，`deferred` 通过 `tool_search` 加载，`hidden` 隐藏。`toolExposure` 可按原始工具名或 Pi 的 `*` 模式覆盖单项，`enabledTools` / `disabledTools` 始终优先过滤。使用 `/mcp exposure <server> <codemode|deferred|direct|hidden>` 保存并应用模式。
+MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目录更新和结果转换。`exposure` 默认 `codemode`，工具在脚本中按需发现；设为 `direct` 可直接声明给模型，`deferred` 通过 `tool_search` 加载，`hidden` 隐藏。`toolExposure` 可按原始工具名或 Pi 的 `*` 模式覆盖单项，`enabledTools` / `disabledTools` 始终优先过滤。使用 `/mcp exposure <server> <codemode|deferred|direct|hidden>` 保存模式，在新会话或成功 compact 后应用；reload、reconnect 和 enable 保留当前会话的 exposure。disable、配置删除和工具过滤会立即阻止实际调用。
 
 `/mcp login <server>` 使用 SDK 的 OAuth 自动发现和动态客户端注册。交互界面显示授权链接，浏览器回调完成后自动重连，也可粘贴回调 URL。`/mcp logout <server>` 删除对应凭据并断开服务。中断或退出会取消登录。菜单只在远程服务器要求 OAuth 时显示 Sign in，有已存 OAuth token 时显示 Sign out；stdio 和已有 header / bearer token 服务不显示这些动作。
 
@@ -120,9 +120,15 @@ MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目�
 
 ## CodeMode 与基础工具
 
-官方 `codemode` 工具常驻，使用 QuickJS 执行 JavaScript，可调用六个基础工具和已允许的 MCP 工具。脚本内用 `searchTools()`、`describeTool()` 发现工具，用 `tools.<name>(...)` 调用；`text()` 输出，`store()` / `load()` 在会话分支中保存 JSON 数据。当前模式为 `on`，六个工具仍可直接调用。没有额外的 exec/wait 后台单元机制。
+官方 `codemode` 工具使用 QuickJS 执行 JavaScript。脚本内用 `searchTools()`、`describeTool()` 发现工具，用 `tools.<name>(...)` 调用；`text()` 输出，`store()` / `load()` 在会话分支中保存 JSON 数据。没有额外的 exec/wait 后台单元机制。
 
-脚本没有直接 Node、文件系统或网络能力，模型子调用也已关闭。每个嵌套调用经过与直接调用相同的审批和恢复保护。基础工具及 MCP 工具声明为顺序执行，`Promise.all` 不会同时弹出多个审批。中断信号传入嵌套调用，会话历史保存嵌套调用的名称、参数和状态；恢复不重放操作，compact 继续跟踪其文件路径。
+`/tool-mode` 打开临时子菜单，仅在这里显示 Current 和有变化时的 Pending。支持 `direct`（六个基础工具仅直接调用）、`codemode`（直接与脚本调用，默认）、`codemode-only`（仅脚本调用）；也可用 `/tool-mode <mode>` 保存设置。菜单和命令不进入聊天或输入历史。MCP exposure 独立配置，基础工具的 only 模式仍可保留 MCP direct 工具。只有基础工具和当前 MCP 策略需要时才声明 CodeMode／工具搜索入口。
+
+模式修改在新会话或手动、自动 compact 成功后生效。当前会话、resume 和 fork 保留所在分支的策略；fork 后成功 compact 可应用最新设置。compact 取消或失败保留旧策略。策略快照只保存工具模式和 MCP exposure，不保存凭据或执行命令，也不发送给模型。MCP 按需发现及真实服务端工具目录变化仍可在会话内发生。新增声明复用 Pi 的协议能力；工具卸载同时停止执行并追加隐藏通知，不承诺所有协议都能保留缓存。
+
+六个基础工具复用 Pi 的并行调度；Write/Edit 对同一文件的修改排队，不同文件可以并行。审批界面逐项展示，通过后的独立调用可并行执行。读后编辑、同仓库 Git 修改等有依赖的操作仍应按顺序调用；Bash 不受文件工具的同文件队列保护。
+
+脚本没有直接 Node、文件系统或网络能力，模型子调用也已关闭。每个嵌套调用经过与直接调用相同的审批和恢复保护；`Promise.all` 中需要审批的调用也会逐项展示审批。中断信号传入嵌套调用，会话历史保存嵌套调用的名称、参数和状态；恢复不重放操作，compact 继续跟踪其文件路径。
 
 Read、Write、Edit、Grep、Glob、Bash 复用 Pi SDK 工具定义，宿主仅保留路径保护、审批和进程管理适配。Read 支持图片，文本采用 SDK 输出格式。Edit 使用 `edits: [{oldText,newText}]`，SDK 仍接受旧的单段参数。Grep 使用 rg 的正则及 gitignore 行为，排除元数据、凭据与依赖目录，跳过超过 2 MiB 的文件。Glob 保留安全目录遍历，超过 10000 个文件明确报错并要求缩小路径。Bash 在 Windows 实际运行 PowerShell，取消调用的工具退出码为 130，原始进程退出码保留在 receipt 中。
 
@@ -152,6 +158,7 @@ Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交�
 | `/model`、`/connect` | 模型选择、端点配置 |
 | `/permissions`、`/status` | 权限与实际运行配置 |
 | `/mcp` | MCP 状态、工具列表、启停及重连 |
+| `/tool-mode [direct\|codemode\|codemode-only]` | 基础工具调用方式，下次成功 compact 或新会话生效 |
 | `/new` | 新会话，保留旧历史和工作区文件 |
 | `/resume`、`/resume <id>`、`/rename`、`/fork [id]` | 打开会话列表、按当前项目 ID 恢复、重命名、分支 |
 | `/compact` | Pi 上下文压缩，保留原始历史 |

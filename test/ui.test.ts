@@ -147,26 +147,28 @@ test("MCP choices color connection status and restore the selected action", asyn
   assert.equal(await choice, "offline");
 });
 
-test("MCP inspection commands do not enter prompt history", async (t) => {
-  const terminal = new MemoryTerminal();
-  let ui: TerminalUI;
-  ui = new TerminalUI({ ...inertActions, async submit(text) {
-    if (text === "/mcp") await ui.inspect("MCP servers", "No MCP servers configured.");
-  } }, terminal);
-  t.after(() => ui.stop());
-  ui.status(idle);
-  ui.start();
-  ui.setDraft("Previous prompt");
-  terminal.press("\r");
-  await setTimeout(310);
-  ui.setDraft("/mcp");
-  terminal.press("\r");
-  await setTimeout(30);
-  terminal.press("\x1b");
-  await setTimeout(30);
-  terminal.press("\x1b[A");
-  assert.equal(ui.draft(), "Previous prompt");
-});
+for (const command of ["/mcp", "/tool-mode"]) {
+  test(`${command} inspection commands do not enter prompt history`, async (t) => {
+    const terminal = new MemoryTerminal();
+    let ui: TerminalUI;
+    ui = new TerminalUI({ ...inertActions, async submit(text) {
+      if (text === command) await ui.inspect("Configuration", "Transient configuration.");
+    } }, terminal);
+    t.after(() => ui.stop());
+    ui.status(idle);
+    ui.start();
+    ui.setDraft("Previous prompt");
+    terminal.press("\r");
+    await setTimeout(310);
+    ui.setDraft(command);
+    terminal.press("\r");
+    await setTimeout(30);
+    terminal.press("\x1b");
+    await setTimeout(30);
+    terminal.press("\x1b[A");
+    assert.equal(ui.draft(), "Previous prompt");
+  });
+}
 
 test("@ discovers workspace files and directories and Tab completes a file", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "arkcode-mention-"));

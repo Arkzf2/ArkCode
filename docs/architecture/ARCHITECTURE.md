@@ -7,23 +7,29 @@ Pi 管理模型请求、agent 循环、历史格式、压缩、MCP 协议和 Cod
 | `src/cli.ts` | CLI 启动入口，构建后仍为 `dist/cli.js` |
 | `src/app/` | 参数、宿主编排和 UI/权限事件类型 |
 | `src/config/` | 用户设置、模型连接及 SDK 资源装配 |
-| `src/context/` | 静态提示、项目指令、动态上下文、文件提及与压缩跟踪 |
+| `src/context/` | 静态提示、项目指令、动态上下文、工具停用通知、文件提及与压缩跟踪 |
 | `src/integrations/mcp/` | 配置边界和官方 MCP 扩展的宿主适配 |
 | `src/permissions/` | 三种权限策略、审批状态和 shell 风险分析 |
-| `src/session/` | 工作区 writer 锁、会话检查与运行标记 |
+| `src/session/` | 工作区 writer 锁、会话检查、运行标记与分支工具策略快照 |
 | `src/tools/index.ts` | 六个 SDK 工具定义的宿主适配 |
+| `src/tools/mode.ts`、`src/tools/loadout.ts` | 基础工具模式、官方 CodeMode／搜索装配及 compact 后应用策略 |
 | `src/tools/workspace.ts` | 路径、symlink、敏感目录和大小限制 |
 | `src/tools/shell.ts` | 子进程树、取消和执行 receipt |
 | `src/tools/output.ts` | 终端控制字符清理 |
 | `src/tools/output-files.ts` | SDK 大结果文件的会话级精确只读授权 |
 | `src/ui/` | TUI、补全、slash 命令目录及 Git 状态 |
 | `src/ui/mcp.ts` | MCP 临时子菜单、逐级返回和服务操作选择 |
+| `src/ui/tool-mode.ts` | 临时工具模式菜单，显示当前和待生效配置 |
 | `scripts/pi-sdk-patch/` | 固定版本 SDK 补丁的声明、片段和校验清单 |
 | `test/` | 真实 SDK 会话、本地 HTTP/stdio 服务、文件系统和 shell 回归 |
 
-增加工具时，在 `src/tools/index.ts` 或对应集成模块定义能力，在宿主工具白名单中明确开放。审批放在实际执行边界，直接与 CodeMode 调用共用；不能仅通过 UI 或模型提示控制权限。当前审批 UI 支持单个待决请求，基础工具与 MCP 工具均使用 `sequential`。
+增加基础工具时，在 `src/tools/index.ts` 定义能力并加入 `TOOL_NAMES`；该集合同时控制白名单和非 MCP 模式范围。审批放在实际执行边界，直接与 CodeMode 调用共用；不能仅通过 UI 或模型提示控制权限。审批 UI 排队展示请求，取消使整代等待请求失效。六个基础工具使用 Pi 默认并行调度，Write/Edit 复用 SDK 同文件修改队列；MCP 保留 SDK 的执行策略。
+
+`SessionToolSettings` 从当前分支读取模式与 MCP exposure 快照，新会话使用最新配置；旧会话缺少快照时沿用原有 hybrid 行为。`createToolLoadout()` 保留官方 CodeMode `on`，按基础工具 exposure 实现局部 direct/hybrid/only，并限制官方 `tool_search` 不加载基础工具。成功 `session_compact` 事件应用最新策略、更新注册与 MCP exposure，再保存快照；下一次请求检查应用结果。恢复时若发现 compact 后缺少策略记录，会完成该边界的策略初始化。
 
 MCP 的 `McpManager` 仅将 ArkCode 配置和权限接到 `createMcpExtension()`。它不创建 MCP client，不维护连接池，也不转换工具结果。SDK controller 负责状态、等待启动、按名称重载、取消和关闭。项目配置需经过工作区信任检查，自动批准规则只能来自用户配置。授权绑定配置、工具元数据和实际连接身份；等待授权期间发生变化时拒绝旧调用。
+
+exposure 修改只保存配置；重载时合并当前会话的 exposure 快照。compact 只重载策略发生变化的服务器。服务端目录更新使用 SDK 的真实声明与执行路由；停用工具不再可执行，宿主在后续请求追加隐藏通知。配置中 enabled、工具过滤和删除状态在审批前后重新检查，不能执行审批期间已撤销的调用。
 
 CodeMode 通过 SDK 的嵌套工具管线调用这些工具。它不会绕过白名单，也没有独立访问操作系统的接口。MCP resources 未接入逐服务审批，因此明确禁用；模型子调用同样禁用。
 

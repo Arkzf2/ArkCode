@@ -3,6 +3,8 @@ import test from "node:test";
 import type { Status, UiActions } from "../src/app/types.js";
 import { TerminalUI } from "../src/ui/terminal.js";
 import { ScreenTerminal } from "./terminal-fixture.js";
+import { browseToolMode } from "../src/ui/tool-mode.js";
+import type { ToolMode } from "../src/tools/mode.js";
 
 const idle: Status = {
   model: "fixture/model", thinking: "medium", cwd: "D:/workspace", permission: "always-ask", branch: "main",
@@ -11,6 +13,32 @@ const idle: Status = {
 const actions: UiActions = {
   async submit() {}, async interrupt() {}, async exit() {}, async editPrevious() {}, async browseSessions() {},
 };
+
+test("tool-mode menu updates pending and closes without leaving transcript content", async (t) => {
+  const terminal = new ScreenTerminal(100);
+  const ui = new TerminalUI(actions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.message("user", "Keep this conversation visible.");
+  ui.start();
+  let pending: ToolMode = "codemode";
+  const menu = browseToolMode({ ui, current: () => "codemode", pending: () => pending,
+    save: (mode) => { pending = mode; }, active: () => true,
+  });
+  await terminal.flush();
+  assert.match(terminal.text(), /Current: codemode/);
+  assert.doesNotMatch(terminal.text(), /Pending:/);
+  terminal.press("\x1b[B");
+  terminal.press("\r");
+  await terminal.flush();
+  assert.equal(pending, "codemode-only");
+  assert.match(terminal.text(), /Pending: codemode-only/);
+  terminal.press("\x1b");
+  await menu;
+  await terminal.flush();
+  assert.match(terminal.text(), /Keep this conversation visible/);
+  assert.doesNotMatch(terminal.text(), /Current:|Pending:|Tool mode/);
+});
 
 test("footer hides provider names and right-aligns context at each terminal width", async (t) => {
   for (const width of [40, 80, 120]) {

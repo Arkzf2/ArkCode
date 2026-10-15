@@ -8,6 +8,7 @@ import { z } from "zod";
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
 import { configuredPermissionSchema } from "../permissions/policy.js";
 import { SYSTEM_PROMPT } from "../context/prompt.js";
+import { toolModeSchema } from "../tools/mode.js";
 
 const legacyDeepSeekProviderSchema = z.object({
   baseUrl: z.literal("https://api.deepseek.com/v1"),
@@ -20,6 +21,7 @@ export const arkConfigSchema = z.object({
   model: z.string().min(1).optional(),
   thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).default("medium"),
   permission: configuredPermissionSchema.default("always-ask"),
+  toolMode: toolModeSchema.default("codemode"),
   trustedWorkspaces: z.array(z.string().min(1)).default([]),
   projectDocMaxBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(32 * 1024),
 }).strict();

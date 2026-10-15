@@ -5,12 +5,16 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
-  createAgentSession, createCodemodeExtension, createToolSearchExtension, DefaultResourceLoader, SessionManager, SettingsManager,
+  createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type AgentSession, type AgentSessionEvent, type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { ApprovalBroker } from "../permissions/approval.js";
 import { McpManager } from "../integrations/mcp/manager.js";
 import { browseMcp } from "../ui/mcp.js";
+import { browseToolMode } from "../ui/tool-mode.js";
+import { toolModeSchema, type ToolMode } from "../tools/mode.js";
+import { createToolLoadout } from "../tools/loadout.js";
+import { SessionToolSettings } from "../session/tool-settings.js";
 import { slashCommands } from "../ui/commands.js";
 import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig, type ConnectionRequest } from "../config/settings.js";
 import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, listArkSessions, readRunMarker, writeRunMarker } from "../session/storage.js";
@@ -20,6 +24,7 @@ import { cleanOutput } from "../tools/output.js";
 import { ToolOutputFiles } from "../tools/output-files.js";
 import { workspacePath } from "../tools/workspace.js";
 import { compactionTracking, installDynamicContext } from "../context/dynamic.js";
+import { installToolAvailability } from "../context/tool-availability.js";
 import { parsePermission, permissionLabels } from "../permissions/policy.js";
 import { getBranch } from "../ui/review.js";
 import { displayUserText, prepareMentions } from "../context/mentions.js";
@@ -61,6 +66,7 @@ export class ArkHost {
   private mcp: McpManager | null = null;
   private mcpPanelOpen = false;
   private manager: SessionManager | null = null;
+  private toolSettings: SessionToolSettings | null = null;
   private lease: WorkspaceLease | null = null;
   private shell: ManagedShell;
   private state: RunState = { kind: "idle", outcome: null };
@@ -215,7 +221,8 @@ export class ArkHost {
         }
       }
     }
-    const mcp = new McpManager({ home: this.home, cwd, trusted,
+    const toolSettings = new SessionToolSettings(manager, { home: this.home, cwd, trusted });
+    const mcp = new McpManager({ home: this.home, cwd, trusted, settings: toolSettings,
       canConnect: () => !this.closing && !this.lease?.viewer && !this.executionUnconfirmed && !this.storageFailed && this.state.kind !== "stopping",
       authorize: (request) => this.authorizeTool(request), warning: (message) => { if (!this.mcpPanelOpen) this.ui.message("error", cleanOutput(message)); },
     });
@@ -227,8 +234,10 @@ export class ArkHost {
         { name: "arkcode-tool-output", hidden: true, factory: (pi) => {
           pi.on("tool_result", async (event) => { await outputFiles.capture(event.toolName, event.details); });
         } },
-        { name: "pi-codemode", hidden: true, factory: createCodemodeExtension({ mode: "on", models: false }) },
-        { name: "pi-tool-search", hidden: true, factory: createToolSearchExtension() },
+        { name: "arkcode-tool-loadout", hidden: true, factory: createToolLoadout({ settings: toolSettings, mcp,
+          tools: createTools({ cwd, shell, outputFiles, authorize: (request) => this.authorizeTool(request) }),
+          resetApprovals: () => this.broker.reset(),
+        }) },
         { name: "arkcode-mcp", hidden: true, factory: mcp.extension }],
     });
     await extensionLoader.reload();
@@ -243,12 +252,12 @@ export class ArkHost {
       }),
       resourceLoader: createResources(extensionLoader.getExtensions()),
       tools: [...TOOL_NAMES, "codemode", "tool_search", "mcp__*"],
-      customTools: createTools({ cwd, shell, outputFiles, authorize: (request) => this.authorizeTool(request) }),
     });
     installDynamicContext(session, { cwd, home: this.home, shell: shell.executable, trusted, projectDocMaxBytes: this.config.projectDocMaxBytes,
       onWarning: (message) => this.ui.message("info", cleanOutput(message)),
       executionBlocked: () => this.executionUnconfirmed || this.storageFailed || Boolean(this.lease?.viewer),
     });
+    installToolAvailability(session, () => toolSettings.ready());
     let marker;
     try { marker = await readRunMarker(this.home, session.sessionId); }
     catch (error) { session.dispose(); throw error; }
@@ -268,6 +277,7 @@ export class ArkHost {
       this.executionUnconfirmed = target.executionUnconfirmed;
     }
     this.manager = manager;
+    this.toolSettings = toolSettings;
     this.session = session;
     this.mcp = mcp;
     this.unsubscribe = session.subscribe((event) => this.event(event));
@@ -647,7 +657,7 @@ export class ArkHost {
     if (!session || !runtime) throw new Error("Session not initialized.");
     const safeCommands = new Set(["help", "status", "copy", "exit", "resume", "mcp"]);
     if (this.lease?.viewer && !safeCommands.has(name)) throw new Error("Read-only viewer. Session mutations are disabled.");
-    const idleCommands = new Set(["new", "resume", "fork", "compact", "init", "connect"]);
+    const idleCommands = new Set(["new", "resume", "fork", "compact", "init", "connect", "tool-mode"]);
     if (this.state.kind !== "idle" && idleCommands.has(name)) {
       if (!["resume", "fork", "new"].includes(name)) throw new Error("Wait until the current run finishes.");
       await this.interrupt();
@@ -656,6 +666,21 @@ export class ArkHost {
       case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Left opens sessions from the empty idle composer. Ctrl+C interrupts or exits when idle. Esc interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
       case "status": this.ui.message("info", `Permissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
       case "mcp": await this.manageMcp(args); break;
+      case "tool-mode": {
+        const settings = this.toolSettings;
+        if (!settings) throw new Error("Tool settings are not initialized.");
+        const save = (mode: ToolMode) => {
+          const config = { ...loadConfig(this.home), toolMode: mode };
+          saveConfig(this.home, config);
+          this.config = config;
+        };
+        if (argument) save(toolModeSchema.parse(argument));
+        else await browseToolMode({ ui: this.ui, current: () => settings.current.toolMode,
+          pending: () => loadConfig(this.home).toolMode, save,
+          active: () => !this.closing && this.toolSettings === settings,
+        });
+        break;
+      }
       case "model": {
         await runtime.refresh({ allowNetwork: false });
         const models = await runtime.getAvailable();
@@ -698,7 +723,10 @@ export class ArkHost {
         await inspectSession(path, this.cwd);
         await this.replaceSession(SessionManager.forkFrom(path, this.cwd, this.sessionDir())); break;
       }
-      case "compact": await this.runOperation(() => session.compact(argument || undefined)); break;
+      case "compact": await this.runOperation(async () => {
+        await session.compact(argument || undefined);
+        this.toolSettings?.ready();
+      }); break;
       case "copy": if (!this.lastAnswer) throw new Error("No completed answer to copy."); if (!await this.ui.copy(this.lastAnswer)) throw new Error("Clipboard is unavailable."); this.ui.message("info", "Answer copied."); break;
       case "init": {
         if (existsSync(join(this.cwd, "AGENTS.md"))) throw new Error("AGENTS.md already exists. It was not overwritten.");

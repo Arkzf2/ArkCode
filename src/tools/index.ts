@@ -35,7 +35,6 @@ export function createTools(options: {
       label: name,
       promptGuidelines: definition.promptGuidelines?.map((guideline) => guideline.replace(/\b(read|write|edit|grep|find|bash|powershell)\b/g,
         (toolName) => ({ read: "Read", write: "Write", edit: "Edit", grep: "Grep", find: "Glob", bash: "Bash", powershell: "Bash" })[toolName] ?? toolName)),
-      executionMode: "sequential",
       async execute(id, params, signal, onUpdate, ctx) {
         signal?.throwIfAborted();
         const args = invocationSchema.safeParse(params);

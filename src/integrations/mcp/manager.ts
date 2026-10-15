@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { StdioTransport, StreamableHttpTransport, type McpTransport } from "@earendil-works/pi-mcp";
 import { createMcpExtension, type McpHostController, type McpServerEntry, type McpToolInvocation } from "@earendil-works/pi-coding-agent";
 import type { ApprovalRequest } from "../../app/types.js";
+import type { SessionToolSettings } from "../../session/tool-settings.js";
 import { cleanOutput } from "../../tools/output.js";
 import { loadMcpConfig, matchesMcpTool, mcpTarget, mcpToolEnabled, mcpWorkingDirectory, resolveMcpEnvironment, updateMcpConfig, type McpEntry, type McpServerConfig } from "./config.js";
 
@@ -12,6 +13,7 @@ type HostOptions = {
   authorize: (request: ApprovalRequest) => Promise<boolean>;
   warning: (message: string) => void;
   createTransport?: (entry: McpEntry) => McpTransport;
+  settings?: SessionToolSettings;
 };
 
 /** Host policy and configuration around the official SDK extension. */
@@ -97,6 +99,7 @@ export class McpManager {
       `Configuration: ${join(this.options.home, "mcp.json")} or ${join(this.options.cwd, ".arkcode", "mcp.json")}`,
       "Commands: /mcp tools <server>, /mcp reload, /mcp reconnect [server], /mcp enable|disable|login|logout <server>, /mcp exposure <server> <codemode|deferred|direct|hidden>",
       "Sign in is available when a remote server requests OAuth. Sign out is available when it has stored OAuth tokens. Local stdio servers do not use these actions.",
+      "Exposure changes apply after successful compact or to new sessions. Reconnect keeps the current exposure; disable stops calls immediately.",
     ].join("\n"));
   }
 
@@ -115,8 +118,28 @@ export class McpManager {
     await this.control().reload(name);
   }
   async setExposure(name: string, exposure: McpServerConfig["exposure"]): Promise<void> {
-    updateMcpConfig(this.requireServer(name).entry, { exposure });
-    await this.control().reload(name);
+    const entry = this.requireServer(name).entry;
+    updateMcpConfig(entry, { exposure });
+    const saved = loadMcpConfig(this.options).entries.find((candidate) => candidate.name === name && candidate.source === entry.source);
+    if (saved) Object.assign(entry, saved);
+  }
+  discoveryTools(): string[] {
+    const exposures = (this.controller?.snapshot().servers ?? []).filter(({ entry }) => entry.config.enabled !== false)
+      .flatMap(({ entry }) => [entry.config.exposure, ...Object.values(entry.config.toolExposure ?? {})]);
+    return [...(exposures.includes("codemode") ? ["codemode"] : []), ...(exposures.includes("deferred") ? ["tool_search"] : [])];
+  }
+  async applyExposure(): Promise<void> {
+    const current = this.control().snapshot().servers;
+    const loaded = loadMcpConfig(this.options).entries;
+    for (const name of new Set([...current.map(({ entry }) => entry.name), ...loaded.map((entry) => entry.name)])) {
+      const server = current.find(({ entry }) => entry.name === name);
+      const saved = loaded.find((entry) => entry.name === name);
+      const desired = saved && (this.options.settings?.exposure(saved) ?? saved.config);
+      if (!server || !saved || server.entry.source !== saved.source || server.entry.config.enabled !== saved.config.enabled
+        || JSON.stringify([server.entry.config.exposure, server.entry.config.toolExposure]) !== JSON.stringify([desired?.exposure, desired?.toolExposure])) {
+        await this.control().reload(name);
+      }
+    }
   }
   async login(name: string, prompt: Parameters<McpHostController["login"]>[1]): Promise<void> {
     const abort = new AbortController();
@@ -146,7 +169,7 @@ export class McpManager {
     return host;
   }
   private sdkEntry(entry: McpEntry): McpServerEntry {
-    const config = entry.config;
+    const config = { ...entry.config, ...this.options.settings?.exposure(entry) };
     const common = { enabled: config.enabled, exposure: config.exposure, toolExposure: config.toolExposure,
       description: config.description, timeout: config.toolTimeoutMs / 1000 };
     const sdk: McpServerEntry = { name: entry.name, source: entry.source, scope: entry.scope === "user" ? "global" : "project",
@@ -167,6 +190,9 @@ export class McpManager {
     const entry = this.hostEntry(call.entry);
     call.signal?.throwIfAborted();
     if (!this.options.canConnect()) throw new Error("MCP execution is unavailable.");
+    const available = () => loadMcpConfig(this.options).entries.some((live) => live.name === entry.name && live.source === entry.source
+      && live.config.enabled && mcpToolEnabled(live.config, call.tool.name));
+    if (!available()) throw new Error("MCP tool is no longer available.");
     const invocation: NonNullable<ApprovalRequest["invocation"]> = {
       kind: "mcp", server: entry.name, tool: call.tool.name, source: entry.source,
       identity: `${entry.fingerprint}:${call.connectionId}:${createHash("sha256").update(JSON.stringify(call.tool)).digest("hex")}`,
@@ -178,5 +204,6 @@ export class McpManager {
     })) throw new Error("MCP tool execution denied.");
     call.signal?.throwIfAborted();
     if (!this.options.canConnect()) throw new Error("MCP execution is unavailable.");
+    if (!available()) throw new Error("MCP tool is no longer available.");
   }
 }

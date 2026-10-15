@@ -82,6 +82,20 @@ test("file tools reject symlinks to outside and protected metadata", async () =>
   } finally { await files.cleanup(); }
 });
 
+test("concurrent SDK edits to the same file preserve both changes", async (t) => {
+  const files = await fixture();
+  const shell = new ManagedShell(files.cwd);
+  t.after(async () => { await shell.stopAll(); await files.cleanup(); });
+  await writeFile(join(files.cwd, "source.txt"), "first\nsecond\n");
+  const edit = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Edit");
+  assert.ok(edit);
+  await Promise.all([
+    executeTool(edit, "first", { path: "source.txt", oldText: "first", newText: "changed first" }),
+    executeTool(edit, "second", { path: join(files.cwd, "source.txt"), oldText: "second", newText: "changed second" }),
+  ]);
+  assert.equal(await readFile(join(files.cwd, "source.txt"), "utf8"), "changed first\nchanged second\n");
+});
+
 test("Write returns real changes for new files and overwrites without changing its model-facing receipt", async (t) => {
   const files = await fixture();
   t.after(() => files.cleanup());

@@ -2,6 +2,16 @@
 
 Date: 2026-10-09. Platform: Windows. Node: 24.18.0. Pi SDK: 1.1.0.
 
+## Tool modes and parallel calls, 2026-10-16
+
+Pi SDK 1.2.0. The complete regression run passed 201 tests with zero failures or cancellations. Type checking and production build passed, as did the compiled CLI version/help smoke checks. A later targeted regression verifies that a tool-policy application failure after compact blocks the next model request. The earlier dated sections below retain their original release context.
+
+Real Pi sessions and local model/MCP servers verify direct, hybrid and CodeMode-only declarations, strict script callability, MCP discovery, ordinary and incremental Chat Completions serialization, resume/fork policy retention, successful manual/automatic compact, failed compact, removed-tool dispatch rejection, and revocation during approval. Two native shell processes synchronize on each other's files to prove concurrent scheduling. Concurrent edits preserve both changes through Pi's same-file mutation queue. Approval cancellation denies queued requests and ignores late grants.
+
+The real TUI renderer verifies Current/Pending only inside the temporary tool-mode menu, selection persistence, returning to the prior conversation, and excluding both /mcp and /tool-mode from input history. A regression also updates an MCP directory during a running direct-mode turn and verifies that unused discovery tools stay hidden.
+
+These checks use loopback services and the installed SDK. No remote model cache-hit measurement, remote Responses/Anthropic provider acceptance, or new desktop OAuth acceptance is claimed. The local full-run log is `.audit/runtime/tool-mode-tests-final.log` and remains ignored.
+
 ## Real model
 
 The operator authorized DEEPSEEK_API_KEY and deepseek-flash. Credentials remained in the environment. Commands ran in .audit/runtime/deepseek-workspace, outside application source.

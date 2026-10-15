@@ -853,7 +853,7 @@ export class TerminalUI implements UserInterface {
 
   private submit(value: string, mode: InputMode): void {
     if (!value.trim() || !this.currentStatus || this.currentStatus.initializing) return;
-    if (!/^\/mcp(?:\s|$)/i.test(value.trim())) {
+    if (!/^\/(?:mcp|tool-mode)(?:\s|$)/i.test(value.trim())) {
       this.editor.addToHistory(value);
       this.promptHistory.push(value);
     }
