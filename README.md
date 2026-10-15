@@ -108,13 +108,13 @@ MCP 会话授权还绑定原始 server/tool、配置来源、配置与 schema �
 
 `enabled` 默认 true。`enabledTools` 省略时暴露全部工具，空数组表示不暴露；`disabledTools` 优先排除工具，二者按服务原始工具名称匹配，支持 glob。`autoApproveTools` 仅允许在用户级配置中设置，且只在 Ask When Needed 中使用。连接超时 `startupTimeoutMs` 默认 60000，最大 300000；调用超时 `toolTimeoutMs` 默认 30000，最大 300000。首次通过 npx/uvx 启动还包含包下载时间，网络较慢时可提高启动超时或预先安装包。npx 可使用 `-y` 避免安装确认，Pi transport 已处理 Windows `.cmd` 启动。
 
-`/mcp` 打开状态及管理面板，非交互模式输出状态。支持 `/mcp status`、`/mcp tools <server>`、`/mcp reload`、`/mcp reconnect [server]`、`/mcp enable <server>` 和 `/mcp disable <server>`。reconnect 重新读取配置，指定服务器时只重建该连接，不指定时重载全部服务器。启停保存到定义服务器的配置文件；文件已被外部修改时要求先 reload。更改连接需要空闲状态，状态和工具列表可在执行期间查看。补全包含子命令和当前服务器名。
+`/mcp` 打开临时管理子菜单，非交互模式输出状态。工具列表可滚动，Esc 或 Ctrl+C 逐级返回并保留原选择；关闭后恢复聊天与草稿，查询内容不进入 TUI 消息、输入历史或 session。底部只显示简短操作提示，配置路径与完整命令说明通过 Help 或 `/mcp help` 查看。connected 状态为绿色，disconnected 为淡灰色。支持 `/mcp status`、`/mcp tools <server>`、`/mcp reload`、`/mcp reconnect [server]`、`/mcp enable <server>` 和 `/mcp disable <server>`。reconnect 重新读取配置，指定服务器时只重建该连接，不指定时重载全部服务器。启停保存到定义服务器的配置文件；文件已被外部修改时要求先 reload。更改连接需要空闲状态，状态和工具列表可在执行期间查看。补全包含子命令和当前服务器名。
 
-首轮请求前完成连接和工具发现，单个服务失败不阻塞其他服务。服务器的 tools/list_changed 更新目录，禁用或删除后旧工具不可调用；断线后 SDK 可在下次调用时重新连接，并对新连接重新审批。审批期间 schema 改变会取消旧调用。新建、恢复、fork 和退出会等待旧连接关闭；历史恢复不重放调用或恢复旧授权。中断发送协议取消请求，但外部服务未必能撤销已发生的副作用。普通失败和超时不自动重放工具；SDK 对服务器明确返回 session expired 的请求可重建会话后再尝试一次，仍需经过新连接的授权检查。
+启动以及新建、恢复或切换会话时，composer 等待全部已启用且允许连接的 MCP 完成连接和工具发现，等待期间不接收对话输入，Ctrl+C 可退出。单个服务失败不阻止其他服务连接，但交互模式会停留在失败处理页，明确选择重试或使用当前可用工具继续后才开放 composer；非交互模式直接报错，不发送工具不完整的首轮请求。禁用、viewer 或恢复保护阻止的连接不参与等待。服务器的 tools/list_changed 更新目录，禁用或删除后旧工具不可调用；断线后 SDK 可在下次调用时重新连接，并对新连接重新审批。审批期间 schema 改变会取消旧调用。新建、恢复、fork 和退出会等待旧连接关闭；历史恢复不重放调用或恢复旧授权。中断发送协议取消请求，但外部服务未必能撤销已发生的副作用。普通失败和超时不自动重放工具；SDK 对服务器明确返回 session expired 的请求可重建会话后再尝试一次，仍需经过新连接的授权检查。
 
 MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目录更新和结果转换。`exposure` 默认 `codemode`，工具只在脚本中按需发现；设为 `direct` 可直接声明给模型，`deferred` 通过 `tool_search` 加载，`hidden` 隐藏。`toolExposure` 可按原始工具名或 Pi 的 `*` 模式覆盖单项，`enabledTools` / `disabledTools` 始终优先过滤。使用 `/mcp exposure <server> <codemode|deferred|direct|hidden>` 保存并应用模式。
 
-`/mcp login <server>` 使用 SDK 的 OAuth 自动发现和动态客户端注册。交互界面显示授权链接，浏览器回调完成后自动重连，也可粘贴回调 URL。`/mcp logout <server>` 删除对应凭据并断开服务。中断或退出会取消登录。已有 header / bearer token 服务无需 OAuth 登录。
+`/mcp login <server>` 使用 SDK 的 OAuth 自动发现和动态客户端注册。交互界面显示授权链接，浏览器回调完成后自动重连，也可粘贴回调 URL。`/mcp logout <server>` 删除对应凭据并断开服务。中断或退出会取消登录。菜单只在远程服务器要求 OAuth 时显示 Sign in，有已存 OAuth token 时显示 Sign out；stdio 和已有 header / bearer token 服务不显示这些动作。
 
 文本、图片、工具错误和结构化结果由 SDK 转换。CodeMode 获得完整 MCP 结果对象，可读取 `result.structuredContent`；直接调用以服务提供的文本内容为主。SDK 对大文本输出截断并保存临时文件，宿主只允许本会话的 Read 读取已登记的输出文件，文件被替换或切换会话后失效，不放开整个临时目录。MCP resources/prompts 和旧式 HTTP+SSE 尚未开放；资源工具在扩展与模型白名单中均关闭，待补上逐服务器资源审批后再接入。`pi mcp add` 属于 Pi CLI，不会自动变为 `arkcode mcp add`，当前通过配置文件接入。
 

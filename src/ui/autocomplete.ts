@@ -28,7 +28,7 @@ export class WorkspaceAutocompleteProvider implements AutocompleteProvider {
           .map((mode) => ({ value: `exposure ${exposure[1]} ${mode}`, label: mode }));
         const match = /^(tools|reconnect|enable|disable|login|logout|exposure)\s+(\S*)$/.exec(prefix);
         const names = match ? mcpServers().filter((name) => name.startsWith(match[2] ?? "")).map((name) => `${match[1]} ${name}`)
-          : ["status", "tools", "reload", "reconnect", "enable", "disable", "login", "logout", "exposure"].filter((name) => name.startsWith(prefix));
+          : ["help", "status", "tools", "reload", "reconnect", "enable", "disable", "login", "logout", "exposure"].filter((name) => name.startsWith(prefix));
         return names.map((value) => ({ value, label: value }));
       },
     }), cwd);

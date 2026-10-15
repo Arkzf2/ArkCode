@@ -15,7 +15,7 @@ import { ApprovalBroker } from "../src/permissions/approval.js";
 import { CONTEXT_MESSAGE } from "../src/context/dynamic.js";
 import { echoMcpTool, httpMcpFixture } from "./mcp-fixture.js";
 import { inspectSession, WorkspaceLease, writeRunMarker } from "../src/session/storage.js";
-import type { ApprovalDecision, ApprovalRequest, Choice, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/app/types.js";
+import type { ApprovalDecision, ApprovalRequest, Choice, ChoiceOptions, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/app/types.js";
 
 const requestSchema = z.object({
   model: z.string(),
@@ -87,6 +87,7 @@ function largePng(): Buffer {
 class RecordingUI implements UserInterface {
   statuses: Status[] = [];
   messages: Array<{ kind: "user" | "assistant" | "info" | "error"; text: string }> = [];
+  inspections: Array<{ title: string; text: string }> = [];
   tools: Array<{ name: string; text: string; state: "running" | "done" | "error"; details?: ToolDetails }> = [];
   thoughts: Array<{ id: string; text: string; active: boolean }> = [];
   answers: string[] = [];
@@ -101,7 +102,8 @@ class RecordingUI implements UserInterface {
   assistantEnd(text: string): void { this.answers.push(text); }
   reasoning(id: string, text: string, active: boolean): void { this.thoughts.push({ id, text, active }); }
   tool(_id: string, name: string, text: string, state: "running" | "done" | "error", details?: ToolDetails): void { this.tools.push({ name, text, state, details }); }
-  async choose(_title: string, _choices: Choice[]): Promise<string | null> { return null; }
+  async choose(title: string, _choices: Choice[]): Promise<string | null> { return title.startsWith("MCP startup incomplete") ? "continue" : null; }
+  async inspect(title: string, text: string): Promise<void> { this.inspections.push({ title, text }); }
   async input(_title: string, _initial?: string): Promise<string | null> { return null; }
   async secret(_title: string): Promise<string | null> { return null; }
   approve(request: ApprovalRequest): Promise<ApprovalDecision> { this.approvals.push(request); return this.decision(request); }
@@ -297,21 +299,56 @@ test("/mcp status and interactive tools panel use connected servers without a mo
   const mcp = await httpMcpFixture(t);
   await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
   const titles: string[] = [];
+  const selections: Array<string | null> = ["fixture", "tools", null, null];
   class McpUI extends RecordingUI {
-    override async choose(title: string): Promise<string | null> {
+    override async choose(title: string, choices: Choice[]): Promise<string | null> {
       titles.push(title);
-      return title === "MCP servers" ? "fixture" : title === "MCP fixture" ? "tools" : null;
+      assert.ok(!choices.some(({ value }) => value === "login" || value === "logout"));
+      return selections.shift() ?? null;
     }
   }
   const { host, ui } = await f.start(new McpUI());
+  const before = [...ui.messages];
+  const sessionsBefore = await f.sessions();
   await host.submit("/mcp");
-  assert.deepEqual(titles, ["MCP servers", "MCP fixture"]);
-  assert.match(ui.messages.at(-1)?.text ?? "", /enabled mcp__fixture__echo/);
+  assert.deepEqual(titles, ["MCP servers", "MCP fixture", "MCP fixture", "MCP servers"]);
+  assert.match(ui.inspections.at(-1)?.text ?? "", /enabled mcp__fixture__echo/);
   await host.submit("/mcp status");
-  assert.match(ui.messages.at(-1)?.text ?? "", /fixture: connected/);
+  assert.match(ui.inspections.at(-1)?.text ?? "", /fixture: connected/);
   assert.equal(f.requests.length, 0);
+  assert.deepEqual(ui.messages, before);
+  assert.deepEqual(await f.sessions(), sessionsBefore);
   await host.exit();
   assert.equal(mcp.closed, 1);
+});
+
+test("MCP reconnect returns to its action menu and browsing preserves saved messages", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Saved conversation." }));
+  const mcp = await httpMcpFixture(t);
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  const titles: string[] = [];
+  const selections: Array<string | null> = ["fixture", "reconnect", "tools", null, null];
+  class McpUI extends RecordingUI {
+    override async choose(title: string, _choices: Choice[], options?: ChoiceOptions): Promise<string | null> {
+      titles.push(title);
+      if (titles.length === 3) assert.equal(options?.initialValue, "reconnect");
+      return selections.shift() ?? null;
+    }
+  }
+  const { host, ui } = await f.start(new McpUI());
+  await host.submit("Create a saved conversation.");
+  const sessionPath = (await f.sessions())[0];
+  assert.ok(sessionPath);
+  const savedBefore = await readFile(sessionPath, "utf8");
+  const messagesBefore = [...ui.messages];
+  await host.submit("/mcp");
+  assert.deepEqual(titles, ["MCP servers", "MCP fixture", "MCP fixture", "MCP fixture", "MCP servers"]);
+  assert.equal(mcp.initialized, 2);
+  assert.equal(mcp.closed, 1);
+  assert.deepEqual(ui.messages, messagesBefore);
+  assert.equal(await readFile(sessionPath, "utf8"), savedBefore);
+  assert.equal(f.requests.length, 1);
+  assert.ok(ui.inspections.every(({ text }) => !text.includes("Configuration:") && !text.includes("Commands:")));
 });
 
 for (const permission of ["always-ask", "ask-when-needed", "never-ask"]) {
@@ -384,7 +421,7 @@ test("MCP enable/disable persists the defining source and new sessions close and
   assert.equal(mcp.closed, 3);
   assert.equal(mcp.initialized, 4);
   await host.submit("/mcp tools fixture");
-  assert.match(ui.messages.at(-1)?.text ?? "", /mcp__fixture__echo/);
+  assert.match(ui.inspections.at(-1)?.text ?? "", /mcp__fixture__echo/);
   await host.exit();
   assert.equal(mcp.closed, 4);
 });
@@ -401,7 +438,7 @@ test("MCP list_changed replaces the real model tool declarations and preserves s
   const deadline = Date.now() + 8000;
   do {
     await host.submit("/mcp tools fixture");
-    if (ui.messages.at(-1)?.text.includes("mcp__fixture__replacement")) break;
+    if (ui.inspections.at(-1)?.text.includes("mcp__fixture__replacement")) break;
     assert.ok(Date.now() < deadline); await delay(10);
   } while (true);
   await host.submit("Use the new directory.");
@@ -427,12 +464,12 @@ test("MCP schema changes invalidate a pending approved call and management canno
   const run = host.submit("Call MCP.");
   await until(() => ui.approvals.length === 1 && mcp.streams > 0);
   await host.submit("/mcp disable fixture");
-  assert.match(ui.messages.at(-1)?.text ?? "", /Wait until the current run finishes/);
+  assert.match(ui.inspections.at(-1)?.text ?? "", /Wait until the current run finishes/);
   mcp.setTools([{ ...echoMcpTool, description: "Changed tool contract." }]);
   const deadline = Date.now() + 8000;
   do {
     await host.submit("/mcp tools fixture");
-    if (ui.messages.at(-1)?.text.includes("Changed tool contract.")) break;
+    if (ui.inspections.at(-1)?.text.includes("Changed tool contract.")) break;
     assert.ok(Date.now() < deadline); await delay(10);
   } while (true);
   approve("once");
@@ -507,9 +544,10 @@ test("MCP resolves user bearer-token environment references and isolates a faile
   } }));
   const { host, ui } = await f.start();
   await host.submit("/mcp status");
-  assert.match(ui.messages.at(-1)?.text ?? "", /fixture: connected/);
-  assert.match(ui.messages.at(-1)?.text ?? "", /bad: needs-auth/);
+  assert.match(ui.inspections.at(-1)?.text ?? "", /fixture: connected/);
+  assert.match(ui.inspections.at(-1)?.text ?? "", /bad: needs-auth/);
   assert.doesNotMatch(JSON.stringify(ui.messages), new RegExp(token));
+  assert.doesNotMatch(JSON.stringify(ui.inspections), new RegExp(token));
   await host.submit("Use available tools.");
   assert.ok(f.requests[0]?.tools?.some((tool) => tool.function.name === "mcp__fixture__echo"));
   assert.ok(!f.requests[0]?.tools?.some((tool) => tool.function.name.startsWith("mcp__bad__")));
@@ -528,13 +566,115 @@ test("MCP startup timeout isolates an unresponsive server and still exposes heal
   } }));
   const { host, ui } = await f.start();
   await host.submit("/mcp status");
-  assert.match(ui.messages.at(-1)?.text ?? "", /slow: failed/);
-  assert.match(ui.messages.at(-1)?.text ?? "", /healthy: connected/);
+  assert.match(ui.inspections.at(-1)?.text ?? "", /slow: failed/);
+  assert.match(ui.inspections.at(-1)?.text ?? "", /healthy: connected/);
   await host.submit("Use the healthy directory.");
   assert.ok(f.requests[0]?.tools?.some((tool) => tool.function.name === "mcp__healthy__echo"));
   assert.ok(!f.requests[0]?.tools?.some((tool) => tool.function.name.startsWith("mcp__slow__")));
   release();
   await host.exit();
+});
+
+test("startup blocks conversations until every enabled MCP has connected and discovered tools", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Ready." }));
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const slow = await httpMcpFixture(t, { initialize: () => gate });
+  const healthy = await httpMcpFixture(t);
+  t.after(() => release());
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: {
+    slow: { url: slow.url, exposure: "direct" }, healthy: { url: healthy.url, exposure: "direct" },
+    disabled: { url: "http://127.0.0.1:1/mcp", enabled: false },
+  } }));
+  const ui = new RecordingUI();
+  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--model", "fixture/test"]), ui);
+  t.after(() => host.exit());
+  const starting = host.start();
+  await until(() => slow.initialized === 1 && healthy.listed === 1);
+  assert.equal(ui.statuses.at(-1)?.initializing, true);
+  await host.submit("Do not send this before startup finishes.");
+  assert.equal(f.requests.length, 0);
+  assert.ok(ui.statuses.every(({ initializing }) => initializing));
+  release();
+  await starting;
+  assert.equal(slow.listed, 1);
+  assert.equal(ui.statuses.at(-1)?.initializing, false);
+  await host.submit("All tools are ready.");
+  assert.equal(f.requests.length, 1);
+  const names = f.requests[0]?.tools?.map(({ function: tool }) => tool.name) ?? [];
+  assert.ok(names.includes("mcp__slow__echo"));
+  assert.ok(names.includes("mcp__healthy__echo"));
+  assert.ok(!names.includes("mcp__disabled__echo"));
+});
+
+test("failed MCP startup waits for an explicit retry before enabling conversations", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Ready after retry." }));
+  let release = () => {};
+  let retry = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const decision = new Promise<void>((resolve) => { retry = resolve; });
+  const slow = await httpMcpFixture(t, { initialize: () => gate });
+  t.after(() => { release(); retry(); });
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { slow: { url: slow.url, startupTimeoutMs: 100 } } }));
+  let prompted = false;
+  class StartupUI extends RecordingUI {
+    override async choose(title: string): Promise<string | null> {
+      assert.match(title, /MCP startup incomplete/);
+      prompted = true;
+      await decision;
+      return "retry";
+    }
+  }
+  const ui = new StartupUI();
+  const starting = f.start(ui);
+  await until(() => prompted);
+  assert.equal(ui.statuses.at(-1)?.initializing, true);
+  assert.equal(f.requests.length, 0);
+  release(); retry();
+  const { host } = await starting;
+  assert.equal(ui.statuses.at(-1)?.initializing, false);
+  await host.submit("Use tools after retry.");
+  assert.equal(f.requests.length, 1);
+});
+
+test("print mode reports unavailable MCP instead of sending an incomplete first request", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  const mcp = await httpMcpFixture(t, { authorization: "Bearer missing-token" });
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  await assert.rejects(f.start(new RecordingUI(), ["--print"]), /MCP startup incomplete/);
+  assert.equal(f.requests.length, 0);
+});
+
+test("exiting during MCP startup closes connections without enabling the composer", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const mcp = await httpMcpFixture(t, { initialize: () => gate });
+  t.after(() => release());
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  const ui = new RecordingUI();
+  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--model", "fixture/test"]), ui);
+  t.after(() => host.exit());
+  const starting = host.start();
+  await until(() => mcp.initialized === 1);
+  await host.exit();
+  await starting;
+  assert.ok(ui.statuses.every(({ initializing }) => initializing));
+  await host.submit("Do not send after shutdown.");
+  assert.equal(f.requests.length, 0);
+});
+
+test("exiting before startup acquires its workspace does not leave a writer lease", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--model", "fixture/test"]), new RecordingUI());
+  t.after(() => host.exit());
+  const starting = host.start();
+  await host.exit();
+  await starting;
+  const lease = await WorkspaceLease.acquire(f.cwd, f.home);
+  t.after(() => lease.release());
+  assert.equal(lease.viewer, false);
+  assert.equal(f.requests.length, 0);
 });
 
 test("untrusted project MCP, viewer and execution-unconfirmed sessions do not start connections", async (t) => {
@@ -545,7 +685,7 @@ test("untrusted project MCP, viewer and execution-unconfirmed sessions do not st
   await writeFile(join(f.home, "settings.json"), JSON.stringify({ provider: "fixture", model: "test", thinking: "off", trustedWorkspaces: [] }));
   const untrusted = await f.start();
   await untrusted.host.submit("/mcp status");
-  assert.match(untrusted.ui.messages.at(-1)?.text ?? "", /skipped in untrusted workspace/);
+  assert.match(untrusted.ui.inspections.at(-1)?.text ?? "", /skipped in untrusted workspace/);
   assert.equal(mcp.initialized, 0);
   await untrusted.host.exit();
   await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
@@ -554,14 +694,14 @@ test("untrusted project MCP, viewer and execution-unconfirmed sessions do not st
   const viewer = await f.start();
   assert.equal(mcp.initialized, 1);
   await viewer.host.submit("/mcp status");
-  assert.match(viewer.ui.messages.at(-1)?.text ?? "", /fixture: blocked/);
+  assert.match(viewer.ui.inspections.at(-1)?.text ?? "", /fixture: blocked/);
   await viewer.host.submit("/mcp reconnect");
-  assert.match(viewer.ui.messages.at(-1)?.text ?? "", /Read-only viewer/);
+  assert.match(viewer.ui.inspections.at(-1)?.text ?? "", /Read-only viewer/);
   await viewer.host.exit(); await owner.host.exit();
   await writeRunMarker(f.home, "orphan-mcp", { status: "active", runId: "orphan-run", startedAt: Date.now(), pid: process.pid, cwd: f.cwd });
   const recovery = await f.start();
   await recovery.host.submit("/mcp status");
-  assert.match(recovery.ui.messages.at(-1)?.text ?? "", /fixture: blocked/);
+  assert.match(recovery.ui.inspections.at(-1)?.text ?? "", /fixture: blocked/);
   assert.equal(mcp.initialized, 1);
   await recovery.host.exit();
 });

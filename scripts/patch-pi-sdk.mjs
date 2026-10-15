@@ -34,7 +34,8 @@ const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 const pending = Object.entries(manifest.files).filter(([path, checksums]) => {
   const current = hash(readFileSync(join(packageRoot, path), 'utf8'));
   if (current === checksums.patched) return false;
-  if (current !== checksums.original) throw new Error(`Pi SDK file changed unexpectedly: ${path}. Refusing to overwrite it.`);
+  if (current !== checksums.original && !(checksums.previousPatched ?? []).includes(current))
+    throw new Error(`Pi SDK file changed unexpectedly: ${path}. Refusing to overwrite it.`);
   return true;
 });
 if (pending.length === 0) process.exit(0);

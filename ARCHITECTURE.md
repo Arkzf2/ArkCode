@@ -17,6 +17,7 @@ Pi 管理模型请求、agent 循环、历史格式、压缩、MCP 协议和 Cod
 | `src/tools/output.ts` | 终端控制字符清理 |
 | `src/tools/output-files.ts` | SDK 大结果文件的会话级精确只读授权 |
 | `src/ui/` | TUI、补全、slash 命令目录及 Git 状态 |
+| `src/ui/mcp.ts` | MCP 临时子菜单、逐级返回和服务操作选择 |
 | `scripts/pi-sdk-patch/` | 固定版本 SDK 补丁的声明、片段和校验清单 |
 | `test/` | 真实 SDK 会话、本地 HTTP/stdio 服务、文件系统和 shell 回归 |
 

@@ -153,10 +153,14 @@ test("SDK OAuth credentials are read and removed only in the host agent director
     }));
   } });
   assert.equal(sdk.host.snapshot().servers[0]?.state, "connected");
+  assert.equal(sdk.host.snapshot().servers[0]?.canSignIn, false);
+  assert.equal(sdk.host.snapshot().servers[0]?.canSignOut, true);
   assert.equal((await sdk.call("mcp__fixture__echo", { text: "authenticated" })).isError, false);
   assert.equal(await sdk.host.logout("fixture"), true);
   assert.deepEqual(JSON.parse(await readFile(join(sdk.home, "mcp-auth.json"), "utf8")), {});
   assert.equal(sdk.host.snapshot().servers[0]?.state, "needs-auth");
+  assert.equal(sdk.host.snapshot().servers[0]?.canSignIn, true);
+  assert.equal(sdk.host.snapshot().servers[0]?.canSignOut, false);
 });
 
 test("SDK cancellation settles a pending initialization and close prevents late registrations", async (t) => {
@@ -179,7 +183,7 @@ test("SDK patch applies to a fresh installation, recovers partial application, a
   const root = await mkdtemp(join(tmpdir(), "arkcode-sdk-install-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sdk = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
-  const manifest = z.object({ files: z.record(z.string(), z.object({ original: z.string(), patched: z.string() })) })
+  const manifest = z.object({ files: z.record(z.string(), z.object({ original: z.string(), patched: z.string(), previousPatched: z.array(z.string()).optional() })) })
     .parse(JSON.parse(await readFile("scripts/pi-sdk-patch/manifest.json", "utf8")));
   await mkdir(join(root, "scripts"), { recursive: true });
   await cp("scripts/patch-pi-sdk.mjs", join(root, "scripts/patch-pi-sdk.mjs"));
@@ -203,6 +207,15 @@ test("SDK patch applies to a fresh installation, recovers partial application, a
   await cp(join(upstream, partial), join(sdk, partial));
   await runPatch();
   assert.equal(hash(await readFile(join(sdk, partial), "utf8")), manifest.files[partial]?.patched);
+  for (const file of ["dist/extensions/mcp/index.js", "dist/extensions/mcp/index.d.ts"]) {
+    const updated = await readFile(join(sdk, file), "utf8");
+    const previous = updated.split("\n").filter((line) => !line.includes("canSignIn:") && !line.includes("canSignOut:")).join("\n");
+    assert.ok(manifest.files[file]?.previousPatched?.includes(hash(previous)));
+    await writeFile(join(sdk, file), previous);
+  }
+  await runPatch();
+  for (const file of ["dist/extensions/mcp/index.js", "dist/extensions/mcp/index.d.ts"])
+    assert.equal(hash(await readFile(join(sdk, file), "utf8")), manifest.files[file]?.patched);
   const drifted = "dist/core/tools/grep.js";
   await writeFile(join(sdk, drifted), "unexpected change");
   await assert.rejects(runPatch, /changed unexpectedly/);

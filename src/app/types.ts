@@ -18,7 +18,13 @@ export interface ApprovalRequest {
       arguments: Record<string, unknown>; autoApprove: boolean; destructive: boolean };
 }
 export type ApprovalDecision = "once" | "session" | "deny";
-export interface Choice { value: string; label: string; description?: string }
+export interface Choice {
+  value: string;
+  label: string;
+  description?: string;
+  status?: { text: string; tone: "positive" | "muted" | "neutral" };
+}
+export interface ChoiceOptions { transient?: boolean; hint?: string; notice?: string; initialValue?: string }
 export interface ToolDetails { target?: string; exitCode?: number }
 export type SessionState = "needs-you" | "working" | "ready" | "inactive" | "unconfirmed";
 export interface SessionItem {
@@ -45,6 +51,7 @@ export interface Status {
   queued: string[];
   viewer: boolean;
   executionBlocked?: boolean;
+  initializing?: boolean;
   mcpServers?: string[];
 }
 export interface UserInterface {
@@ -54,7 +61,8 @@ export interface UserInterface {
   assistantEnd(text: string): void;
   reasoning(id: string, text: string, active: boolean): void;
   tool(id: string, name: string, text: string, state: "running" | "done" | "error", details?: ToolDetails): void;
-  choose(title: string, choices: Choice[]): Promise<string | null>;
+  choose(title: string, choices: Choice[], options?: ChoiceOptions): Promise<string | null>;
+  inspect(title: string, text: string): Promise<void>;
   browseSessions?(sessions: SessionItem[], details?: (item: SessionItem) => Promise<SessionDetails>): Promise<SessionBrowserResult | null>;
   input(title: string, initial?: string): Promise<string | null>;
   secret(title: string): Promise<string | null>;

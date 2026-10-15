@@ -78,6 +78,8 @@ export class McpManager {
         kind: server.entry.config.enabled !== false && !this.options.canConnect() && server.state !== "connected" ? "blocked" : server.state,
         error: server.error,
       },
+      canSignIn: server.canSignIn,
+      canSignOut: server.canSignOut,
       tools: server.tools.map(({ name, tool, exposure }) => ({ name: tool.name, modelName: name,
         description: tool.description ?? tool.name, exposure, enabled: exposure !== "hidden" })),
     }));
@@ -87,8 +89,14 @@ export class McpManager {
     const rows = this.statuses.map(({ entry, state, tools }) =>
       `${entry.name}: ${state.kind}${state.error ? ` (${state.error})` : ""}, ${tools.filter((tool) => tool.enabled).length}/${tools.length} tools, ${entry.config.exposure}\n  ${entry.scope}: ${entry.source}\n  ${entry.config.transport}: ${mcpTarget(entry)}`);
     return cleanOutput([...rows, ...(this.controller?.snapshot().errors ?? []), ...(!rows.length ? ["No MCP servers configured."] : []),
+    ].join("\n"));
+  }
+
+  helpText(): string {
+    return cleanOutput([
       `Configuration: ${join(this.options.home, "mcp.json")} or ${join(this.options.cwd, ".arkcode", "mcp.json")}`,
       "Commands: /mcp tools <server>, /mcp reload, /mcp reconnect [server], /mcp enable|disable|login|logout <server>, /mcp exposure <server> <codemode|deferred|direct|hidden>",
+      "Sign in is available when a remote server requests OAuth. Sign out is available when it has stored OAuth tokens. Local stdio servers do not use these actions.",
     ].join("\n"));
   }
 

@@ -53,6 +53,120 @@ const browserItems: SessionItem[] = [
   { id: "other", path: "E:/Other/session.jsonl", cwd: "E:/Other", title: "Other project task", preview: "Review a function", modified: Date.now() - 3_600_000, state: "inactive", current: false },
 ];
 
+test("startup hides the composer and blocks typing, paste and submit until MCP is ready", async (t) => {
+  const terminal = new MemoryTerminal(120);
+  const submitted: string[] = [];
+  const ui = new TerminalUI({ ...inertActions, async submit(text) { submitted.push(text); } }, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  await setTimeout(30);
+  assert.match(terminal.text(), /Initializing\.\.\./);
+  assert.doesNotMatch(terminal.text(), /Ask ArkCode to do anything/);
+  terminal.press("early input");
+  terminal.press("\r");
+  ui.status({ ...idle, initializing: true });
+  terminal.output = "";
+  await setTimeout(230);
+  assert.match(terminal.text(), /Initializing\.\.\./);
+  assert.ok(new Set(terminal.text().match(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g)).size >= 2);
+  assert.doesNotMatch(terminal.text(), /ArkCode|MCP|Ctrl\+C|deepseek|medium|Always Ask|main|used/);
+  ui.setDraft("Retained startup prompt");
+  terminal.press("\x1b[200~early paste\r\x1b[201~");
+  terminal.press("\r");
+  assert.deepEqual(submitted, []);
+  assert.equal(ui.draft(), "Retained startup prompt");
+  const trust = ui.choose("Trust workspace?", [{ value: "trust", label: "Trust this workspace" }]);
+  terminal.press("1");
+  assert.equal(await trust, "trust");
+  terminal.output = "";
+  ui.status({ ...idle, initializing: false });
+  await setTimeout(30);
+  assert.doesNotMatch(terminal.text(), /Initializing\.\.\./);
+  assert.match(terminal.text(), /Retained startup prompt/);
+  assert.match(terminal.text(), /deepseek\/deepseek-chat/);
+  terminal.press("\r");
+  await setTimeout(10);
+  assert.deepEqual(submitted, ["Retained startup prompt"]);
+});
+
+test("Ctrl+C exits while startup is waiting for MCP", async (t) => {
+  const terminal = new MemoryTerminal();
+  let exits = 0;
+  const ui = new TerminalUI({ ...inertActions, async exit() { exits++; } }, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, initializing: true });
+  ui.start();
+  terminal.press("\x03");
+  assert.equal(exits, 1);
+});
+
+test("temporary MCP pages scroll and leave no transcript entries after Esc or Ctrl+C", async (t) => {
+  const terminal = new MemoryTerminal(100);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.message("assistant", "Existing conversation.");
+  ui.setDraft("Retained draft");
+  ui.start();
+  for (const key of ["\x1b", "\x03"]) {
+    const page = ui.inspect("MCP fixture tools", Array.from({ length: 60 }, (_, index) => `Tool detail ${index + 1}`).join("\n"));
+    await setTimeout(30);
+    assert.match(terminal.text(), /MCP fixture tools/);
+    assert.match(terminal.text(), /Tool detail 1/);
+    terminal.output = "";
+    terminal.press("\x1b[6~");
+    await setTimeout(30);
+    assert.match(terminal.text(), /Tool detail 22/);
+    terminal.output = "";
+    terminal.press(key);
+    await page;
+    await setTimeout(30);
+    assert.match(terminal.text(), /Existing conversation/);
+    assert.doesNotMatch(terminal.text(), /MCP fixture tools|Tool detail/);
+    assert.equal(ui.draft(), "Retained draft");
+    terminal.output = "";
+  }
+});
+
+test("MCP choices color connection status and restore the selected action", async (t) => {
+  const terminal = new MemoryTerminal(120);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.start();
+  const choice = ui.choose("MCP servers", [
+    { value: "live", label: "Playwright", description: "user | stdio", status: { text: "connected", tone: "positive" } },
+    { value: "offline", label: "Bing Search", description: "user | stdio", status: { text: "disconnected", tone: "muted" } },
+  ], { transient: true, initialValue: "offline", hint: "Esc/Ctrl+C back · Help for commands" });
+  await setTimeout(30);
+  assert.ok(terminal.output.includes("\x1b[38;2;146;189;160mconnected"));
+  assert.ok(terminal.output.includes("\x1b[38;2;105;106;114mdisconnected"));
+  assert.doesNotMatch(terminal.text(), /Configuration:|Commands:/);
+  terminal.press("\r");
+  assert.equal(await choice, "offline");
+});
+
+test("MCP inspection commands do not enter prompt history", async (t) => {
+  const terminal = new MemoryTerminal();
+  let ui: TerminalUI;
+  ui = new TerminalUI({ ...inertActions, async submit(text) {
+    if (text === "/mcp") await ui.inspect("MCP servers", "No MCP servers configured.");
+  } }, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.start();
+  ui.setDraft("Previous prompt");
+  terminal.press("\r");
+  await setTimeout(310);
+  ui.setDraft("/mcp");
+  terminal.press("\r");
+  await setTimeout(30);
+  terminal.press("\x1b");
+  await setTimeout(30);
+  terminal.press("\x1b[A");
+  assert.equal(ui.draft(), "Previous prompt");
+});
+
 test("@ discovers workspace files and directories and Tab completes a file", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "arkcode-mention-"));
   t.after(() => rm(cwd, { recursive: true, force: true }));

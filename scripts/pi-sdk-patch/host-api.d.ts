@@ -14,6 +14,8 @@ export interface McpHostSnapshot {
         error: string | undefined;
         tools: Array<{ name: string; tool: import("@earendil-works/pi-mcp").Tool; exposure: import("./config.ts").McpExposure }>;
         hasResources: boolean;
+        canSignIn: boolean;
+        canSignOut: boolean;
     }>;
     errors: string[];
 }

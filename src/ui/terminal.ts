@@ -31,6 +31,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   Choice,
+  ChoiceOptions,
   InputMode,
   SessionBrowserResult,
   SessionDetails,
@@ -64,9 +65,10 @@ type TranscriptEntry =
   | { kind: "message"; role: MessageKind; text: string; component: Markdown | Text }
   | { kind: "reasoning"; id: string; text: string; active: boolean; component: Text }
   | { kind: "tool"; id: string; name: string; target: string; exitCode?: number; text: string; state: ToolState };
-type Panel =
+type Panel = { transient?: boolean } & (
   | { kind: "choice"; component: Container; cancel: () => void; select: (index: number) => void }
-  | { kind: "input"; component: Container; cancel: () => void };
+  | { kind: "input"; component: Container; cancel: () => void }
+  | { kind: "inspection"; component: Container; cancel: () => void; scroll: (delta: number) => void });
 type BrowserFilter = "all" | "needs-you" | "working" | "ready" | "inactive";
 interface BrowserState {
   items: SessionItem[];
@@ -101,6 +103,7 @@ const green = fg(146, 189, 160);
 const yellow = fg(199, 183, 164);
 const red = fg(219, 160, 160);
 const dim = fg(145, 146, 154);
+const faint = fg(105, 106, 114);
 const userText = fg(209, 201, 181);
 const pathText = fg(168, 170, 180);
 const commandText = fg(214, 215, 218);
@@ -241,19 +244,23 @@ export class TerminalUI implements UserInterface {
     if (this.started) return;
     this.started = true;
     this.tui.start();
+    let ticks = 0;
     this.timer = setInterval(() => {
-      if (this.currentStatus?.state.kind !== "idle") this.tui.requestRender();
-    }, 1000);
+      ticks++;
+      if (!this.currentStatus || this.currentStatus.initializing || (ticks % 10 === 0 && this.currentStatus.state.kind !== "idle")) this.tui.requestRender();
+    }, 100);
     this.timer.unref();
   }
 
   status(value: Status): void {
     const oldCwd = this.currentStatus?.cwd;
+    const wasInitializing = !this.currentStatus || this.currentStatus.initializing === true;
     this.currentStatus = value;
     if (value.state.kind === "idle") {
       for (const entry of this.entries) if (entry.kind === "reasoning") entry.active = false;
     }
     if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(value.cwd, () => this.currentStatus?.mcpServers ?? []));
+    if (wasInitializing !== (value.initializing === true)) this.rebuild();
     this.render();
   }
 
@@ -311,7 +318,7 @@ export class TerminalUI implements UserInterface {
     this.render();
   }
 
-  choose(title: string, choices: Choice[]): Promise<string | null> {
+  choose(title: string, choices: Choice[], options: ChoiceOptions = {}): Promise<string | null> {
     this.dismiss();
     if (!choices.length) {
       this.message("info", `${title}\nNo choices available.`);
@@ -321,12 +328,18 @@ export class TerminalUI implements UserInterface {
       const list = new SelectList(choices.map((choice) => ({
         value: choice.value,
         label: sanitizeTerminalText(choice.label),
-        ...(choice.description ? { description: sanitizeTerminalText(choice.description) } : {}),
+        ...(choice.description || choice.status ? { description: [
+          ...(choice.status ? [(choice.status.tone === "positive" ? green : choice.status.tone === "muted" ? faint : dim)(sanitizeTerminalText(choice.status.text))] : []),
+          ...(choice.description ? [dim(sanitizeTerminalText(choice.description))] : []),
+        ].join(dim(" | ")) } : {}),
       })), 8, this.theme.select);
+      const selected = choices.findIndex((choice) => choice.value === options.initialValue);
+      if (selected >= 0) list.setSelectedIndex(selected);
       const component = new Container();
       component.addChild(new Text(bold(sanitizeTerminalText(title)), 2, 1));
+      if (options.notice) component.addChild(new Text(dim(sanitizeTerminalText(options.notice)), 2, 0));
       component.addChild(list);
-      component.addChild(new Text(dim("↑/↓ select · Enter confirm · Esc cancel"), 2, 1));
+      component.addChild(new Text(dim(options.hint ?? "↑/↓ select · Enter confirm · Esc cancel"), 2, 1));
       const finish = (value: string | null): void => {
         this.closePanel();
         resolve(value);
@@ -335,6 +348,7 @@ export class TerminalUI implements UserInterface {
       list.onCancel = () => finish(null);
       this.panel = {
         kind: "choice",
+        transient: options.transient,
         component,
         cancel: () => finish(null),
         select: (index) => {
@@ -344,6 +358,30 @@ export class TerminalUI implements UserInterface {
       };
       this.rebuild();
       this.tui.setFocus(list);
+      this.render();
+    });
+  }
+
+  inspect(title: string, text: string): Promise<void> {
+    this.dismiss();
+    return new Promise((resolve) => {
+      let offset = 0;
+      const component = new Container();
+      component.addChild(new RenderComponent((width) => {
+        const inner = Math.max(1, width - 4);
+        const lines = wrapTextWithAnsi(sanitizeTerminalText(text), inner);
+        const page = Math.max(1, this.terminal.rows - 9);
+        offset = Math.max(0, Math.min(offset, Math.max(0, lines.length - page)));
+        return ["", ...wrapTextWithAnsi(bold(sanitizeTerminalText(title)), inner), "",
+          ...lines.slice(offset, offset + page), "",
+          dim(`↑/↓ scroll · PgUp/PgDn page · Esc/Ctrl+C back${lines.length > page ? ` · ${offset + 1}-${Math.min(offset + page, lines.length)}/${lines.length}` : ""}`),
+        ].flatMap((line) => wrapTextWithAnsi(line, inner).map((row) => `  ${row}`));
+      }));
+      this.panel = { kind: "inspection", transient: true, component,
+        cancel: () => { this.closePanel(); resolve(); },
+        scroll: (delta) => { offset += delta; this.render(); },
+      };
+      this.rebuild();
       this.render();
     });
   }
@@ -495,6 +533,19 @@ export class TerminalUI implements UserInterface {
       this.tui.addChild(new RenderComponent((width) => this.browserLines(width)));
       return;
     }
+    if (!this.panel && (!this.currentStatus || this.currentStatus.initializing)) {
+      this.tui.addChild(new RenderComponent((width) => {
+        const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        const frame = frames[Math.floor(Date.now() / 100) % frames.length];
+        return [truncateToWidth(dim(`  ${frame} Initializing...`), width, "")];
+      }));
+      return;
+    }
+    if (this.panel?.transient) {
+      this.tui.addChild(new RenderComponent((width) => this.headerLines(width)));
+      this.tui.addChild(this.panel.component);
+      return;
+    }
     this.tui.addChild(new RenderComponent((width) => this.headerLines(width)));
     this.tui.addChild(new RenderComponent((width) => {
       const lines: string[] = [];
@@ -542,9 +593,10 @@ export class TerminalUI implements UserInterface {
       return lines;
     }));
     this.tui.addChild(new RenderComponent((width) => this.activity(width)));
-    this.tui.addChild(this.panel?.component ?? this.editor);
+    if (this.panel) this.tui.addChild(this.panel.component);
+    else this.tui.addChild(this.editor);
     this.tui.addChild(new RenderComponent((width) => this.statusLines(width)));
-    if (!this.panel) this.tui.setFocus(this.editor);
+    if (!this.panel && this.currentStatus && !this.currentStatus.initializing) this.tui.setFocus(this.editor);
   }
 
   private browserItems(): SessionItem[] {
@@ -729,7 +781,7 @@ export class TerminalUI implements UserInterface {
 
   private activity(width: number): string[] {
     const status = this.currentStatus;
-    if (!status) return [];
+    if (!status || status.initializing) return [];
     const rows: string[] = [];
     if (status.state.kind !== "idle") {
       const elapsed = Math.floor((Date.now() - status.state.startedAt) / 1000);
@@ -747,7 +799,7 @@ export class TerminalUI implements UserInterface {
 
   private statusLines(width: number): string[] {
     const status = this.currentStatus;
-    if (!status) return [];
+    if (!status || status.initializing) return [];
     const permission = permissionLabels[status.permission] + (status.executionBlocked ? " · Execution blocked" : "");
     const fields = [
       accent(sanitizeTerminalText(status.model)),
@@ -783,9 +835,11 @@ export class TerminalUI implements UserInterface {
   }
 
   private submit(value: string, mode: InputMode): void {
-    if (!value.trim()) return;
-    this.editor.addToHistory(value);
-    this.promptHistory.push(value);
+    if (!value.trim() || !this.currentStatus || this.currentStatus.initializing) return;
+    if (!/^\/mcp(?:\s|$)/i.test(value.trim())) {
+      this.editor.addToHistory(value);
+      this.promptHistory.push(value);
+    }
     this.editor.setText("");
     this.run(async () => {
       try { await this.actions.submit(value, mode); }
@@ -799,9 +853,13 @@ export class TerminalUI implements UserInterface {
 
   private handleKeys(data: string): TuiInputListenerResult {
     if (isKeyRelease(data)) return { consume: true };
+    if (!this.panel && !this.browser && (!this.currentStatus || this.currentStatus.initializing)) {
+      if (matchesKey(data, "ctrl+c")) this.run(() => this.actions.exit());
+      return { consume: true };
+    }
     if (this.pasting || data.includes("\x1b[200~")) {
       this.pasting = !data.includes("\x1b[201~");
-      return this.browser || this.panel?.kind === "choice" || (!this.panel && this.currentStatus?.state.kind === "stopping") ? { consume: true } : undefined;
+      return this.browser || this.panel?.kind === "choice" || this.panel?.kind === "inspection" || (!this.panel && this.currentStatus?.state.kind === "stopping") ? { consume: true } : undefined;
     }
     if (this.browser) return this.browserKey(data);
     const now = Date.now();
@@ -813,6 +871,14 @@ export class TerminalUI implements UserInterface {
     if (this.panel) {
       if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
         this.dismiss();
+        return { consume: true };
+      }
+      if (this.panel.kind === "inspection") {
+        if (matchesKey(data, "up")) this.panel.scroll(-1);
+        else if (matchesKey(data, "down")) this.panel.scroll(1);
+        else if (matchesKey(data, "pageUp")) this.panel.scroll(-Math.max(1, this.terminal.rows - 9));
+        else if (matchesKey(data, "pageDown")) this.panel.scroll(Math.max(1, this.terminal.rows - 9));
+        else if (matchesKey(data, "enter")) this.dismiss();
         return { consume: true };
       }
       if (/^[1-9]$/.test(data) && this.panel.kind === "choice") {
@@ -941,6 +1007,7 @@ export class PlainUI implements UserInterface {
     this.event("tool", { id, name, text, state, ...details });
   }
   choose(_title: string, _choices: Choice[]): Promise<string | null> { return Promise.resolve(null); }
+  inspect(title: string, text: string): Promise<void> { this.message("info", `${title}\n${text}`); return Promise.resolve(); }
   input(_title: string, _initial?: string): Promise<string | null> { return Promise.resolve(null); }
   secret(_title: string): Promise<string | null> { return Promise.resolve(null); }
   approve(request: ApprovalRequest): Promise<ApprovalDecision> {

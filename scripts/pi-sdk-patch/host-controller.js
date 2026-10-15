@@ -61,6 +61,8 @@
                     state: isEnabled(server) ? (server.connection?.state ?? "starting") : "disabled",
                     error: server.connection?.error,
                     hasResources: server.connection?.hasResources ?? false,
+                    canSignIn: server.connection?.oauthUrl !== undefined && server.connection.state === "needs-auth",
+                    canSignOut: server.connection?.oauthUrl !== undefined && credentials?.tokens(server.entry.name, server.connection.oauthUrl) !== undefined,
                     tools: (server.connection?.tools ?? []).flatMap((tool) => {
                         if (options.filterTool?.(server.entry, tool) === false)
                             return [];

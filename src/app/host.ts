@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { ApprovalBroker } from "../permissions/approval.js";
 import { McpManager } from "../integrations/mcp/manager.js";
+import { browseMcp } from "../ui/mcp.js";
 import { slashCommands } from "../ui/commands.js";
 import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig, type ConnectionRequest } from "../config/settings.js";
 import { WorkspaceLease, hasActiveWorkspaceRun, inspectSession, listArkSessions, readRunMarker, writeRunMarker } from "../session/storage.js";
@@ -56,6 +57,7 @@ export class ArkHost {
   private runtime: ModelRuntime | null = null;
   private session: AgentSession | null = null;
   private mcp: McpManager | null = null;
+  private mcpPanelOpen = false;
   private manager: SessionManager | null = null;
   private lease: WorkspaceLease | null = null;
   private shell: ManagedShell;
@@ -66,6 +68,7 @@ export class ArkHost {
   private unsubscribe: (() => void) | null = null;
   private active: Promise<void> | null = null;
   private closing = false;
+  private initializing = true;
   private failure = false;
   private interrupted = false;
   private branch = "No Git";
@@ -89,7 +92,9 @@ export class ArkHost {
   }
 
   async start(): Promise<void> {
+    this.refreshStatus();
     this.lease = await WorkspaceLease.acquire(this.cwd, this.home);
+    if (this.closing) { await this.lease.release(); return; }
     this.cwd = this.lease.canonicalCwd;
     this.shell = new ManagedShell(this.cwd);
     this.branch = await getBranch(this.cwd);
@@ -108,6 +113,7 @@ export class ArkHost {
     }
     if (!this.trusted && !this.options.permission) this.permission = "always-ask";
     this.runtime = await createModelRuntime(this.home);
+    if (this.closing) return;
     if (!this.lease.viewer) {
       if (await hasActiveWorkspaceRun(this.home, this.cwd)) {
         this.executionUnconfirmed = true;
@@ -128,6 +134,8 @@ export class ArkHost {
       manager = this.options.command === "fork" ? SessionManager.forkFrom(path, this.cwd, this.sessionDir()) : SessionManager.open(path, this.sessionDir(), this.cwd);
     }
     await this.replaceSession(manager, true);
+    if (this.closing) return;
+    this.initializing = false;
     if (this.executionUnconfirmed && this.state.kind === "idle" && this.state.outcome !== "interrupted") this.ui.message("error", `Execution unconfirmed. This workspace is limited to inspection. Inspect files and terminate any orphaned commands before resolving active run markers in ${join(this.home, "runs")}. No tools will be replayed.`);
     if (this.lease.viewer) this.ui.message("info", this.lease.viewerReason
       ? `Read-only viewer. ${this.lease.viewerReason} Session mutations and agent execution are disabled.`
@@ -161,10 +169,20 @@ export class ArkHost {
       context: usage?.percent === null || usage?.percent === undefined ? "Context unknown" : `${usage.percent.toFixed(1)}% used`,
       state: this.state, queued: [...this.queued, ...this.localQueue.map((input) => `Queued shell: ${input}`)], viewer: this.lease?.viewer ?? false,
       executionBlocked: this.executionUnconfirmed || this.storageFailed,
+      initializing: this.initializing,
       mcpServers: this.mcp?.statuses.map(({ entry }) => entry.name) ?? [],
     });
   }
   private async replaceSession(manager: SessionManager, initial = false, target?: {
+    cwd: string; lease: WorkspaceLease; shell: ManagedShell; trusted: boolean; permission: Permission; branch: string; executionUnconfirmed: boolean;
+  }): Promise<void> {
+    const wasInitializing = this.initializing;
+    this.initializing = true;
+    this.refreshStatus();
+    try { await this.initializeSession(manager, initial, target); }
+    finally { this.initializing = wasInitializing; this.refreshStatus(); }
+  }
+  private async initializeSession(manager: SessionManager, initial: boolean, target?: {
     cwd: string; lease: WorkspaceLease; shell: ManagedShell; trusted: boolean; permission: Permission; branch: string; executionUnconfirmed: boolean;
   }): Promise<void> {
     const runtime = this.runtime;
@@ -197,7 +215,7 @@ export class ArkHost {
     }
     const mcp = new McpManager({ home: this.home, cwd, trusted,
       canConnect: () => !this.closing && !this.lease?.viewer && !this.executionUnconfirmed && !this.storageFailed && this.state.kind !== "stopping",
-      authorize: (request) => this.authorizeTool(request), warning: (message) => this.ui.message("error", cleanOutput(message)),
+      authorize: (request) => this.authorizeTool(request), warning: (message) => { if (!this.mcpPanelOpen) this.ui.message("error", cleanOutput(message)); },
     });
     const outputFiles = new ToolOutputFiles();
     const extensionLoader = new DefaultResourceLoader({
@@ -232,9 +250,11 @@ export class ArkHost {
     let marker;
     try { marker = await readRunMarker(this.home, session.sessionId); }
     catch (error) { session.dispose(); throw error; }
+    if (this.closing) { session.dispose(); return; }
     const oldLease = this.lease;
     this.unsubscribe?.();
     await this.closeSession("new");
+    if (this.closing) { session.dispose(); return; }
     this.broker.reset();
     if (target) {
       this.cwd = cwd;
@@ -262,9 +282,27 @@ export class ArkHost {
       this.executionUnconfirmed = true;
     }
     await session.bindExtensions({ mode: "print" });
-    await mcp.waitReady();
+    await this.waitForMcp(mcp);
     this.refreshStatus();
     if (target && oldLease !== lease) await oldLease?.release();
+  }
+  private async waitForMcp(mcp: McpManager): Promise<void> {
+    while (!this.closing) {
+      await mcp.waitReady();
+      if (this.closing) return;
+      const unavailable = mcp.statuses.filter(({ entry, state }) => entry.config.enabled && state.kind !== "connected" && state.kind !== "blocked");
+      if (!unavailable.length) return;
+      const description = unavailable.map(({ entry, state }) => `${entry.name}: ${state.kind}${state.error ? ` (${state.error})` : ""}`).join("\n");
+      if (this.options.print) throw new Error(`MCP startup incomplete:\n${description}`);
+      const action = await this.ui.choose(`MCP startup incomplete\n${description}`, [
+        { value: "retry", label: "Retry unavailable servers" },
+        { value: "continue", label: "Continue with available tools", description: "Unavailable MCP servers will have no tools until reconnected in /mcp." },
+      ]);
+      if (this.closing) return;
+      if (action === "continue") return;
+      if (action !== "retry") { await this.exit(); return; }
+      await Promise.all(unavailable.map(({ entry }) => mcp.reconnect(entry.name)));
+    }
   }
   private renderHistory(): void {
     const details = new Map<string, ToolDetails>();
@@ -356,7 +394,7 @@ export class ArkHost {
   }
 
   async submit(text: string, mode: InputMode = "prompt"): Promise<void> {
-    if (this.closing) return;
+    if (this.closing || this.initializing) return;
     text = text.trim();
     if (!text) return;
     try {
@@ -668,33 +706,38 @@ export class ArkHost {
     this.refreshStatus();
   }
   private async manageMcp(args: string[]): Promise<void> {
+    this.mcpPanelOpen = true;
+    try { await this.mcpCommand(args); }
+    catch (error) {
+      if (this.options.print) throw error;
+      if (!this.closing) await this.ui.inspect("MCP", cleanOutput(error instanceof Error ? error.message : String(error)));
+    } finally { this.mcpPanelOpen = false; }
+  }
+  private async mcpCommand(args: string[]): Promise<void> {
     const mcp = this.mcp;
     if (!mcp) throw new Error("MCP is not initialized.");
-    let [action = "", name, ...extra] = args;
+    const [action = "", name, ...extra] = args;
     if (!action) {
-      this.ui.message("info", mcp.statusText());
-      if (this.options.print || this.lease?.viewer || this.state.kind !== "idle") return;
-      name = await this.ui.choose("MCP servers", mcp.statuses.map(({ entry, state }) => ({
-        value: entry.name, label: entry.name, description: `${state.kind} | ${entry.scope} | ${entry.config.transport}`,
-      }))) ?? undefined;
-      if (!name) return;
-      const server = mcp.statuses.find(({ entry }) => entry.name === name);
-      if (!server) return;
-      action = await this.ui.choose(`MCP ${name}`, [
-        { value: "tools", label: "Tools" }, { value: "reconnect", label: "Reconnect" },
-        { value: "login", label: "Sign in with OAuth" }, { value: "logout", label: "Sign out" },
-        { value: server.entry.config.enabled ? "disable" : "enable", label: server.entry.config.enabled ? "Disable" : "Enable" },
-      ]) ?? "";
-      if (!action) return;
+      if (this.options.print) { await this.ui.inspect("MCP servers", mcp.statusText()); return; }
+      await browseMcp({ ui: this.ui, mcp,
+        active: () => !this.closing && this.mcp === mcp,
+        canManage: () => !this.lease?.viewer && !this.executionUnconfirmed && !this.storageFailed && this.state.kind === "idle",
+        execute: async (command) => {
+          try { await this.mcpCommand(command); }
+          catch (error) { if (!this.closing) await this.ui.inspect("MCP", cleanOutput(error instanceof Error ? error.message : String(error))); }
+        },
+      });
+      return;
     }
+    if (action === "help" && !name && !extra.length) { await this.ui.inspect("MCP help", mcp.helpText()); return; }
     const exposure = action === "exposure" ? z.enum(["codemode", "deferred", "direct", "hidden"]).safeParse(extra[0]) : undefined;
     if ((action === "exposure" ? extra.length !== 1 || !exposure?.success : extra.length > 0)
       || !["status", "tools", "reload", "reconnect", "enable", "disable", "login", "logout", "exposure"].includes(action)) {
-      throw new Error("Usage: /mcp [status|tools <server>|reload|reconnect [server]|enable|disable|login|logout <server>|exposure <server> <codemode|deferred|direct|hidden>].");
+      throw new Error("Usage: /mcp [help|status|tools <server>|reload|reconnect [server]|enable|disable|login|logout <server>|exposure <server> <codemode|deferred|direct|hidden>].");
     }
     if (this.mcp !== mcp) throw new Error("Session changed. Open /mcp again.");
-    if (action === "status") { if (name) throw new Error("Use /mcp status without a server name."); this.ui.message("info", mcp.statusText()); return; }
-    if (action === "tools") { if (!name) throw new Error("Use /mcp tools <server>."); this.ui.message("info", mcp.toolsText(name)); return; }
+    if (action === "status") { if (name) throw new Error("Use /mcp status without a server name."); await this.ui.inspect("MCP status", mcp.statusText()); return; }
+    if (action === "tools") { if (!name) throw new Error("Use /mcp tools <server>."); await this.ui.inspect(`MCP ${name} tools`, mcp.toolsText(name)); return; }
     if (this.lease?.viewer) throw new Error("Read-only viewer cannot manage MCP connections or configuration.");
     if (this.executionUnconfirmed || this.storageFailed) throw new Error("Execution or history is unconfirmed. MCP connections are disabled.");
     if (this.state.kind !== "idle") throw new Error("Wait until the current run finishes before changing MCP connections.");
@@ -702,25 +745,29 @@ export class ArkHost {
     if (["enable", "disable", "login", "logout", "exposure"].includes(action) && !name) throw new Error(`Use /mcp ${action} <server>.`);
     if (action === "login" && this.options.print) throw new Error("Use interactive ArkCode for /mcp login.");
     this.broker.reset();
+    let authorizationUrl: string | undefined;
     await this.runOperation(async () => {
       if (action === "reload") await mcp.reload();
       else if (action === "reconnect") await mcp.reconnect(name);
       else if (action === "exposure" && name && exposure?.success) await mcp.setExposure(name, exposure.data);
       else if (action === "logout" && name) await mcp.logout(name);
       else if (action === "login" && name) await mcp.login(name, {
-        showAuthorizationUrl: (url) => this.ui.message("info", `Open this URL to sign in:\n${url.href}`),
+        showAuthorizationUrl: (url) => { authorizationUrl = url.href; },
         promptForRedirectUrl: async (signal) => {
           signal.throwIfAborted();
           let onAbort = () => {};
           const cancelled = new Promise<undefined>((resolve) => { onAbort = () => { this.ui.dismiss(); resolve(undefined); }; });
           signal.addEventListener("abort", onAbort, { once: true });
-          try { return await Promise.race([this.ui.input("Paste the redirect URL if the browser callback cannot reach ArkCode").then((value) => value ?? undefined), cancelled]); }
+          try { return await Promise.race([this.ui.input(`${authorizationUrl ? `Open this URL to sign in:\n${authorizationUrl}\n\n` : ""}Paste the redirect URL if the browser callback cannot reach ArkCode`).then(async (value) => {
+            if (value === null) { await mcp.cancelConnecting(); return undefined; }
+            return value;
+          }), cancelled]); }
           finally { signal.removeEventListener("abort", onAbort); }
         },
       });
       else if (name) await mcp.setEnabled(name, action === "enable");
-      this.ui.message("info", mcp.statusText());
     });
+    if (!this.closing) await this.ui.inspect("MCP status", mcp.statusText());
   }
   private async runOperation(operation: () => Promise<unknown>): Promise<void> {
     this.interrupted = false;
