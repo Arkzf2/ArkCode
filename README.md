@@ -1,6 +1,6 @@
 # ArkCode
 
-ArkCode 是基于 Pi SDK 的终端编码 agent。模型调用、工具循环、会话历史和上下文压缩由 Pi 管理。ArkCode 提供原生 TUI、工具审批、受管命令、输入队列、会话恢复和 Git 分支状态。
+ArkCode 是基于 Pi SDK 的终端编码 agent。模型调用、工具循环、会话历史和上下文压缩由 Pi 管理。ArkCode 提供原生 TUI、工具审批、受管命令、输入队列、多会话并发、会话恢复和 Git 分支状态。
 
 ## 启动
 
@@ -76,11 +76,15 @@ Ask When Needed 采用 Kimi 的普通动作自动批准、有限高危规则优�
 
 MCP 会话授权还绑定原始 server/tool、配置来源、配置与 schema 指纹、连接身份及完整参数，不能沿用到重连后的同名服务。`readOnlyHint` 不自动授予权限；服务的 destructive 标记在两种询问模式中优先于自动批准和会话批准。MCP 的执行权限与工具是否暴露分别管理。外部服务不受 ArkCode 文件工具的工作区限制，MCP roots 也不是 OS 沙箱。
 
-同一真实工作区只有一个 writer。第二个宿主进入 Read-only viewer，不能运行 agent 或修改历史。历史恢复不重放工具、草稿或队列；中断不会回滚文件。上一宿主在执行期间崩溃时，恢复显示 Execution unconfirmed，需要检查现有文件和残留命令。
+同一终端可以保持多个 agent session 同时运行。`/new` 新建会话，`/sessions` 或在空输入框按 Left 打开会话列表。切换只改变当前显示，原会话的模型请求、工具与队列继续执行。输出、草稿、审批、shell 和 MCP 连接各自独立；后台需要审批时显示提示，切回该会话后才展示审批。Ctrl+C 中断当前会话，`/exit` 或终端退出会停止本终端拥有的全部会话及其受管进程。
 
-强制结束宿主不能保证所有子进程已退出。启动时发现该配置目录下的 active 运行标记后，工作区限制为文件检查，新会话也不能绕过。工具暴露形式保持不变，写入和 shell 在执行入口拒绝；这是恢复状态，不是第四种权限模式。确认旧命令已结束后，才能手动将对应 `runs/` 标记改为 `interrupted`，补上 `endedAt` 时间戳并去掉 `pid`，然后重启。不同 `--home` 共享 writer 锁，但不共享运行标记；不要用换配置目录绕过恢复检查。
+可以在多个终端同时打开同一工作区，运行不同会话。同一个 session 同时只有一个可写宿主，其他终端恢复该 session 时进入 Read-only viewer，定期刷新已保存的历史，不能发送、steer、改名或修改该会话设置。viewer 可以 `/new` 或 `/fork` 创建独立会话。原宿主退出后，在 viewer 中用 `/sessions` 重新打开该会话，即可重新尝试取得输入权。会话锁按 session ID 管理，不按 workspace 或 `--home` 划分。
 
-首次执行还未创建会话历史时，带工作区路径的运行标记也会触发上述保护。如果宿主在创建或回收 writer 锁时崩溃，CLI 可能保持 viewer。启动消息给出残留锁文件的完整路径。确认没有进程持有或正在恢复该工作区后，才能手动清理残留锁文件。程序不自动清理无法确认归属的锁。
+Edit/Write 沿用 Pi 的同文件修改队列。同一进程内不同会话、不同 cwd 访问同一个实际文件时，SDK 会让这些文件修改依次执行。队列不跨独立终端进程，也不覆盖 shell、MCP 或外部编辑器；完整 Write 仍可覆盖旧内容。这与 Pi 原生行为一致，没有额外的版本检查或自动合并。
+
+历史恢复不重放工具、草稿或队列，中断不会回滚文件。恢复某个 session 时发现其 active 运行标记，会显示 Execution unconfirmed，并限制该会话进行文件检查。其他 session 的运行标记不会阻止新会话或正常并发任务。强制结束宿主不保证所有子进程已退出；确认旧命令已结束后，才能手动将对应 `runs/` 标记改为 `interrupted`，补上 `endedAt` 并去掉 `pid`，然后重新打开该会话。
+
+如果宿主在创建或回收 session 锁时崩溃，CLI 可能保持 viewer。启动消息给出残留锁的完整路径。确认没有进程持有或正在恢复该 session 后，才能手动清理残留锁文件。程序不自动清理无法确认归属的锁。
 
 ## MCP
 
@@ -110,13 +114,13 @@ MCP 会话授权还绑定原始 server/tool、配置来源、配置与 schema �
 
 `/mcp` 打开临时管理子菜单，非交互模式输出状态。工具列表可滚动，Esc 或 Ctrl+C 逐级返回并保留原选择；关闭后恢复聊天与草稿，查询内容不进入 TUI 消息、输入历史或 session。底部只显示简短操作提示，配置路径与完整命令说明通过 Help 或 `/mcp help` 查看。connected 状态为绿色，disconnected 为淡灰色。支持 `/mcp status`、`/mcp tools <server>`、`/mcp reload`、`/mcp reconnect [server]`、`/mcp enable <server>` 和 `/mcp disable <server>`。reconnect 重新读取配置，指定服务器时只重建该连接，不指定时重载全部服务器。启停保存到定义服务器的配置文件；文件已被外部修改时要求先 reload。更改连接需要空闲状态，状态和工具列表可在执行期间查看。补全包含子命令和当前服务器名。
 
-启动以及新建、恢复或切换会话时，composer 等待全部已启用且允许连接的 MCP 完成连接和工具发现，等待期间不接收对话输入，Ctrl+C 可退出。单个服务失败不阻止其他服务连接，但交互模式会停留在失败处理页，明确选择重试或使用当前可用工具继续后才开放 composer；非交互模式直接报错，不发送工具不完整的首轮请求。禁用、viewer 或恢复保护阻止的连接不参与等待。服务器的 tools/list_changed 更新目录，禁用或删除后旧工具不可调用；断线后 SDK 可在下次调用时重新连接，并对新连接重新审批。审批期间 schema 改变会取消旧调用。新建、恢复、fork 和退出会等待旧连接关闭；历史恢复不重放调用或恢复旧授权。中断发送协议取消请求，但外部服务未必能撤销已发生的副作用。普通失败和超时不自动重放工具；SDK 对服务器明确返回 session expired 的请求可重建会话后再尝试一次，仍需经过新连接的授权检查。
+启动、新建或首次恢复会话时，composer 等待全部已启用且允许连接的 MCP 完成连接和工具发现，等待期间不接收对话输入，Ctrl+C 可退出。单个服务失败不阻止其他服务连接，但交互模式会停留在失败处理页，明确选择重试或使用当前可用工具继续后才开放 composer；非交互模式直接报错，不发送工具不完整的首轮请求。禁用、viewer 或恢复保护阻止的连接不参与等待。服务器的 tools/list_changed 更新目录，禁用或删除后旧工具不可调用；断线后 SDK 可在下次调用时重新连接，并对新连接重新审批。审批期间 schema 改变会取消旧调用。新建、恢复、fork 和退出会等待旧连接关闭；历史恢复不重放调用或恢复旧授权。中断发送协议取消请求，但外部服务未必能撤销已发生的副作用。普通失败和超时不自动重放工具；SDK 对服务器明确返回 session expired 的请求可重建会话后再尝试一次，仍需经过新连接的授权检查。
 
 MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目录更新和结果转换。`exposure` 默认 `codemode`，工具在脚本中按需发现；设为 `direct` 可直接声明给模型，`deferred` 通过 `tool_search` 加载，`hidden` 隐藏。`toolExposure` 可按原始工具名或 Pi 的 `*` 模式覆盖单项，`enabledTools` / `disabledTools` 始终优先过滤。使用 `/mcp exposure <server> <codemode|deferred|direct|hidden>` 保存模式，在新会话或成功 compact 后应用；reload、reconnect 和 enable 保留当前会话的 exposure。disable、配置删除和工具过滤会立即阻止实际调用。
 
 `/mcp login <server>` 使用 SDK 的 OAuth 自动发现和动态客户端注册。交互界面显示授权链接，浏览器回调完成后自动重连，也可粘贴回调 URL。`/mcp logout <server>` 删除对应凭据并断开服务。中断或退出会取消登录。菜单只在远程服务器要求 OAuth 时显示 Sign in，有已存 OAuth token 时显示 Sign out；stdio 和已有 header / bearer token 服务不显示这些动作。
 
-文本、图片、工具错误和结构化结果由 SDK 转换。CodeMode 获得完整 MCP 结果对象，可读取 `result.structuredContent`；直接调用以服务提供的文本内容为主。SDK 对大文本输出截断并保存临时文件，宿主只允许本会话的 Read 读取已登记的输出文件，文件被替换或切换会话后失效，不放开整个临时目录。MCP resources/prompts 和旧式 HTTP+SSE 尚未开放；资源工具在扩展与模型白名单中均关闭，待补上逐服务器资源审批后再接入。`pi mcp add` 属于 Pi CLI，不会自动变为 `arkcode mcp add`，当前通过配置文件接入。
+文本、图片、工具错误和结构化结果由 SDK 转换。CodeMode 获得完整 MCP 结果对象，可读取 `result.structuredContent`；直接调用以服务提供的文本内容为主。SDK 对大文本输出截断并保存临时文件，宿主只允许本会话的 Read 读取已登记的输出文件，文件被替换或会话运行实例结束后失效，不放开整个临时目录。MCP resources/prompts 和旧式 HTTP+SSE 尚未开放；资源工具在扩展与模型白名单中均关闭，待补上逐服务器资源审批后再接入。`pi mcp add` 属于 Pi CLI，不会自动变为 `arkcode mcp add`，当前通过配置文件接入。
 
 ## CodeMode 与基础工具
 
@@ -166,7 +170,7 @@ Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交�
 | `/mcp` | MCP 状态、工具列表、启停及重连 |
 | `/tool-mode [direct\|codemode\|codemode-only]` | 基础工具调用方式，下次成功 compact 或新会话生效 |
 | `/new` | 新会话，保留旧历史和工作区文件 |
-| `/resume`、`/resume <id>`、`/rename`、`/fork [id]` | 打开会话列表、按当前项目 ID 恢复、重命名、分支 |
+| `/sessions`、`/sessions <id>`、`/rename`、`/fork [id]` | 打开会话列表、按当前项目 ID 恢复、重命名、分支 |
 | `/compact` | Pi 上下文压缩，保留原始历史 |
 | `/copy`、`/init` | 复制完整回答、生成 AGENTS.md |
 | `/exit` | 停止执行并退出 |
@@ -177,7 +181,7 @@ TUI 使用 Prism 配色和完整输入框。工具调用使用醒目的绿色圆
 
 滚轮或 PgUp/PgDn 浏览历史，End 回到最新内容。开启鼠标交互的终端中，按住 Shift 拖动选择文字。审批与选择面板替换输入框，关闭后恢复草稿。
 
-空闲且输入框为空时按左方向键，或输入 `/resume`，打开跨项目会话列表。Tab/Shift+Tab 切换状态筛选，`g` 按项目或状态分组，`/` 搜索，方向键与 PgUp/PgDn 移动，Enter 打开，`n` 在选中项目新建，Esc 返回。宽终端显示会话详情，窄终端显示单列。恢复会话时显示当前分支的完整历史，包括压缩前的消息。列表只把当前进程中实际运行的会话标为 Working 或 Needs you；历史会话标为 Inactive，未确认的运行标记为 Unconfirmed。切换到未信任项目时需要重新选择信任级别，原项目的权限不会自动延续。打开失败会保留原会话与草稿。
+输入 `/sessions` 打开跨项目会话列表。空输入框按左方向键也可打开。Tab/Shift+Tab 切换状态筛选，`g` 按项目或状态分组，`/` 搜索，方向键与 PgUp/PgDn 移动，Enter 打开，`n` 在选中项目新建，Esc 返回。宽终端显示会话详情，窄终端显示单列。恢复会话时显示当前分支的完整历史，包括压缩前的消息。列表只把当前进程中实际运行的会话标为 Working 或 Needs you；历史会话标为 Inactive，未确认的运行标记为 Unconfirmed。切换到未信任项目时需要重新选择信任级别，原项目的权限不会自动延续。打开失败会保留原会话与草稿。
 
 旧 `settings.json` 中的 `theme` 和 `statusline` 可读取，下一次保存时移除。完整 Git 差异可在 IDE 或外部 Git 工具中查看。代码审查可直接作为普通任务提交。
 

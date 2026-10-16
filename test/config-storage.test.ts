@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel } from "../src/config/settings.js";
-import { inspectSession, listArkSessions, readRunMarker, recoverRunMarker, WorkspaceLease, writeRunMarker } from "../src/session/storage.js";
+import { inspectSession, listArkSessions, readRunMarker, recoverRunMarker, SessionLease, writeRunMarker } from "../src/session/storage.js";
 import { parseCli } from "../src/app/args.js";
 
 test("settings persist defaults and reject unknown permission values", async () => {
@@ -67,22 +67,25 @@ test("resources leave instructions out of the system prompt and never discover e
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("different config homes and path aliases share the same workspace writer lease", async () => {
+test("same session has one writer while independent session IDs remain writable", async () => {
   const root = await mkdtemp(join(tmpdir(), "arkcode-lock-"));
   const cwd = join(root, "workspace");
   const alias = join(root, "alias");
   await mkdir(cwd);
   await symlink(cwd, alias, process.platform === "win32" ? "junction" : "dir");
-  const writer = await WorkspaceLease.acquire(cwd, join(root, "home-a"));
+  const writer = await SessionLease.acquire(root);
   try {
     assert.equal(writer.viewer, false);
-    const viewer = await WorkspaceLease.acquire(alias, join(root, "home-b"));
+    const independent = await SessionLease.acquire(`${root}:other-session`);
+    assert.equal(independent.viewer, false);
+    await independent.release();
+    const viewer = await SessionLease.acquire(root);
     assert.equal(viewer.viewer, true);
     await viewer.release();
-    const stillViewer = await WorkspaceLease.acquire(cwd, join(root, "home-c"));
+    const stillViewer = await SessionLease.acquire(root);
     assert.equal(stillViewer.viewer, true);
     await writer.release();
-    const successor = await WorkspaceLease.acquire(alias, root);
+    const successor = await SessionLease.acquire(root);
     assert.equal(successor.viewer, false);
     await successor.release();
   } finally {
@@ -94,14 +97,14 @@ test("different config homes and path aliases share the same workspace writer le
 test("a crashed real process releases ownership by stale lease recovery and does not replay runs", { timeout: 15000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "arkcode-crash-"));
   const moduleUrl = new URL("../src/session/storage.ts", import.meta.url).href;
-  const script = `const { WorkspaceLease } = await import(${JSON.stringify(moduleUrl)}); await WorkspaceLease.acquire(${JSON.stringify(root)}, ${JSON.stringify(root)}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);`;
+  const script = `const { SessionLease } = await import(${JSON.stringify(moduleUrl)}); await SessionLease.acquire(${JSON.stringify(root)}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);`;
   const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
   try {
     const output = await Promise.race([once(child.stdout, "data"), once(child, "exit").then(([code]) => {
       throw new Error(`Lease fixture exited before becoming ready: ${String(code)}`);
     })]);
     assert.match(String(output[0]), /ready/);
-    const viewer = await WorkspaceLease.acquire(root, root);
+    const viewer = await SessionLease.acquire(root);
     assert.equal(viewer.viewer, true);
     assert.ok(child.pid);
     const pid = child.pid;
@@ -110,18 +113,17 @@ test("a crashed real process releases ownership by stale lease recovery and does
     const exited = once(child, "exit");
     child.kill();
     await exited;
-    const canonical = await realpath(root);
-    const identity = process.platform === "win32" ? canonical.toLowerCase() : canonical;
-    const recoveryPath = join(tmpdir(), "arkcode-workspace-locks", `${createHash("sha256").update(identity).digest("hex")}.json.recovery`);
+    const identity = root;
+    const recoveryPath = join(tmpdir(), "arkcode-session-locks", `${createHash("sha256").update(identity).digest("hex")}.json.recovery`);
     await writeFile(recoveryPath, "", { flag: "wx" });
     try {
-      const blocked = await WorkspaceLease.acquire(root, root);
+      const blocked = await SessionLease.acquire(root);
       assert.equal(blocked.viewer, true);
       assert.ok(blocked.viewerReason?.includes(recoveryPath));
       assert.match(blocked.viewerReason ?? "", /manual removal/);
       await blocked.release();
     } finally { await unlink(recoveryPath); }
-    const recovered = await WorkspaceLease.acquire(root, root);
+    const recovered = await SessionLease.acquire(root);
     assert.equal(recovered.viewer, false);
     await recovered.release();
     const marker = await recoverRunMarker(root, "session-one");

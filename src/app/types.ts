@@ -42,6 +42,9 @@ export interface SessionItem {
 export interface SessionDetails { lastMessage?: string; prompt?: string; model?: string }
 export type SessionBrowserResult = { kind: "open"; item: SessionItem } | { kind: "new"; cwd: string };
 export interface Status {
+  sessionId?: string;
+  sessionName?: string;
+  backgroundSessions?: Array<{ id: string; title: string; state: SessionState }>;
   model: string;
   thinking: string;
   cwd: string;

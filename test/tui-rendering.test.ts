@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Status, UiActions } from "../src/app/types.js";
 import { TerminalUI } from "../src/ui/terminal.js";
+import { SessionView } from "../src/ui/session-view.js";
 import { ScreenTerminal } from "./terminal-fixture.js";
 import { browseToolMode } from "../src/ui/tool-mode.js";
 import type { ToolMode } from "../src/tools/mode.js";
@@ -13,6 +14,63 @@ const idle: Status = {
 const actions: UiActions = {
   async submit() {}, async interrupt() {}, async exit() {}, async editPrevious() {}, async browseSessions() {},
 };
+
+test("switching away from a displayed approval preserves it until its session is focused again", async (t) => {
+  const terminal = new ScreenTerminal(120);
+  const ui = new TerminalUI(actions, terminal);
+  const first = new SessionView(ui, () => {});
+  const second = new SessionView(ui, () => {});
+  t.after(() => { first.stop(); second.stop(); ui.stop(); });
+  ui.status(idle); ui.start(); first.activate();
+  const approval = first.approve({ id: "a", tool: "Write", description: "Only approve in session A", cwd: idle.cwd });
+  await terminal.flush();
+  assert.match(terminal.text(), /Only approve in session A/);
+  first.deactivate(); second.activate();
+  second.message("user", "Session B stays independent");
+  await terminal.flush();
+  assert.doesNotMatch(terminal.text(), /Only approve in session A/);
+  second.deactivate(); first.activate();
+  await terminal.flush();
+  assert.match(terminal.text(), /Only approve in session A/);
+  terminal.press("1");
+  assert.equal(await approval, "once");
+});
+
+test("a running session can open the session browser and shows background approval activity", async (t) => {
+  const terminal = new ScreenTerminal(120);
+  let opened = 0;
+  const ui = new TerminalUI({ ...actions, async browseSessions() { opened++; } }, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, sessionName: "Foreground session", state: { kind: "running", id: "run", startedAt: Date.now() },
+    backgroundSessions: [{ id: "other", title: "Other task", state: "needs-you" }] });
+  ui.start();
+  await terminal.flush();
+  assert.match(terminal.text(), /Foreground session/);
+  assert.match(terminal.text(), /Other task.*approval needed/);
+  terminal.press("\x1b[D");
+  await terminal.flush();
+  assert.equal(opened, 1);
+});
+
+test("a read-only terminal retains typed prompts without submitting them and permits new-session commands", async (t) => {
+  const terminal = new ScreenTerminal(120);
+  const submitted: string[] = [];
+  const ui = new TerminalUI({ ...actions, async submit(text) { submitted.push(text); } }, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, viewer: true });
+  ui.start();
+  ui.setDraft("Do not send this prompt");
+  terminal.press("\r");
+  await terminal.flush();
+  assert.deepEqual(submitted, []);
+  assert.equal(ui.draft(), "Do not send this prompt");
+  assert.match(terminal.text(), /Read-only session/);
+  ui.setDraft("/new");
+  await new Promise((resolve) => setTimeout(resolve, 310));
+  terminal.press("\r");
+  await terminal.flush();
+  assert.deepEqual(submitted, ["/new"]);
+});
 
 test("tool-mode menu updates pending and closes without leaving transcript content", async (t) => {
   const terminal = new ScreenTerminal(100);

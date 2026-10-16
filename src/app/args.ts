@@ -74,5 +74,7 @@ Use /mcp to inspect servers and tools, reload configuration, reconnect, or enabl
 Use /tool-mode to choose direct, codemode, or codemode-only for built-in tools; changes apply after compact or to new sessions.
 Use /web-search [status|check|on|off] for provider Web Search. Check runs a real search and can incur provider fees.
 Print mode requires --model or a saved default model.
-In the TUI, press Left on an empty idle composer or use /resume to browse sessions.
+Use /new for another concurrent session; /sessions opens the session list. Left also works on an empty composer.
+Switching sessions keeps background runs active. Another terminal opening the same session is read-only.
+/exit stops all sessions owned by this terminal. Edit/Write use Pi's in-process same-file queue.
 `;

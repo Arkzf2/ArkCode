@@ -10,7 +10,7 @@ Pi 管理模型请求、agent 循环、历史格式、压缩、MCP 协议和 Cod
 | `src/context/` | 静态提示、项目指令、动态上下文、工具停用通知、文件提及与压缩跟踪 |
 | `src/integrations/mcp/` | 配置边界和官方 MCP 扩展的宿主适配 |
 | `src/permissions/` | 三种权限策略、审批状态和 shell 风险分析 |
-| `src/session/` | 工作区 writer 锁、会话检查、运行标记与分支工具策略快照 |
+| `src/session/` | session writer 锁、会话检查、运行标记与分支工具策略快照 |
 | `src/tools/index.ts` | 六个 SDK 工具定义的宿主适配 |
 | `src/tools/mode.ts`、`src/tools/loadout.ts` | 基础工具模式、官方 CodeMode／搜索装配及 compact 后应用策略 |
 | `src/tools/workspace.ts` | 路径、symlink、敏感目录和大小限制 |
@@ -22,6 +22,12 @@ Pi 管理模型请求、agent 循环、历史格式、压缩、MCP 协议和 Cod
 | `src/ui/tool-mode.ts` | 临时工具模式菜单，显示当前和待生效配置 |
 | `scripts/pi-sdk-patch/` | 固定版本 SDK 补丁的声明、片段和校验清单 |
 | `test/` | 真实 SDK 会话、本地 HTTP/stdio 服务、文件系统和 shell 回归 |
+
+`ArkHost` 管理多个常驻 `SessionRuntime`，只路由当前会话的输入。每个 runtime 拥有自己的 Pi AgentSession、运行标记、审批、shell、工具设置及 MCP。`SessionView` 保存每个 runtime 的输出和草稿，切换时重放当前视图；后台交互等待聚焦，取消仅影响所属会话。打开会话列表时也暂停当前会话的交互展示，避免审批盖住列表。关闭宿主会停止并清理所有 runtime。
+
+`SessionLease` 按 session ID 在系统临时目录独占创建锁文件。独立 session 可在同一目录运行；同一 session 的其他宿主只读，不持久化 SDK 初始化产生的条目，也不连接 MCP。viewer 轮询有效 JSONL，遇到尚未写完的条目等待下一次读取。重新打开会话时重新尝试取得输入权，取得后再读取最新磁盘历史。恢复限制来自该 session 自己的运行标记，不扫描整个 workspace 的活动运行。
+
+Edit/Write 继续由 Pi SDK 的模块级文件队列排序，宿主不另建版本检查或合并机制。该队列只覆盖同一进程的同一 SDK 模块实例，不保证跨终端进程排序，也不约束任意 shell 写入。
 
 增加基础工具时，在 `src/tools/index.ts` 定义能力并加入 `TOOL_NAMES`；该集合同时控制白名单和非 MCP 模式范围。审批放在实际执行边界，直接与 CodeMode 调用共用；不能仅通过 UI 或模型提示控制权限。审批 UI 排队展示请求，取消使整代等待请求失效。六个基础工具使用 Pi 默认并行调度，Write/Edit 复用 SDK 同文件修改队列；MCP 保留 SDK 的执行策略。
 

@@ -8,7 +8,7 @@ export const slashCommands = [
   { name: "mcp", description: "Manage MCP servers and tools" },
   { name: "status", description: "Session and runtime status" },
   { name: "new", description: "Start a new session" },
-  { name: "resume", description: "Resume a saved session" },
+  { name: "sessions", description: "Browse and open sessions" },
   { name: "rename", description: "Rename this session" },
   { name: "fork", description: "Fork this session" },
   { name: "compact", description: "Compact the conversation" },

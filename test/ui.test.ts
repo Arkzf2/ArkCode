@@ -239,10 +239,6 @@ test("empty focused composer opens the session center, while draft Left remains 
   ui.status({ ...idle, state: { kind: "running", id: "run", startedAt: Date.now() } });
   terminal.press("\x1b[D");
   await setTimeout(20);
-  assert.doesNotMatch(terminal.text(), /Session command center/);
-  ui.status(idle);
-  terminal.press("\x1b[D");
-  await setTimeout(40);
   assert.match(terminal.text(), /Session command center/);
   assert.match(terminal.text(), /Session details/);
   terminal.press("\x1b[200~n\r\x1b[201~");
@@ -262,6 +258,9 @@ test("Left cannot browse before host startup has published an idle status", asyn
   const ui = new TerminalUI({ ...inertActions, async browseSessions() { opens++; } }, terminal);
   t.after(() => ui.stop());
   ui.start();
+  terminal.press("\x02");
+  await setTimeout(20);
+  assert.equal(opens, 0);
   terminal.press("\x1b[D");
   await setTimeout(20);
   assert.equal(opens, 0);

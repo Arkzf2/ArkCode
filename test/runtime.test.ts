@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp, mkdir, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { deflateSync } from "node:zlib";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import test, { type TestContext } from "node:test";
 import { z } from "zod";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -17,7 +20,7 @@ import { CONTEXT_MESSAGE } from "../src/context/dynamic.js";
 import { TOOL_NAMES } from "../src/tools/index.js";
 import { TOOL_SETTINGS_ENTRY } from "../src/session/tool-settings.js";
 import { echoMcpTool, httpMcpFixture } from "./mcp-fixture.js";
-import { inspectSession, WorkspaceLease, writeRunMarker } from "../src/session/storage.js";
+import { inspectSession, SessionLease, writeRunMarker } from "../src/session/storage.js";
 import type { ApprovalDecision, ApprovalRequest, Choice, ChoiceOptions, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/app/types.js";
 
 const requestSchema = z.object({
@@ -119,8 +122,174 @@ class RecordingUI implements UserInterface {
   stop(): void {}
 }
 
-async function until(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 8000;
+test("switching sessions keeps both model requests running and restores separate output and drafts", { timeout: 30000 }, async (t) => {
+  let releaseA = () => {};
+  let releaseB = () => {};
+  const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+  const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
+  const f = await fixture(t, async (_request, index) => {
+    await (index === 0 ? gateA : gateB);
+    return { kind: "text", text: index === 0 ? "Answer for session A" : "Answer for session B" };
+  });
+  t.after(() => { releaseA(); releaseB(); });
+  const { host, ui } = await f.start();
+  const idA = ui.statuses.at(-1)?.sessionId;
+  assert.ok(idA);
+  const runA = host.submit("Only session A knows this prompt");
+  await until(() => f.requests.length === 1);
+  ui.setDraft("Draft for A");
+  await host.submit("/new");
+  const idB = ui.statuses.at(-1)?.sessionId;
+  assert.ok(idB && idB !== idA);
+  assert.equal(ui.draft(), "");
+  const runB = host.submit("Only session B knows this prompt");
+  await until(() => f.requests.length === 2);
+  assert.ok(ui.statuses.at(-1)?.backgroundSessions?.some((item) => item.id === idA && item.state === "working"));
+  releaseB(); await runB;
+  assert.deepEqual(ui.answers, ["Answer for session B"]);
+  releaseA(); await runA;
+  assert.deepEqual(ui.answers, ["Answer for session B"]);
+  ui.setDraft("Draft for B");
+  await host.submit(`/sessions ${idA}`);
+  assert.equal(ui.statuses.at(-1)?.sessionId, idA);
+  assert.equal(ui.draft(), "Draft for A");
+  assert.equal(ui.answers.at(-1), "Answer for session A");
+  await host.submit(`/sessions ${idB}`);
+  assert.equal(ui.draft(), "Draft for B");
+  const histories = await Promise.all((await f.sessions()).map((path) => readFile(path, "utf8")));
+  assert.equal(histories.length, 2);
+  for (const history of histories) assert.notEqual(history.includes("Only session A knows"), history.includes("Only session B knows"));
+});
+
+test("editing the previous prompt creates a separate session without changing the original runtime", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  const { host, ui } = await f.start();
+  await host.submit("Original first prompt");
+  await host.submit("Original second prompt");
+  const originalId = ui.statuses.at(-1)?.sessionId;
+  assert.ok(originalId);
+  ui.setDraft("Original draft");
+  await host.editPrevious();
+  const branchId = ui.statuses.at(-1)?.sessionId;
+  assert.ok(branchId && branchId !== originalId);
+  assert.equal(ui.draft(), "Original second prompt");
+  await host.submit("Revised second prompt");
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)?.messages), /Original second prompt/);
+  await host.submit(`/sessions ${originalId}`);
+  assert.equal(ui.statuses.at(-1)?.sessionId, originalId);
+  assert.equal(ui.draft(), "Original draft");
+  await host.submit("Continue original session");
+  const original = (await f.sessions()).find((path) => path.includes(originalId));
+  assert.ok(original);
+  const history = await readFile(original, "utf8");
+  assert.match(history, /Original second prompt/);
+  assert.match(history, /Continue original session/);
+  assert.doesNotMatch(history, /Revised second prompt/);
+  const viewer = await f.start(new RecordingUI(), ["resume", originalId]);
+  assert.equal(viewer.ui.statuses.at(-1)?.viewer, true);
+});
+
+test("two terminal hosts can run different sessions in the same workspace", { timeout: 30000 }, async (t) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const f = await fixture(t, async () => { await gate; return { kind: "text", text: "Concurrent answer" }; });
+  t.after(() => release());
+  const first = await f.start();
+  const second = await f.start();
+  assert.equal(first.ui.statuses.at(-1)?.viewer, false);
+  assert.equal(second.ui.statuses.at(-1)?.viewer, false);
+  assert.notEqual(first.ui.statuses.at(-1)?.sessionId, second.ui.statuses.at(-1)?.sessionId);
+  const runs = [first.host.submit("Terminal A"), second.host.submit("Terminal B")];
+  await until(() => f.requests.length === 2);
+  release(); await Promise.all(runs);
+  assert.equal(first.host.outcome, "completed");
+  assert.equal(second.host.outcome, "completed");
+});
+
+test("real CLI processes run separate sessions together and reject concurrent input into the same session", { timeout: 60000 }, async (t) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const f = await fixture(t, async () => { await gate; return { kind: "text", text: "Process completed" }; });
+  t.after(() => release());
+  const execute = promisify(execFile);
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const args = ["--import", "tsx", cli, "--cwd", f.cwd, "--home", f.home, "--model", "fixture/test", "--print", "--full-access"];
+  const first = execute(process.execPath, [...args, "Process A"], { timeout: 45000, windowsHide: true });
+  await until(() => f.requests.length === 1, 20000);
+  const files = await f.sessions();
+  const file = files[0]; assert.ok(file);
+  const saved = await inspectSession(file, f.cwd);
+  await assert.rejects(execute(process.execPath, [...args, "resume", saved.id, "Blocked input"], { timeout: 20000, windowsHide: true }), (error: unknown) => {
+    assert.ok(error instanceof Error && "code" in error && "stderr" in error);
+    assert.equal(error.code, 1);
+    assert.match(String(error.stderr), /Read-only viewer/);
+    return true;
+  });
+  assert.equal(f.requests.length, 1);
+  const second = execute(process.execPath, [...args, "Process B"], { timeout: 25000, windowsHide: true });
+  await until(() => f.requests.length === 2, 20000);
+  release();
+  const completed = await Promise.all([first, second]);
+  assert.ok(completed.every((result) => result.stdout.includes("Process completed")));
+  assert.equal((await f.sessions()).length, 2);
+  assert.doesNotMatch(await readFile(file, "utf8"), /Blocked input|Process B/);
+});
+
+test("a session viewer follows saved history, cannot send, and can acquire input after its owner exits", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (_request, index) => ({ kind: "text", text: `Answer ${index}` }));
+  const owner = await f.start();
+  await owner.host.submit("Owner first prompt");
+  const id = owner.ui.statuses.at(-1)?.sessionId;
+  assert.ok(id);
+  const viewer = await f.start(new RecordingUI(), ["resume", id]);
+  assert.equal(viewer.ui.statuses.at(-1)?.viewer, true);
+  const path = (await f.sessions())[0];
+  assert.ok(path);
+  const saved = await readFile(path, "utf8");
+  for (const text of ["Blocked prompt", "/rename blocked", "/compact"]) await viewer.host.submit(text);
+  assert.equal(f.requests.length, 1);
+  assert.equal(await readFile(path, "utf8"), saved);
+  await owner.host.submit("Owner second prompt");
+  await until(() => viewer.ui.messages.some((message) => message.text === "Answer 1"));
+  await owner.host.exit();
+  await viewer.host.submit(`/sessions ${id}`);
+  assert.equal(viewer.ui.statuses.at(-1)?.viewer, false);
+  await viewer.host.submit("New owner prompt");
+  assert.equal(viewer.host.outcome, "completed");
+  assert.equal(f.requests.length, 3);
+});
+
+test("background approvals wait for their session and never open over the foreground session", { timeout: 30000 }, async (t) => {
+  let releaseA = () => {};
+  let releaseB = () => {};
+  const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+  const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
+  const f = await fixture(t, async (_request, index) => {
+    if (index === 0) { await gateA; return { kind: "tool", name: "Write", arguments: { path: "background.txt", content: "approved A" } }; }
+    if (index === 1) await gateB;
+    return { kind: "text", text: "Done" };
+  });
+  t.after(() => { releaseA(); releaseB(); });
+  const { host, ui } = await f.start(new RecordingUI(), ["--permissions", "always-ask"]);
+  const idA = ui.statuses.at(-1)?.sessionId;
+  assert.ok(idA);
+  const runA = host.submit("Write from A");
+  await until(() => f.requests.length === 1);
+  await host.submit("/new");
+  const runB = host.submit("Work in B");
+  await until(() => f.requests.length === 2);
+  releaseA();
+  await until(() => Boolean(ui.statuses.at(-1)?.backgroundSessions?.some((item) => item.id === idA && item.state === "needs-you")));
+  assert.equal(ui.approvals.length, 0);
+  releaseB(); await runB;
+  await host.submit(`/sessions ${idA}`);
+  await runA;
+  assert.equal(ui.approvals.length, 1);
+  assert.equal(await readFile(join(f.cwd, "background.txt"), "utf8"), "approved A");
+});
+
+async function until(predicate: () => boolean, timeout = 8000): Promise<void> {
+  const deadline = Date.now() + timeout;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error("Timed out waiting for the agent state.");
     await delay(10);
@@ -678,7 +847,7 @@ test("MCP user auto-approval applies only in Ask When Needed; destructive hints 
   await host.exit();
 });
 
-test("MCP enable/disable persists the defining source and new sessions close and rebuild connections", async (t) => {
+test("MCP enable/disable persists the defining source and new sessions retain independent connections until host shutdown", async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
   const mcp = await httpMcpFixture(t);
   await mkdir(join(f.cwd, ".arkcode"), { recursive: true });
@@ -699,7 +868,7 @@ test("MCP enable/disable persists the defining source and new sessions close and
   assert.equal(mcp.closed, 2);
   assert.equal(mcp.initialized, 3);
   await host.submit("/new");
-  assert.equal(mcp.closed, 3);
+  assert.equal(mcp.closed, 2);
   assert.equal(mcp.initialized, 4);
   await host.submit("/mcp tools fixture");
   assert.match(ui.inspections.at(-1)?.text ?? "", /mcp__fixture__echo/);
@@ -878,6 +1047,8 @@ test("startup blocks conversations until every enabled MCP has connected and dis
   await until(() => slow.initialized === 1 && healthy.listed === 1);
   assert.equal(ui.statuses.at(-1)?.initializing, true);
   await host.submit("Do not send this before startup finishes.");
+  await host.browseSessions();
+  assert.equal(ui.dismissed, false);
   assert.equal(f.requests.length, 0);
   assert.ok(ui.statuses.every(({ initializing }) => initializing));
   release();
@@ -922,6 +1093,44 @@ test("failed MCP startup waits for an explicit retry before enabling conversatio
   assert.equal(f.requests.length, 1);
 });
 
+test("cancelled session startup restores the previous runtime and releases its session ownership", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Original session continues." }));
+  class CancelStartupUI extends RecordingUI {
+    override async choose(title: string): Promise<string | null> {
+      assert.match(title, /MCP startup incomplete/);
+      return null;
+    }
+  }
+  const { host, ui } = await f.start(new CancelStartupUI());
+  await host.submit("Original session");
+  const originalId = ui.statuses.at(-1)?.sessionId;
+  assert.ok(originalId);
+  const mcp = await httpMcpFixture(t, { authorization: "Bearer missing-token" });
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  await host.submit("/new");
+  assert.equal(ui.statuses.at(-1)?.sessionId, originalId);
+  assert.equal(ui.statuses.at(-1)?.initializing, false);
+  assert.ok(ui.messages.some((message) => message.text === "Session startup cancelled."));
+  const cancelledId = ui.statuses.find((status) => status.sessionId && status.sessionId !== originalId)?.sessionId;
+  assert.ok(cancelledId);
+  const lease = await SessionLease.acquire(cancelledId);
+  try { assert.equal(lease.viewer, false); } finally { await lease.release(); }
+  await host.submit("Continue the original runtime");
+  assert.equal(host.outcome, "completed");
+  assert.equal(f.requests.length, 2);
+  await assert.rejects(f.start(new CancelStartupUI()), /Session startup cancelled/);
+  const viewer = await f.start(new CancelStartupUI(), ["resume", originalId]);
+  assert.equal(viewer.ui.statuses.at(-1)?.viewer, true);
+  await host.exit();
+  await viewer.host.submit(`/sessions ${originalId}`);
+  assert.equal(viewer.ui.statuses.at(-1)?.sessionId, originalId);
+  assert.equal(viewer.ui.statuses.at(-1)?.viewer, true);
+  assert.equal(viewer.ui.statuses.at(-1)?.initializing, false);
+  await unlink(join(f.home, "mcp.json"));
+  await viewer.host.submit(`/sessions ${originalId}`);
+  assert.equal(viewer.ui.statuses.at(-1)?.viewer, false);
+});
+
 test("print mode reports unavailable MCP instead of sending an incomplete first request", async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
   const mcp = await httpMcpFixture(t, { authorization: "Bearer missing-token" });
@@ -951,12 +1160,13 @@ test("exiting during MCP startup closes connections without enabling the compose
 
 test("exiting before startup acquires its workspace does not leave a writer lease", async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
-  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--model", "fixture/test"]), new RecordingUI());
+  const ui = new RecordingUI();
+  const host = new ArkHost(parseCli(["--cwd", f.cwd, "--home", f.home, "--model", "fixture/test"]), ui);
   t.after(() => host.exit());
   const starting = host.start();
   await host.exit();
   await starting;
-  const lease = await WorkspaceLease.acquire(f.cwd, f.home);
+  const lease = await SessionLease.acquire(ui.statuses.at(-1)?.sessionId ?? "unused");
   t.after(() => lease.release());
   assert.equal(lease.viewer, false);
   assert.equal(f.requests.length, 0);
@@ -976,22 +1186,25 @@ test("untrusted project MCP, viewer and execution-unconfirmed sessions do not st
   await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url } } }));
   const owner = await f.start();
   assert.equal(mcp.initialized, 1);
-  const viewer = await f.start();
+  await owner.host.submit("Persist the owned session");
+  const ownerId = owner.ui.statuses.at(-1)?.sessionId;
+  assert.ok(ownerId);
+  const viewer = await f.start(new RecordingUI(), ["resume", ownerId]);
   assert.equal(mcp.initialized, 1);
   await viewer.host.submit("/mcp status");
   assert.match(viewer.ui.inspections.at(-1)?.text ?? "", /fixture: blocked/);
   await viewer.host.submit("/mcp reconnect");
   assert.match(viewer.ui.inspections.at(-1)?.text ?? "", /Read-only viewer/);
   await viewer.host.exit(); await owner.host.exit();
-  await writeRunMarker(f.home, "orphan-mcp", { status: "active", runId: "orphan-run", startedAt: Date.now(), pid: process.pid, cwd: f.cwd });
-  const recovery = await f.start();
+  await writeRunMarker(f.home, ownerId, { status: "active", runId: "orphan-run", startedAt: Date.now(), pid: process.pid, cwd: f.cwd });
+  const recovery = await f.start(new RecordingUI(), ["resume", ownerId]);
   await recovery.host.submit("/mcp status");
   assert.match(recovery.ui.inspections.at(-1)?.text ?? "", /fixture: blocked/);
   assert.equal(mcp.initialized, 1);
   await recovery.host.exit();
 });
 
-test("real stdio MCP receives tool calls and exits on session replacement and host shutdown", async (t) => {
+test("real stdio MCP stays alive across session switches and exits with all sessions on shutdown", async (t) => {
   const f = await fixture(t, (_request, index) => index === 0
     ? { kind: "tool", name: "mcp__local__echo", arguments: { text: "stdio" } } : { kind: "text", text: "Done." });
   const log = join(f.cwd, "mcp-events.jsonl");
@@ -1019,7 +1232,7 @@ input.on('close', () => {log('closed'); process.exit(0);});
   await host.submit("/new");
   await host.exit();
   const events = (await readFile(log, "utf8")).trim().split("\n").map((line) => z.object({ event: z.string(), pid: z.number() }).parse(JSON.parse(line)));
-  assert.deepEqual(events.map((event) => event.event), ["started", "called", "closed", "started", "closed"]);
+  assert.deepEqual(events.map((event) => event.event), ["started", "called", "started", "closed", "closed"]);
   for (const pid of new Set(events.map((event) => event.pid))) assert.throws(() => process.kill(pid, 0));
 });
 
@@ -1148,13 +1361,13 @@ test("session browser retains the current Agent and draft after a failed cross-p
   ui.corrupt = false;
   await host.browseSessions();
   assert.equal(host.cwd, other);
-  assert.equal(ui.draft(), "Preserve this draft");
+  assert.equal(ui.draft(), "");
   assert.ok(ui.messages.some((item) => item.kind === "user" && item.text === "Sound history"));
   assert.equal(ui.statuses.at(-1)?.permission, "never-ask");
   assert.equal(ui.statuses.at(-1)?.executionBlocked, false);
 });
 
-test("session center new creates in the selected project with a fresh workspace lease", { timeout: 30000 }, async (t) => {
+test("session center creates a separate session and draft in the selected project", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Unused" }));
   const other = join(f.home, "another-project");
   await mkdir(other);
@@ -1173,7 +1386,7 @@ test("session center new creates in the selected project with a fresh workspace 
   ui.setDraft("Keep writing here");
   await host.browseSessions();
   assert.equal(host.cwd, other);
-  assert.equal(ui.draft(), "Keep writing here");
+  assert.equal(ui.draft(), "");
   assert.equal(ui.statuses.at(-1)?.permission, "never-ask");
   assert.equal(ui.statuses.at(-1)?.executionBlocked, false);
   assert.equal(ui.messages.some((entry) => entry.kind === "user" && entry.text === "Earlier task"), false);
@@ -1199,7 +1412,7 @@ test("cancelling cross-project trust keeps the current session and releases the 
   await host.browseSessions();
   assert.equal(host.cwd, f.cwd);
   assert.equal(ui.draft(), "Current draft");
-  const lease = await WorkspaceLease.acquire(other, f.home);
+  const lease = await SessionLease.acquire(saved.getSessionId());
   try { assert.equal(lease.viewer, false); }
   finally { await lease.release(); }
 });
@@ -1208,8 +1421,8 @@ test("removed commands are rejected without running the agent, while @ reference
   const f = await fixture(t, () => ({ kind: "text", text: "File reference received." }));
   const { host, ui } = await f.start();
   await host.submit("/help");
-  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /tool-mode /web-search /mcp /status /new /resume /rename /fork /compact /copy /init /exit");
-  for (const command of ["diff", "review", "ps", "theme", "statusline", "stop", "quit", "mention", "clear"]) {
+  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /tool-mode /web-search /mcp /status /new /sessions /rename /fork /compact /copy /init /exit");
+  for (const command of ["diff", "review", "ps", "theme", "statusline", "stop", "quit", "mention", "clear", "resume"]) {
     await host.submit(`/${command}`);
     assert.deepEqual(ui.messages.at(-1), { kind: "error", text: `Unknown command /${command}. Use /help.` });
     assert.equal(ui.draft(), `/${command}`);
@@ -1335,24 +1548,17 @@ test("failed compaction reports failure even after an interrupted run", { timeou
   assert.equal(f.requests.length, 0);
 });
 
-test("an active first-run marker without history keeps the workspace read-only", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, () => ({ kind: "text", text: "Inspection only." }));
+test("an unrelated active run marker never blocks a new session in the same workspace", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Independent work" }));
   await writeRunMarker(f.home, "unpersisted-session", {
     status: "active", runId: "unconfirmed-first-run", startedAt: Date.now(), pid: process.pid, cwd: f.cwd,
   });
-  await assert.rejects(f.sessions(), { code: "ENOENT" });
   const { host, ui } = await f.start();
-  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
-  assert.ok(ui.messages.some((message) => message.text.includes("Execution unconfirmed")));
-  await host.submit("/permissions full-access");
-  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
-  await host.submit("/new");
-  await host.submit("!echo must-not-execute");
-  assert.equal(ui.tools.length, 0);
-  assert.equal(f.requests.length, 0);
-  await host.submit("Inspect only.");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, false);
+  await host.submit("Work independently");
   assert.equal(host.outcome, "completed");
-  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["Bash", "Edit", "Glob", "Grep", "Read", "Write", "codemode"]);
+  assert.equal(f.requests.length, 1);
+  assert.equal(ui.messages.some((message) => message.text.includes("Execution unconfirmed")), false);
 });
 
 test("denied writes return a tool error and the agent can continue", { timeout: 30000 }, async (t) => {
@@ -1376,8 +1582,11 @@ test("unconfirmed agents retain six tools but can only inspect files", { timeout
     return { kind: "text", text: "Inspection complete. Writing unavailable." };
   });
   await writeFile(join(f.cwd, "input.txt"), "read-only evidence\n");
-  await writeRunMarker(f.home, "unpersisted-session", { status: "active", runId: "unconfirmed", startedAt: Date.now(), pid: process.pid, cwd: f.cwd });
-  const { host, ui } = await f.start();
+  const encoded = Buffer.from(process.platform === "win32" ? f.cwd.toLowerCase() : f.cwd).toString("base64url");
+  const manager = SessionManager.create(f.cwd, join(f.home, "sessions", encoded));
+  manager.appendMessage({ role: "user", content: "Before crash", timestamp: Date.now() });
+  await writeRunMarker(f.home, manager.getSessionId(), { status: "active", runId: "unconfirmed", startedAt: Date.now(), pid: process.pid, cwd: f.cwd });
+  const { host, ui } = await f.start(new RecordingUI(), ["resume", manager.getSessionId()]);
   await host.submit("Inspect the input");
   assert.equal(host.outcome, "completed");
   assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("read-only evidence")));
@@ -1536,25 +1745,28 @@ test("legacy expanded file mentions display only the authored prompt", { timeout
   assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text), ["Inspect @source.txt"]);
 });
 
-test("a second workspace process is a viewer and cannot mutate sessions", { timeout: 30000 }, async (t) => {
+test("a viewer can create or fork an independent session without changing the owned history", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Owner answer." }));
   const owner = await f.start();
   await owner.host.submit("Owner prompt");
-  const paths = await f.sessions();
-  const saved = await Promise.all(paths.map((path) => readFile(path, "utf8")));
-  const viewer = await f.start(new RecordingUI(), ["resume", "--last", "--model", "fixture/alternate", "--thinking", "high"]);
+  const path = (await f.sessions())[0]; assert.ok(path);
+  const saved = await readFile(path, "utf8");
+  const id = owner.ui.statuses.at(-1)?.sessionId; assert.ok(id);
+  const viewer = await f.start(new RecordingUI(), ["resume", id, "--model", "fixture/alternate", "--thinking", "high"]);
   assert.equal(viewer.ui.statuses.at(-1)?.viewer, true);
   assert.equal(viewer.ui.statuses.at(-1)?.model, "fixture/alternate");
   assert.equal(viewer.ui.statuses.at(-1)?.thinking, "high");
-  assert.ok(viewer.ui.messages.some((message) => message.text === "Owner answer."));
-  for (const input of ["Run another prompt", "/rename overwritten", "/new", "/fork", "/permissions full-access"]) await viewer.host.submit(input);
-  assert.equal(viewer.ui.messages.filter((message) => message.kind === "error" && message.text.includes("viewer")).length, 5);
+  for (const input of ["Run another prompt", "/rename overwritten", "/permissions never-ask"]) await viewer.host.submit(input);
+  assert.equal(viewer.ui.messages.filter((message) => message.kind === "error" && message.text.includes("viewer")).length, 3);
   assert.equal(f.requests.length, 1);
-  assert.deepEqual(await f.sessions(), paths);
-  assert.deepEqual(await Promise.all(paths.map((path) => readFile(path, "utf8"))), saved);
-  await assert.rejects(f.start(new RecordingUI(), ["fork", "--last"]), /Read-only viewer cannot fork a session/);
-  assert.deepEqual(await f.sessions(), paths);
-  assert.deepEqual(await Promise.all(paths.map((path) => readFile(path, "utf8"))), saved);
+  assert.equal(await readFile(path, "utf8"), saved);
+  await viewer.host.submit("/fork");
+  assert.equal(viewer.ui.statuses.at(-1)?.viewer, false);
+  assert.notEqual(viewer.ui.statuses.at(-1)?.sessionId, id);
+  await viewer.host.submit("Independent fork prompt");
+  await viewer.host.submit("/new");
+  assert.equal(viewer.ui.statuses.at(-1)?.viewer, false);
+  assert.equal(await readFile(path, "utf8"), saved);
 });
 
 test("a user shell queued during a turn runs afterward and persists its result", { timeout: 30000 }, async (t) => {
@@ -1615,75 +1827,52 @@ test("interrupt restores queued local commands without executing them", { timeou
   assert.equal(f.requests.length, 1);
 });
 
-test("new sessions cannot bypass the unconfirmed execution permission gate", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, (_request, index) => {
-    if (index === 0) return { kind: "text", text: "Saved original history." };
-    if (index === 1) return { kind: "tool", name: "Write", arguments: { path: "recovery.txt", content: "forbidden during recovery" } };
-    throw new Error("Recovery actions must not send another model request.");
-  });
+test("recovery restrictions stay with the interrupted session while new sessions can run", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Saved answer" }));
   const original = await f.start();
-  await original.host.submit("Save history before the interrupted process");
+  await original.host.submit("Save before crash");
+  const id = original.ui.statuses.at(-1)?.sessionId; assert.ok(id);
   await original.host.exit();
-  const paths = await f.sessions(); assert.equal(paths.length, 1);
-  const saved = await inspectSession(paths[0] ?? "", f.cwd);
-  await writeRunMarker(f.home, saved.id, { status: "active", runId: "unconfirmed-run", startedAt: 123, pid: process.pid });
-  const { host, ui } = await f.start(new RecordingUI(), ["resume", "--last"]);
+  await writeRunMarker(f.home, id, { status: "active", runId: "unconfirmed-run", startedAt: 123, pid: process.pid });
+  const { host, ui } = await f.start(new RecordingUI(), ["resume", id]);
   assert.equal(host.outcome, "interrupted");
   assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
-  assert.ok(ui.messages.some((message) => message.kind === "assistant" && message.text === "Saved original history."));
-  assert.ok(ui.messages.some((message) => message.kind === "error" && message.text.includes("Execution unconfirmed.")));
-  assert.equal(f.requests.length, 1);
-  for (const command of ["/permissions ask", "/permissions full-access"]) await host.submit(command);
-  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
-  await assert.rejects(readFile(join(f.cwd, "recovery.txt")), { code: "ENOENT" });
-  await host.submit("/fork");
-  await host.submit("/permissions ask");
-  assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
-  assert.equal(ui.messages.filter((message) => message.kind === "error" && message.text.startsWith("Execution unconfirmed.")).length, 4);
+  await host.submit("/permissions never-ask");
+  assert.match(ui.messages.at(-1)?.text ?? "", /Execution unconfirmed/);
   await host.submit("/new");
-  await host.submit("/permissions ask");
+  assert.equal(ui.statuses.at(-1)?.executionBlocked, false);
+  await host.submit("Independent work");
+  assert.equal(host.outcome, "completed");
+  await host.submit(`/sessions ${id}`);
   assert.equal(ui.statuses.at(-1)?.executionBlocked, true);
-  assert.equal(ui.messages.filter((message) => message.kind === "error" && message.text.startsWith("Execution unconfirmed.")).length, 5);
-  await host.submit("!echo must remain blocked");
-  assert.equal(host.outcome, "failed");
-  assert.equal(ui.tools.filter((tool) => tool.name === "shell").length, 0);
-  assert.equal(ui.approvals.length, 0);
-  assert.equal(f.requests.length, 1);
-  await assert.rejects(readFile(join(f.cwd, "recovery.txt")), { code: "ENOENT" });
-  await host.exit();
-  const restarted = await f.start();
-  assert.equal(restarted.ui.statuses.at(-1)?.executionBlocked, true);
-  await restarted.host.submit("/permissions full-access");
-  assert.equal(restarted.ui.statuses.at(-1)?.executionBlocked, true);
-  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests.length, 2);
 });
 
-for (const command of ["/new", "/resume --last", "/fork"]) {
-  test(`${command} preserves queued drafts while replacing a busy session`, { timeout: 30000 }, async (t) => {
-    let release: () => void = () => {};
+for (const command of ["/new", "/sessions --last", "/fork"]) {
+  test(`${command} keeps the original busy session and its queued inputs`, { timeout: 30000 }, async (t) => {
+    let release = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const f = await fixture(t, async (_request, index) => {
-      if (index === 0) return { kind: "text", text: "Saved answer." };
-      await gate;
-      return { kind: "text", text: "Interrupted answer." };
+      if (index === 1) await gate;
+      return { kind: "text", text: "Completed answer" };
     });
-    class ClearingUI extends RecordingUI { override clear(): void { this.draftText = ""; } }
-    const { host, ui } = await f.start(new ClearingUI());
+    t.after(() => release());
+    const { host, ui } = await f.start();
     await host.submit("Save original history");
+    const id = ui.statuses.at(-1)?.sessionId; assert.ok(id);
     const run = host.submit("Block this turn");
     await until(() => f.requests.length === 2);
-    await host.submit("Pending steering", "steer");
     await host.submit("Pending follow-up", "follow-up");
-    await host.submit("!echo pending shell");
-    ui.setDraft("Existing draft");
-    try { await host.submit(command); await run; }
-    finally { release(); }
-    assert.equal(ui.draft(), "Existing draft\n\nPending steering\n\nPending follow-up\n\n!echo pending shell");
-    assert.equal(ui.statuses.at(-1)?.state.kind, "idle");
-    assert.deepEqual(ui.statuses.at(-1)?.queued, []);
-    assert.equal(f.requests.length, 2);
-    assert.equal(ui.tools.filter((tool) => tool.name === "shell").length, 0);
-    assert.equal(ui.messages.filter((message) => message.kind === "error").length, 0);
+    ui.setDraft("Original draft");
+    await host.submit(command);
+    if (command !== "/sessions --last") assert.notEqual(ui.statuses.at(-1)?.sessionId, id);
+    await host.submit(`/sessions ${id}`);
+    assert.equal(ui.statuses.at(-1)?.state.kind, "running");
+    assert.equal(ui.draft(), "Original draft");
+    assert.ok(ui.statuses.at(-1)?.queued.some((text) => text.includes("Pending follow-up")));
+    release(); await run;
+    assert.equal(host.outcome, "completed");
+    assert.equal(f.requests.length, 3);
   });
 }
 

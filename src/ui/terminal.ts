@@ -804,6 +804,8 @@ export class TerminalUI implements UserInterface {
     else if (status.state.outcome === "failed") rows.push("Failed");
     else rows.push(status.state.outcome === "completed" ? "Completed" : "Ready");
     if (status.queued.length) rows.push(...status.queued.map((item) => `Queued · ${sanitizeTerminalText(item)}`));
+    const background = status.backgroundSessions?.filter((item) => item.state === "working" || item.state === "needs-you") ?? [];
+    if (background.length) rows.push(`Background · ${background.map((item) => `${sanitizeTerminalText(item.title)} (${item.state === "needs-you" ? "approval needed" : "working"})`).join(" · ")} · Left / /sessions to switch`);
     return rows.flatMap((row) => wrapTextWithAnsi(dim(row), Math.max(1, width - 4)).map((line) => `  ${line}`));
   }
 
@@ -832,7 +834,7 @@ export class TerminalUI implements UserInterface {
 
   private headerLines(width: number): string[] {
     const status = this.currentStatus;
-    const title = `${bold(neutral(">_ ArkCode"))}${status?.viewer ? ` ${dim("Saved session")}` : ""}`;
+    const title = `${bold(neutral(">_ ArkCode"))}${status?.viewer ? ` ${dim("Read-only session")}` : ""}${status?.sessionName ? `  ${dim(sanitizeTerminalText(status.sessionName))}` : ""}`;
     return [`  ${truncateToWidth(title, Math.max(1, width - 4), "")}`, `  ${fg(25, 25, 30)("─".repeat(Math.max(1, width - 4)))}`, ""];
   }
 
@@ -853,6 +855,11 @@ export class TerminalUI implements UserInterface {
 
   private submit(value: string, mode: InputMode): void {
     if (!value.trim() || !this.currentStatus || this.currentStatus.initializing) return;
+    if (this.currentStatus.viewer && !value.trim().startsWith("/")) {
+      this.setDraft(value);
+      this.message("info", "Another terminal owns this session. Use /new, or /sessions after the owner closes.");
+      return;
+    }
     if (!/^\/(?:mcp|tool-mode|web-search)(?:\s|$)/i.test(value.trim())) {
       this.editor.addToHistory(value);
       this.promptHistory.push(value);
@@ -928,7 +935,7 @@ export class TerminalUI implements UserInterface {
       this.submit(this.draft(), "follow-up");
     } else if (matchesKey(data, "shift+left")) {
       this.run(() => this.actions.editPrevious());
-    } else if (matchesKey(data, "left") && this.currentStatus?.state.kind === "idle" && this.editor.focused && !this.draft() && !this.editor.isShowingAutocomplete()) {
+    } else if (matchesKey(data, "left") && this.editor.focused && !this.draft() && !this.editor.isShowingAutocomplete()) {
       this.run(() => this.actions.browseSessions());
     } else if (matchesKey(data, "ctrl+t")) {
       this.expanded = !this.expanded;

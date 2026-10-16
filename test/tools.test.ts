@@ -41,6 +41,34 @@ test("Git branch status works without a commit and outside a repository", async 
   } finally { await files.cleanup(); }
 });
 
+test("independent tool sets for overlapping workspaces share Pi's queue for the same file", async () => {
+  const files = await fixture();
+  const child = join(files.cwd, "child");
+  await mkdir(child);
+  const shells = [new ManagedShell(files.cwd), new ManagedShell(child)];
+  try {
+    const sets = [files.cwd, child].map((cwd, index) => createTools({ cwd, shell: shells[index]!, authorize: async () => true }));
+    const call = async (index: number, name: string, params: unknown) => {
+      const tool = sets[index]?.find((tool) => tool.name === name);
+      assert.ok(tool);
+      return executeTool(tool, `session-${index}`, params);
+    };
+    const path = join(child, "shared.txt");
+    await writeFile(path, "alpha=0\nbeta=0\n");
+    await Promise.all([
+      call(0, "Edit", { path: "child/shared.txt", edits: [{ oldText: "alpha=0", newText: "alpha=1" }] }),
+      call(1, "Edit", { path: "shared.txt", edits: [{ oldText: "beta=0", newText: "beta=2" }] }),
+    ]);
+    assert.equal(await readFile(path, "utf8"), "alpha=1\nbeta=2\n");
+    const conflicting = await Promise.allSettled([
+      call(0, "Edit", { path: "child/shared.txt", edits: [{ oldText: "alpha=1", newText: "alpha=3" }] }),
+      call(1, "Edit", { path: "shared.txt", edits: [{ oldText: "alpha=1", newText: "alpha=4" }] }),
+    ]);
+    assert.equal(conflicting.filter((item) => item.status === "fulfilled").length, 1);
+    assert.equal(conflicting.filter((item) => item.status === "rejected").length, 1);
+  } finally { await Promise.all(shells.map((shell) => shell.stopAll())); await files.cleanup(); }
+});
+
 test("file tools preserve exact edits and reject duplicate or denied writes", async () => {
   const files = await fixture();
   const shell = new ManagedShell(files.cwd);

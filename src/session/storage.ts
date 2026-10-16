@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import { displayUserText } from "../context/mentions.js";
 
-const leaseSchema = z.object({ pid: z.number().int().positive(), token: z.string().uuid(), cwd: z.string(), createdAt: z.number() });
+const leaseSchema = z.object({ pid: z.number().int().positive(), token: z.string().uuid(), sessionId: z.string(), createdAt: z.number() });
 
 export function processAlive(pid: number): boolean {
   try {
@@ -40,20 +40,19 @@ async function readLease(path: string): Promise<z.infer<typeof leaseSchema> | nu
   }
 }
 
-export class WorkspaceLease {
+export class SessionLease {
   private released = false;
   private constructor(
     readonly viewer: boolean,
-    readonly canonicalCwd: string,
+    readonly sessionId: string,
     private readonly path: string,
     private readonly token: string,
     readonly viewerReason: string | null = null,
   ) {}
 
-  static async acquire(cwd: string, _home: string): Promise<WorkspaceLease> {
-    const canonicalCwd = await realpath(resolve(cwd));
-    const identity = process.platform === "win32" ? canonicalCwd.toLowerCase() : canonicalCwd;
-    const directory = join(tmpdir(), "arkcode-workspace-locks");
+  static async acquire(sessionId: string): Promise<SessionLease> {
+    const identity = sessionId;
+    const directory = join(tmpdir(), "arkcode-session-locks");
     await mkdir(directory, { recursive: true });
     const path = join(directory, `${createHash("sha256").update(identity).digest("hex")}.json`);
     const token = randomUUID();
@@ -66,7 +65,7 @@ export class WorkspaceLease {
         throw error;
       }
       try {
-        await descriptor.writeFile(JSON.stringify({ pid: process.pid, token, cwd: canonicalCwd, createdAt: Date.now() }));
+        await descriptor.writeFile(JSON.stringify({ pid: process.pid, token, sessionId, createdAt: Date.now() }));
         await descriptor.sync();
       } catch (error) {
         await descriptor.close();
@@ -76,28 +75,28 @@ export class WorkspaceLease {
       await descriptor.close();
       return true;
     };
-    if (await take()) return new WorkspaceLease(false, canonicalCwd, path, token);
+    if (await take()) return new SessionLease(false, sessionId, path, token);
     const owner = await readLease(path);
-    if (!owner) return new WorkspaceLease(true, canonicalCwd, path, token,
-      `Workspace ownership is unconfirmed. Inspect ${path} after verifying that no ArkCode process owns this workspace. Incomplete lease files require manual recovery.`);
-    if (processAlive(owner.pid)) return new WorkspaceLease(true, canonicalCwd, path, token);
+    if (!owner) return new SessionLease(true, sessionId, path, token,
+      `Session ownership is unconfirmed. Inspect ${path} after verifying that no ArkCode process owns this session. Incomplete lease files require manual recovery.`);
+    if (processAlive(owner.pid)) return new SessionLease(true, sessionId, path, token);
 
     const recoveryPath = `${path}.recovery`;
     let recovery;
     try {
       recovery = await open(recoveryPath, "wx", 0o600);
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "EEXIST") return new WorkspaceLease(true, canonicalCwd, path, token,
-        `Workspace lock recovery is pending or interrupted. Inspect ${recoveryPath} after verifying that no ArkCode process owns or is recovering this workspace. Orphaned recovery files require manual removal.`);
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") return new SessionLease(true, sessionId, path, token,
+        `Session lock recovery is pending or interrupted. Inspect ${recoveryPath} after verifying that no ArkCode process owns or is recovering this session. Orphaned recovery files require manual removal.`);
       throw error;
     }
     try {
       const current = await readLease(path);
       if (current?.token === owner.token && !processAlive(current.pid)) {
         await unlink(path);
-        if (await take()) return new WorkspaceLease(false, canonicalCwd, path, token);
+        if (await take()) return new SessionLease(false, sessionId, path, token);
       }
-      return new WorkspaceLease(true, canonicalCwd, path, token);
+      return new SessionLease(true, sessionId, path, token);
     } finally {
       await recovery.close();
       await unlink(recoveryPath).catch(() => {});
@@ -241,20 +240,6 @@ function markerPath(home: string, sessionId: string): string {
 export async function readRunMarker(home: string, sessionId: string): Promise<RunMarker | null> {
   try { return runMarkerSchema.parse(JSON.parse(await readFile(markerPath(home, sessionId), "utf8"))); }
   catch (error) { if (missing(error)) return null; throw error; }
-}
-
-export async function hasActiveWorkspaceRun(home: string, cwd: string): Promise<boolean> {
-  const directory = join(home, "runs");
-  let files: string[];
-  try { files = await readdir(directory); }
-  catch (error) { if (missing(error)) return false; throw error; }
-  const normalize = (path: string) => process.platform === "win32" ? path.toLowerCase() : path;
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-    const marker = runMarkerSchema.parse(JSON.parse(await readFile(join(directory, file), "utf8")));
-    if (marker.status === "active" && marker.cwd && normalize(marker.cwd) === normalize(cwd)) return true;
-  }
-  return false;
 }
 
 export async function writeRunMarker(home: string, sessionId: string, marker: RunMarker): Promise<void> {
