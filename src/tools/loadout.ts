@@ -23,7 +23,7 @@ export function createToolLoadout(options: {
       },
     };
     createCodemodeExtension({ mode: "on", models: false })(discoveryApi);
-    createToolSearchExtension()({ ...discoveryApi, getAllTools: () => pi.getAllTools().filter((tool) => !TOOL_NAMES.includes(tool.name)) });
+    createToolSearchExtension()({ ...discoveryApi, getAllTools: () => pi.getAllTools().filter((tool) => ![...TOOL_NAMES, "WebSearch"].includes(tool.name)) });
     const register = () => {
       for (const tool of tools) pi.registerTool({ ...tool, exposure: builtinExposure(settings.current.toolMode) });
     };

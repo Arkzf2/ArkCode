@@ -24,6 +24,9 @@ export class WorkspaceAutocompleteProvider implements AutocompleteProvider {
     this.commands = new CombinedAutocompleteProvider(slashCommands.map((command) => command.name === "tool-mode" ? {
       ...command, getArgumentCompletions: (prefix: string) => toolModeSchema.options.filter((value) => value.startsWith(prefix))
         .map((value) => ({ value, label: value })),
+    } : command.name === "web-search" ? {
+      ...command, getArgumentCompletions: (prefix: string) => ["status", "check", "on", "off"].filter((value) => value.startsWith(prefix))
+        .map((value) => ({ value, label: value })),
     } : command.name !== "mcp" ? command : {
       ...command,
       getArgumentCompletions: (prefix: string) => {

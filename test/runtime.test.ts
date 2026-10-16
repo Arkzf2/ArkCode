@@ -1208,7 +1208,7 @@ test("removed commands are rejected without running the agent, while @ reference
   const f = await fixture(t, () => ({ kind: "text", text: "File reference received." }));
   const { host, ui } = await f.start();
   await host.submit("/help");
-  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /tool-mode /mcp /status /new /resume /rename /fork /compact /copy /init /exit");
+  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /tool-mode /web-search /mcp /status /new /resume /rename /fork /compact /copy /init /exit");
   for (const command of ["diff", "review", "ps", "theme", "statusline", "stop", "quit", "mention", "clear"]) {
     await host.submit(`/${command}`);
     assert.deepEqual(ui.messages.at(-1), { kind: "error", text: `Unknown command /${command}. Use /help.` });

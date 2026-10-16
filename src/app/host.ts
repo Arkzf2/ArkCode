@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { ApprovalBroker } from "../permissions/approval.js";
 import { McpManager } from "../integrations/mcp/manager.js";
+import { WebSearchService, createWebSearchExtension, searchResultText } from "../integrations/web-search.js";
 import { browseMcp } from "../ui/mcp.js";
 import { browseToolMode } from "../ui/tool-mode.js";
 import { toolModeSchema, type ToolMode } from "../tools/mode.js";
@@ -40,7 +41,7 @@ export function contentText(content: unknown): string {
 }
 
 const unsupported = new Set(["goal", "agent", "plugins", "memories", "plan", "cloud"]);
-const toolTargetSchema = z.object({ path: z.string().optional(), command: z.string().optional(), pattern: z.string().optional() });
+const toolTargetSchema = z.object({ path: z.string().optional(), command: z.string().optional(), pattern: z.string().optional(), query: z.string().optional() });
 const toolResultSchema = z.object({ exitCode: z.number().nullable().optional(), diff: z.string().optional() });
 const shellHistorySchema = z.object({ id: z.string(), command: z.string(), exitCode: z.number().nullable(), status: z.enum(["running", "completed", "failed", "cancelled"]), output: z.string() });
 
@@ -48,7 +49,7 @@ function toolDetails(args: unknown, name = ""): ToolDetails | undefined {
   if (name.startsWith("mcp__")) return { target: cleanOutput(name) };
   const result = toolTargetSchema.safeParse(args);
   if (!result.success) return undefined;
-  const target = result.data.command ?? result.data.path ?? result.data.pattern;
+  const target = result.data.command ?? result.data.path ?? result.data.pattern ?? result.data.query;
   return target ? { target: cleanOutput(target) } : undefined;
 }
 
@@ -62,6 +63,7 @@ function toolResultDetails(value: unknown): ToolDetails | undefined {
 export class ArkHost {
   private config: ArkConfig;
   private runtime: ModelRuntime | null = null;
+  private webSearch: WebSearchService | null = null;
   private session: AgentSession | null = null;
   private mcp: McpManager | null = null;
   private mcpPanelOpen = false;
@@ -75,6 +77,7 @@ export class ArkHost {
   private broker: ApprovalBroker;
   private unsubscribe: (() => void) | null = null;
   private active: Promise<void> | null = null;
+  private operationAbort: AbortController | null = null;
   private closing = false;
   private initializing = true;
   private failure = false;
@@ -121,6 +124,7 @@ export class ArkHost {
     }
     if (!this.trusted && !this.options.permission) this.permission = "always-ask";
     this.runtime = await createModelRuntime(this.home);
+    this.webSearch = new WebSearchService(this.runtime);
     if (this.closing) return;
     if (!this.lease.viewer) {
       if (await hasActiveWorkspaceRun(this.home, this.cwd)) {
@@ -195,6 +199,8 @@ export class ArkHost {
   }): Promise<void> {
     const runtime = this.runtime;
     if (!runtime) throw new Error("Model runtime is not initialized.");
+    const webSearch = this.webSearch;
+    if (!webSearch) throw new Error("Web Search is not initialized.");
     const cwd = target?.cwd ?? this.cwd;
     const lease = target?.lease ?? this.lease;
     const shell = target?.shell ?? this.shell;
@@ -238,6 +244,9 @@ export class ArkHost {
           tools: createTools({ cwd, shell, outputFiles, authorize: (request) => this.authorizeTool(request) }),
           resetApprovals: () => this.broker.reset(),
         }) },
+        { name: "arkcode-web-search", hidden: true, factory: createWebSearchExtension({ service: webSearch, settings: toolSettings,
+          enabled: () => loadConfig(this.home).webSearch, cwd, authorize: (request) => this.authorizeTool(request),
+        }) },
         { name: "arkcode-mcp", hidden: true, factory: mcp.extension }],
     });
     await extensionLoader.reload();
@@ -251,7 +260,7 @@ export class ArkHost {
         cacheWarming: "off",
       }),
       resourceLoader: createResources(extensionLoader.getExtensions()),
-      tools: [...TOOL_NAMES, "codemode", "tool_search", "mcp__*"],
+      tools: [...TOOL_NAMES, "WebSearch", "codemode", "tool_search", "mcp__*"],
     });
     installDynamicContext(session, { cwd, home: this.home, shell: shell.executable, trusted, projectDocMaxBytes: this.config.projectDocMaxBytes,
       onWarning: (message) => this.ui.message("info", cleanOutput(message)),
@@ -497,6 +506,7 @@ export class ArkHost {
   async interrupt(): Promise<void> {
     if (this.state.kind === "idle") { this.broker.cancel(); return; }
     this.interrupted = true;
+    this.operationAbort?.abort();
     this.state = { kind: "stopping", id: this.state.id, startedAt: this.state.startedAt };
     this.broker.cancel();
     const queue = this.session?.clearQueue();
@@ -657,7 +667,7 @@ export class ArkHost {
     if (!session || !runtime) throw new Error("Session not initialized.");
     const safeCommands = new Set(["help", "status", "copy", "exit", "resume", "mcp"]);
     if (this.lease?.viewer && !safeCommands.has(name)) throw new Error("Read-only viewer. Session mutations are disabled.");
-    const idleCommands = new Set(["new", "resume", "fork", "compact", "init", "connect", "tool-mode"]);
+    const idleCommands = new Set(["new", "resume", "fork", "compact", "init", "connect", "tool-mode", "web-search"]);
     if (this.state.kind !== "idle" && idleCommands.has(name)) {
       if (!["resume", "fork", "new"].includes(name)) throw new Error("Wait until the current run finishes.");
       await this.interrupt();
@@ -666,6 +676,26 @@ export class ArkHost {
       case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Left opens sessions from the empty idle composer. Ctrl+C interrupts or exits when idle. Esc interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
       case "status": this.ui.message("info", `Permissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
       case "mcp": await this.manageMcp(args); break;
+      case "web-search": {
+        const service = this.webSearch;
+        const model = session.model;
+        if (!service || !model) throw new Error("Select a model before using Web Search.");
+        const action = argument || "status";
+        if (action === "on" || action === "off") {
+          this.config = { ...loadConfig(this.home), webSearch: action === "on" };
+          saveConfig(this.home, this.config);
+          this.ui.message("info", `Web Search ${action === "on" ? "enabled" : "disabled"}. Applies to the next prompt.`);
+        } else if (action === "status") this.ui.message("info", `Web Search: ${loadConfig(this.home).webSearch ? "enabled" : "disabled"}\n${model.provider}/${model.id}\n${await service.status(model)}`);
+        else if (action === "check") {
+          if (!loadConfig(this.home).webSearch) throw new Error("Enable Web Search with /web-search on first.");
+          if (this.executionUnconfirmed || this.storageFailed) throw new Error("Execution is blocked. Resolve the session recovery or storage error before testing Web Search.");
+          await this.runOperation(async (signal) => {
+            const result = await service.search(model, "Search for the OpenAI official homepage and return its title and URL.", { refresh: true, signal });
+            this.ui.message("info", `Web Search verified for ${model.provider}/${model.id}.\n${searchResultText(result)}`);
+          });
+        } else throw new Error("Usage: /web-search [status|check|on|off]. Check performs a real provider search.");
+        break;
+      }
       case "tool-mode": {
         const settings = this.toolSettings;
         if (!settings) throw new Error("Tool settings are not initialized.");
@@ -802,14 +832,17 @@ export class ArkHost {
     });
     if (!this.closing) await this.ui.inspect("MCP status", mcp.statusText());
   }
-  private async runOperation(operation: () => Promise<unknown>): Promise<void> {
+  private async runOperation(operation: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
     this.interrupted = false;
     this.failure = false;
+    const controller = new AbortController();
+    this.operationAbort = controller;
     const id = randomUUID(); this.state = { kind: "running", id, startedAt: Date.now() }; this.refreshStatus();
     const work = (async () => {
-      try { await operation(); }
-      catch (error) { this.failure = true; throw error; }
+      try { await operation(controller.signal); }
+      catch (error) { if (!this.interrupted) { this.failure = true; throw error; } }
       finally {
+        if (this.operationAbort === controller) this.operationAbort = null;
         this.state = { kind: "idle", outcome: this.interrupted ? "interrupted" : this.failure ? "failed" : "completed" };
         this.active = null;
         this.refreshStatus();

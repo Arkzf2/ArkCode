@@ -4,6 +4,7 @@ export const slashCommands = [
   { name: "connect", description: "Configure a provider" },
   { name: "permissions", description: "Choose tool permissions" },
   { name: "tool-mode", description: "Choose how built-in tools are called" },
+  { name: "web-search", description: "Inspect, test, or enable provider Web Search" },
   { name: "mcp", description: "Manage MCP servers and tools" },
   { name: "status", description: "Session and runtime status" },
   { name: "new", description: "Start a new session" },

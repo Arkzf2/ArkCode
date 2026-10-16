@@ -22,6 +22,7 @@ export const arkConfigSchema = z.object({
   thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).default("medium"),
   permission: configuredPermissionSchema.default("always-ask"),
   toolMode: toolModeSchema.default("codemode"),
+  webSearch: z.boolean().default(true),
   trustedWorkspaces: z.array(z.string().min(1)).default([]),
   projectDocMaxBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(32 * 1024),
 }).strict();
