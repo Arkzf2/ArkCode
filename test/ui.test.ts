@@ -9,6 +9,9 @@ import { test } from "node:test";
 import { stripTerminalSequences, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 import type { SessionBrowserResult, SessionItem, Status, UiActions } from "../src/app/types.js";
 import { sanitizeTerminalText, TerminalUI } from "../src/ui/terminal.js";
+import { ScreenTerminal } from "./terminal-fixture.js";
+import { browseSkills } from "../src/ui/skills.js";
+import { SkillsManager } from "../src/integrations/skills.js";
 
 class MemoryTerminal implements Terminal {
   output = "";
@@ -32,6 +35,80 @@ class MemoryTerminal implements Terminal {
   press(data: string): void { this.onInput?.(data); }
   text(): string { return stripTerminalSequences(this.output); }
 }
+
+test("Skill toggles retain the Prism colors, save in place, filter, and keep old state on failure", async (t) => {
+  const terminal = new ScreenTerminal(100, 30);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle); ui.start(); ui.setDraft("Preserved draft");
+  let enabled = true;
+  let fail = false;
+  const item = () => ({ value: "/skills/review/SKILL.md", label: "review", description: "user · Review a change", detail: "/skills/review/SKILL.md", enabled });
+  const panel = ui.toggleList("Enable/Disable Skills", [item()], async () => {
+    if (fail) throw new Error("Cannot save Skill preferences.");
+    enabled = !enabled; return [item()];
+  });
+  await terminal.flush();
+  assert.equal(terminal.foreground("Enable/Disable Skills"), 0xc7b7a4);
+  assert.equal(terminal.foreground("review"), 0xb8b2d5);
+  assert.equal(terminal.foreground("[x]"), 0x92bda0);
+  assert.equal(terminal.foreground("user ·"), 0xa7bcc0);
+  terminal.press(" "); await terminal.flush();
+  assert.equal(enabled, false); assert.equal(terminal.foreground("[ ]"), 0x696a72);
+  fail = true; terminal.press("\r"); await terminal.flush();
+  assert.equal(enabled, false); assert.match(terminal.text(), /Cannot save Skill preferences/);
+  terminal.press("missing"); await terminal.flush(); assert.match(terminal.text(), /No matching Skills/);
+  terminal.press("\x15"); await terminal.flush(); assert.match(terminal.text(), /review/);
+  terminal.press("\x1b"); await panel; await terminal.flush();
+  assert.equal(ui.draft(), "Preserved draft"); assert.doesNotMatch(terminal.text(), /Enable\/Disable Skills/);
+});
+
+test("@ selects a purple Skill without submitting and follows Skills for the current session", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "arkcode-skill-composer-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const terminal = new ScreenTerminal(110, 30);
+  const submitted: string[] = [];
+  const ui = new TerminalUI({ ...inertActions, async submit(text) { submitted.push(text); } }, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, cwd, skills: [{ name: "review", description: "Inspect a patch", scope: "project" }] }); ui.start();
+  terminal.press("@"); await setTimeout(140); await terminal.flush();
+  assert.match(terminal.text(), /Skill · review/);
+  assert.equal(terminal.foreground("Skill · review"), 0xb8b2d5);
+  terminal.press("\t"); await terminal.flush();
+  assert.equal(ui.draft(), "@skill:review "); assert.deepEqual(submitted, []);
+  ui.setDraft(""); ui.status({ ...idle, cwd, skills: [{ name: "audit", description: "Inspect another workspace", scope: "user" }] });
+  terminal.press("@"); await setTimeout(140); await terminal.flush();
+  assert.match(terminal.text(), /Skill · audit/); assert.doesNotMatch(terminal.text(), /Skill · review/);
+});
+
+test("Skills menu manages real preferences and returns a selected Skill to the draft after resize", { timeout: 15000 }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "arkcode-skills-menu-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, ".agents", "skills", "review"); await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "SKILL.md"), "---\nname: review\ndescription: Inspect changes.\n---\nReview body.");
+  const skills = new SkillsManager({ home: join(root, "config"), cwd: root, userHome: root, trusted: false });
+  const terminal = new ScreenTerminal(100, 30);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, cwd: root }); ui.start(); ui.setDraft("Inspect this");
+  const panel = browseSkills({ ui, skills, active: () => true, canManage: () => true, changed() {} });
+  await terminal.flush(); assert.match(terminal.text(), /List skills/);
+  terminal.press("\x1b[B"); terminal.press("\r"); await terminal.flush();
+  assert.match(terminal.text(), /Enable\/Disable Skills/);
+  terminal.resize(40, 24); await terminal.flush();
+  assert.match(terminal.text(), /Enable\/Disable Skills/);
+  assert.match(terminal.text(), /Space\/Enter toggle/);
+  terminal.press(" "); await terminal.flush(); assert.equal(skills.available.length, 0);
+  terminal.press(" "); await terminal.flush(); assert.equal(skills.available[0]?.name, "review");
+  terminal.press("\x1b"); await terminal.flush();
+  terminal.press("\r"); await terminal.flush();
+  assert.match(terminal.text(), /List skills/);
+  await setTimeout(310);
+  terminal.press("\r"); await panel; await terminal.flush();
+  assert.equal(ui.draft(), "Inspect this @skill:review ");
+  assert.doesNotMatch(terminal.text(), /Enable\/Disable Skills|List skills/);
+  assert.equal(new SkillsManager({ home: join(root, "config"), cwd: root, userHome: root, trusted: false }).available[0]?.name, "review");
+});
 
 const idle: Status = {
   model: "deepseek/deepseek-chat",

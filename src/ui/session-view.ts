@@ -1,4 +1,4 @@
-import type { ApprovalRequest, Choice, ChoiceOptions, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../app/types.js";
+import type { ApprovalRequest, Choice, ChoiceOptions, SessionDetails, SessionItem, Status, ToolDetails, ToggleChoice, UserInterface } from "../app/types.js";
 
 type ViewEntry =
   | { kind: "message"; args: Parameters<UserInterface["message"]> }
@@ -88,6 +88,11 @@ export class SessionView implements UserInterface {
     return cancelled;
   }
   choose(title: string, choices: Choice[], options?: ChoiceOptions): Promise<string | null> { return this.interact(() => this.ui.choose(title, choices, options), null); }
+  toggleList(title: string, items: ToggleChoice[], toggle: (value: string) => Promise<ToggleChoice[]>): Promise<void> {
+    const show = this.ui.toggleList?.bind(this.ui);
+    let current = items;
+    return show ? this.interact(() => show(title, current, async (value) => { current = await toggle(value); return current; }), undefined) : Promise.resolve();
+  }
   inspect(title: string, text: string): Promise<void> { return this.interact(() => this.ui.inspect(title, text), undefined); }
   input(title: string, initial?: string): Promise<string | null> { return this.interact(() => this.ui.input(title, initial), null); }
   secret(title: string): Promise<string | null> { return this.interact(() => this.ui.secret(title), null); }

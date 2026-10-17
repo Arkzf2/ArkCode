@@ -10,6 +10,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { ApprovalBroker } from "../permissions/approval.js";
 import { McpManager } from "../integrations/mcp/manager.js";
+import { SkillsManager } from "../integrations/skills.js";
+import { browseSkills } from "../ui/skills.js";
 import { WebSearchService, createWebSearchExtension, searchResultText } from "../integrations/web-search.js";
 import { browseMcp } from "../ui/mcp.js";
 import { browseToolMode } from "../ui/tool-mode.js";
@@ -66,6 +68,7 @@ export class SessionRuntime {
   private webSearch: WebSearchService | null = null;
   private session: AgentSession | null = null;
   private mcp: McpManager | null = null;
+  private skills: SkillsManager | null = null;
   private mcpPanelOpen = false;
   private manager: SessionManager | null = null;
   private toolSettings: SessionToolSettings | null = null;
@@ -96,7 +99,7 @@ export class SessionRuntime {
   readonly home: string;
   cwd: string;
 
-  constructor(readonly options: CliOptions, private ui: UserInterface, private navigate: { cancelTrust: boolean; open: (manager: SessionManager, draft?: string) => Promise<void> }) {
+  constructor(readonly options: CliOptions, private ui: UserInterface, private navigate: { cancelTrust: boolean; open: (manager: SessionManager, draft?: string) => Promise<void> }, private userHome?: string) {
     this.home = options.home;
     this.cwd = options.cwd;
     this.config = loadConfig(this.home);
@@ -114,8 +117,8 @@ export class SessionRuntime {
     this.trusted = this.config.trustedWorkspaces.some((path) => this.samePath(path, this.cwd));
     if (!this.trusted && !this.options.print && !this.options.trust) {
       const choice = await this.ui.choose(`Trust workspace ${this.cwd}?`, [
-        { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md and project MCP servers, which can start local processes. Tool approval follows the selected mode." },
-        { value: "continue", label: "Continue without project configuration", description: "Skip project AGENTS.md and MCP servers; default to Always Ask." },
+        { value: "trust", label: "Trust this workspace", description: "Load AGENTS.md, project Skills, and MCP servers, which can start local processes. Tool approval follows the selected mode." },
+        { value: "continue", label: "Continue without project configuration", description: "Skip project AGENTS.md, Skills, and MCP servers; default to Always Ask." },
       ]);
       if (choice === null && this.navigate.cancelTrust) throw new Error("Workspace trust cancelled.");
       if (choice === "trust") this.options.trust = true;
@@ -188,6 +191,7 @@ export class SessionRuntime {
       executionBlocked: this.executionUnconfirmed || this.storageFailed,
       initializing: this.initializing,
       mcpServers: this.mcp?.statuses.map(({ entry }) => entry.name) ?? [],
+      skills: this.skills?.available.map(({ name, description, scope }) => ({ name, description, scope })) ?? [],
     });
   }
   private async initializeSession(manager: SessionManager, initial: boolean): Promise<void> {
@@ -224,21 +228,23 @@ export class SessionRuntime {
       authorize: (request) => this.authorizeTool(request), warning: (message) => { if (!this.mcpPanelOpen) this.ui.message("error", cleanOutput(message)); },
     });
     const outputFiles = new ToolOutputFiles();
+    const skills = new SkillsManager({ home: this.home, cwd, trusted, userHome: this.userHome });
     const extensionLoader = new DefaultResourceLoader({
-      cwd, agentDir: this.home, settingsManager: SettingsManager.inMemory({}),
+      cwd, agentDir: this.home, settingsManager: SettingsManager.inMemory({}, { projectTrusted: false }),
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       extensionFactories: [{ name: "arkcode-file-tracking", hidden: true, factory: compactionTracking },
         { name: "arkcode-tool-output", hidden: true, factory: (pi) => {
           pi.on("tool_result", async (event) => { await outputFiles.capture(event.toolName, event.details); });
         } },
         { name: "arkcode-tool-loadout", hidden: true, factory: createToolLoadout({ settings: toolSettings, mcp,
-          tools: createTools({ cwd, shell, outputFiles, authorize: (request) => this.authorizeTool(request) }),
+          tools: createTools({ cwd, shell, outputFiles, skills, authorize: (request) => this.authorizeTool(request) }),
           resetApprovals: () => this.broker.reset(),
         }) },
         { name: "arkcode-web-search", hidden: true, factory: createWebSearchExtension({ service: webSearch, settings: toolSettings,
           enabled: () => loadConfig(this.home).webSearch, cwd, authorize: (request) => this.authorizeTool(request),
         }) },
-        { name: "arkcode-mcp", hidden: true, factory: mcp.extension }],
+        { name: "arkcode-mcp", hidden: true, factory: mcp.extension },
+        { name: "arkcode-skills", hidden: true, factory: skills.extension }],
     });
     await extensionLoader.reload();
     if (extensionLoader.getExtensions().errors.length) throw new Error("Cannot initialize ArkCode extensions.");
@@ -250,7 +256,7 @@ export class SessionRuntime {
         defaultThinkingLevel: this.config.thinking, retry: { enabled: true, maxRetries: 2 }, compaction: { enabled: true },
         cacheWarming: "off",
       }),
-      resourceLoader: createResources(extensionLoader.getExtensions()),
+      resourceLoader: createResources(extensionLoader.getExtensions(), () => skills.resources),
       tools: [...TOOL_NAMES, "WebSearch", "codemode", "tool_search", "mcp__*"],
     });
     installDynamicContext(session, { cwd, home: this.home, shell: shell.executable, trusted, projectDocMaxBytes: this.config.projectDocMaxBytes,
@@ -266,6 +272,7 @@ export class SessionRuntime {
     this.toolSettings = toolSettings;
     this.session = session;
     this.mcp = mcp;
+    this.skills = skills;
     this.unsubscribe = session.subscribe((event) => this.event(event));
     this.lastAnswer = "";
     this.state = { kind: "idle", outcome: null };
@@ -381,7 +388,7 @@ export class SessionRuntime {
       case "tool_execution_start": this.ui.tool(event.toolCallId, event.toolName, "", "running", toolDetails(event.args, event.toolName)); break;
       case "tool_execution_update": this.ui.tool(event.toolCallId, event.toolName, contentText(event.partialResult.content), "running"); break;
       case "tool_execution_end": this.ui.tool(event.toolCallId, event.toolName, contentText(event.result.content), event.isError ? "error" : "done", toolResultDetails(event.result.details)); break;
-      case "queue_update": this.queued = [...event.steering.map((text) => `Instruction pending: ${text}`), ...event.followUp.map((text) => `Queued follow-up: ${text}`)]; break;
+      case "queue_update": this.queued = [...event.steering.map((text) => `Instruction pending: ${displayUserText(text)}`), ...event.followUp.map((text) => `Queued follow-up: ${displayUserText(text)}`)]; break;
       case "auto_retry_start": this.ui.message("info", `Retry ${event.attempt}/${event.maxAttempts}. ${cleanOutput(event.errorMessage)}`); break;
       case "auto_retry_end": if (!event.success && event.finalError) { this.failure = true; this.ui.message("error", cleanOutput(event.finalError)); } else if (event.success) this.failure = false; break;
       case "compaction_start": this.ui.message("info", "Compacting conversation..."); break;
@@ -396,18 +403,21 @@ export class SessionRuntime {
     text = text.trim();
     if (!text) return;
     try {
-      if (text.startsWith("/")) { await this.command(text); return; }
+      if (text.startsWith("/") && !text.startsWith("/skill:")) { await this.command(text); return; }
       if (this.lease?.viewer) throw new Error("Read-only viewer cannot run an agent or modify a session.");
       if (this.storageFailed) throw new Error("History not saved. Restart after resolving the storage error.");
       const session = this.session;
       if (!session?.model) throw new Error("No model configured. Use /connect or /model.");
       if (this.state.kind === "stopping") throw new Error("Stopping. Wait for process cleanup.");
+      this.skills?.refresh();
+      this.refreshStatus();
       if (this.state.kind !== "idle") {
         if (text.startsWith("!")) {
           this.localQueue.push(text); this.refreshStatus(); return;
         }
         const prepared = await prepareMentions(text, this.cwd, session.model.input.includes("image"));
-        if (mode === "follow-up") await session.followUp(prepared.text, prepared.images); else await session.steer(prepared.text, prepared.images);
+        const expanded = await this.skills?.prepare(prepared.text) ?? prepared.text;
+        if (mode === "follow-up") await session.followUp(expanded, prepared.images); else await session.steer(expanded, prepared.images);
         this.refreshStatus(); return;
       }
       await this.run(text);
@@ -435,7 +445,9 @@ export class SessionRuntime {
           try { prompt = await prepareMentions(text, this.cwd, session.model?.input.includes("image") ?? false); }
           catch (error) { this.ui.message("user", text); throw error; }
           if (this.interrupted) return;
-          await session.prompt(prompt.text, { images: prompt.images });
+          const expanded = await this.skills?.prepare(prompt.text) ?? prompt.text;
+          if (this.interrupted) return;
+          await session.prompt(expanded, { images: prompt.images });
         }
         await session.waitForIdle();
         while (!this.interrupted && this.localQueue.length) {
@@ -489,7 +501,7 @@ export class SessionRuntime {
     const queue = this.session?.clearQueue();
     const returned = [...(queue?.steering ?? []), ...(queue?.followUp ?? []), ...this.localQueue];
     this.localQueue = [];
-    if (returned.length) this.ui.setDraft([this.ui.draft(), ...returned].filter(Boolean).join("\n\n"));
+    if (returned.length) this.ui.setDraft([this.ui.draft(), ...returned.map(displayUserText)].filter(Boolean).join("\n\n"));
     this.queued = [];
     this.refreshStatus();
     await Promise.all([this.session?.abort(), this.shell.stopAll(), this.mcp?.cancelConnecting()]);
@@ -564,7 +576,7 @@ export class SessionRuntime {
       const text = queue.followUp.pop() ?? queue.steering.pop();
       for (const item of queue.steering) await session.steer(item);
       for (const item of queue.followUp) await session.followUp(item);
-      if (text) this.ui.setDraft(text);
+      if (text) this.ui.setDraft(displayUserText(text));
       return;
     }
     const prompt = [...(this.manager?.getBranch() ?? [])].reverse().find((entry) => entry.type === "message" && entry.message.role === "user");
@@ -585,7 +597,7 @@ export class SessionRuntime {
     const session = this.session;
     const runtime = this.runtime;
     if (!session || !runtime) throw new Error("Session not initialized.");
-    const safeCommands = new Set(["help", "status", "copy", "exit", "sessions", "mcp"]);
+    const safeCommands = new Set(["help", "status", "copy", "exit", "sessions", "mcp", "skills"]);
     if (this.lease?.viewer && !safeCommands.has(name)) throw new Error("Read-only viewer. Session mutations are disabled.");
     const idleCommands = new Set(["compact", "init", "connect", "tool-mode", "web-search"]);
     if (this.state.kind !== "idle" && idleCommands.has(name)) throw new Error("Wait until the current run finishes.");
@@ -593,6 +605,7 @@ export class SessionRuntime {
       case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Left opens sessions from the empty composer. Switching sessions leaves other runs active. Ctrl+C interrupts or exits when idle. Esc interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
       case "status": this.ui.message("info", `Permissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
       case "mcp": await this.manageMcp(args); break;
+      case "skills": await this.manageSkills(args); break;
       case "web-search": {
         const service = this.webSearch;
         const model = session.model;
@@ -671,6 +684,33 @@ export class SessionRuntime {
       case "exit": await this.exit(); break;
       default: this.ui.setDraft(text); throw new Error(`Unknown command /${name}. Use /help.`);
     }
+    this.refreshStatus();
+  }
+  refreshSkills(): void { this.skills?.refresh(); this.refreshStatus(); }
+  private canManageSkills(): boolean {
+    return !this.closing && !this.lease?.viewer && !this.storageFailed && !this.executionUnconfirmed && this.state.kind === "idle"
+      && !this.session?.getSteeringMessages().length && !this.session?.getFollowUpMessages().length;
+  }
+  private async manageSkills(args: string[]): Promise<void> {
+    const skills = this.skills;
+    if (!skills) throw new Error("Skills are not initialized.");
+    skills.refresh();
+    const [action, ...selector] = args;
+    if (!action && !this.options.print) {
+      await browseSkills({ ui: this.ui, skills, active: () => !this.closing && this.skills === skills,
+        canManage: () => this.canManageSkills(), changed: () => this.refreshStatus() });
+    } else if (!action || action === "list") {
+      if (selector.length) throw new Error("Use /skills list without arguments.");
+      await this.ui.inspect("Skills", skills.statusText());
+    } else if (action === "reload" && !selector.length) {
+      if (!this.canManageSkills()) throw new Error("Wait until the current run finishes. Read-only sessions cannot change Skills.");
+      skills.reload();
+      this.ui.message("info", "Skill sources reloaded. Applies to the next input.");
+    } else if ((action === "enable" || action === "disable") && selector.length) {
+      if (!this.canManageSkills()) throw new Error("Wait until the current run finishes. Read-only sessions cannot change Skills.");
+      skills.setEnabled(selector.join(" "), action === "enable");
+      this.ui.message("info", `Skill ${action === "enable" ? "enabled" : "disabled"}. Applies to new inputs; previously loaded history is retained.`);
+    } else throw new Error("Usage: /skills [list|reload|enable <name or path>|disable <name or path>]. Use @ to search Skills or /skill:name to invoke one.");
     this.refreshStatus();
   }
   private async manageMcp(args: string[]): Promise<void> {

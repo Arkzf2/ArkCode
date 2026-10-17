@@ -1,6 +1,6 @@
 # ArkCode 静态与动态上下文机制
 
-本文记录当前实现，更新于 2026-10-16。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。
+本文记录当前实现，更新于 2026-10-17。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。
 
 ## 请求由哪些部分组成
 
@@ -11,10 +11,14 @@
 | 工具声明 | 基础工具、CodeMode／搜索入口与 MCP 的名称、描述及参数 schema | 由 Pi 按实际协议序列化 | 模式在新会话／成功 compact 更新；MCP 发现与目录变化按运行时处理；权限切换不改变声明 |
 | 对话历史 | 用户输入、模型回答、工具调用及结果、compact 摘要 | Pi 会话历史的有效投影 | 随对话追加，compact 可改变模型可见的历史 |
 | 动态上下文 | 环境信息、全局 AGENTS.md 及可信项目 AGENTS.md | 内部隐藏 custom 消息，发送前转换为 user role | 每次对话模型请求准备时检查，仅有变化时追加 |
+| Skills 目录 | 已启用且允许自动选择的 Skill 名称、描述与路径 | Pi system prompt 的 skills 段 | 每个 agent run 开始时按当前启停配置重建 |
+| 明确选择的 Skill | `/skill:name` 或 `@skill:name` 对应正文 | 激活说明与 `<skill-loaded>` 块，随用户消息持久化 | 提交或入队时读取快照 |
 
 “静态”指行为文本不随日期、权限模式和 AGENTS.md 改写。当前 SDK 仍会添加 cwd 段，因此不同工作区的完整 system prompt 可以不同。
 
-目前 ArkCode 不自动加载项目 skills、prompt templates、主题或扩展。用于 compact 文件操作跟踪的内置扩展由宿主显式注册。
+Skills 只发现用户及可信项目 `.agents/skills`，默认不将正文加入上下文。宿主复用 Pi 的解析、目录格式与消息接口，使用 Read 按需读取，或在用户明确选择时加载正文。启停后的目录变化会改写下一个 run 的 skills 段，因此该变化可能影响 system prompt 缓存；它没有复用 AGENTS.md 的追加式差量机制。历史正文不会因禁用而删除，当前目录明确取代此前目录。发现层级、读取限制与会话行为见 [Skills 机制](SKILLS.md)。
+
+ArkCode 不加载项目 prompt templates、主题或扩展。用于 compact 文件操作跟踪、Skills 和其他能力的内置扩展由宿主显式注册。
 
 工具策略以 `arkcode-tool-settings` custom entry 保存，不参与模型上下文。resume／fork 读取当前分支的快照。基础工具模式和 MCP exposure 在成功 compact 后一起更新，失败或取消保留旧策略。`arkcode-tool-catalog` 保存可用工具名称，发生停用时追加隐藏的 user-role 通知；执行资格仍由 SDK 路由及宿主执行前检查强制控制。
 

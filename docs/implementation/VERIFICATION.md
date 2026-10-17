@@ -2,6 +2,20 @@
 
 Date: 2026-10-09. Platform: Windows. Node: 24.18.0. Pi SDK: 1.1.0.
 
+## Skills, 2026-10-17
+
+Pi SDK 1.2.0. SkillsManager discovers only user `~/.agents/skills` and trusted Git-root-to-cwd `.agents/skills` sources. The host supplies explicit manifest paths to the public Pi loader with defaults disabled, persists disabled paths in ArkCode's `skills.json`, and refreshes the SDK skills prompt section at the start of a run. Explicit `/skill:name` and `@skill:name` selections use public frontmatter utilities, an activation sentence and `<skill-loaded>` message blocks; the host expands them before queueing to preserve submission-time bodies and support multiple selections.
+
+After the loaded-block prompt change, all seven focused Skill tests passed, along with `npm run check`, `npm run build` and `git diff --check`. The real-session fixture verifies two complete Skill blocks in the provider request, deduplication of repeated mentions, and authored-text-only UI display. The prompt no longer says `Use Read to load Skill files`; it instructs the model to follow loaded instructions directly and load other Skills through the available tool interface. Mixed slash/mention selections, queued snapshots, draft restoration and display of legacy `<skill>` history are covered. These checks verify request contents and host behavior; they do not establish whether a remote model will always avoid redundant reads.
+
+The complete `npm test` run passed 244 tests with zero failures, skips or cancellations. After the final queue-to-draft adjustment, two focused real-session tests passed, including the added Skill queue edit/interrupt regression. Type checking, the production build and compiled CLI version/help checks passed. The full-run log is `.audit/runtime/skills-tests-final.log` and remains ignored.
+
+Real Pi sessions against a loopback model service verify metadata-only catalogs, explicit body loading, manual-only selections, source reload, registered reference reads, disabled invocation rejection, viewer restrictions and queued body snapshots. Filesystem tests verify project/user precedence, same-name path management, persisted disable across manager restarts, untrusted project exclusion, multiple selected Skills and rejection of resource links outside the registered root.
+
+The real TUI renderer and xterm terminal cells verify Prism colors for Skills, sources and enabled/disabled states; immediate toggle saving and failure retention; filtering; adding a selection to an existing draft; resizing to 40 columns; and `@` selection without submission. Existing file completion still completes directories without an added space after coloring. Editing or interrupting a queued Skill request restores only the authored text, rather than its internal instruction blocks.
+
+This validation uses local model fixtures and the actual SDK and TUI renderer. It does not claim a native terminal or remote-model acceptance run for Skills. Disabling does not remove old instructions from history or rewrite queued snapshots. Skill catalogs have no separate total token budget; discovery is bounded and individual manifest/resource reads are limited to 2 MiB. Full behavior and implementation boundaries are documented in [Skills mechanism](../architecture/SKILLS.md).
+
 ## Concurrent sessions, 2026-10-16
 
 Pi SDK 1.2.0. ArkHost retains independent SessionRuntime instances when opening, resuming or forking another session. SessionView buffers each transcript and draft, and waits for focus before displaying a background approval. SessionLease gives one host input and persistence ownership of a session ID across terminals and configuration homes. A second host opens a viewer backed by an in-memory SDK session, polls saved JSONL, and retries ownership only when the user reopens that session.

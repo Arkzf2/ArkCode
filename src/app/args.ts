@@ -58,7 +58,7 @@ Usage: arkcode [options] [prompt]
       --thinking LEVEL    off, minimal, low, medium, high, xhigh, max
       --permissions MODE  always-ask, ask-when-needed, never-ask
       --full-access       Alias for --permissions never-ask
-      --trust             Trust project AGENTS.md and MCP server configuration
+      --trust             Trust project AGENTS.md, Skills, and MCP server configuration
   -p, --print             Run one prompt without a TUI
       --json              Emit JSON events
       --approve           Approve requested actions in print mode
@@ -68,9 +68,10 @@ Usage: arkcode [options] [prompt]
 Six built-in tools remain available in every approval mode; connected MCP tools are exposed dynamically.
 Always Ask allows workspace reading/search and plain ls; other actions and MCP calls need approval.
 Ask When Needed allows ordinary built-in actions; dangerous commands and MCP tools without user auto-approval ask.
-Never Ask runs without tool approval. Untrusted directories skip project AGENTS.md and MCP; user configuration still applies.
+Never Ask runs without tool approval. Untrusted directories skip project AGENTS.md, Skills, and MCP; user configuration still applies.
 Use /connect to configure a Pi provider or custom endpoint.
 Use /mcp to inspect servers and tools, reload configuration, reconnect, or enable/disable servers.
+Use /skills to list or enable/disable Skills from user and project .agents/skills. @ searches files and Skills; @skill:name selects one.
 Use /tool-mode to choose direct, codemode, or codemode-only for built-in tools; changes apply after compact or to new sessions.
 Use /web-search [status|check|on|off] for provider Web Search. Check runs a real search and can incur provider fees.
 Print mode requires --model or a saved default model.

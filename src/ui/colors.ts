@@ -1,0 +1,16 @@
+export const ansi = (code: number) => (text: string): string => `\x1b[${code}m${text}\x1b[0m`;
+export const fg = (red: number, green: number, blue: number) => (text: string): string => `\x1b[38;2;${red};${green};${blue}m${text}\x1b[0m`;
+export const bold = ansi(1);
+export const accent = fg(184, 178, 213);
+export const green = fg(146, 189, 160);
+export const yellow = fg(199, 183, 164);
+export const red = fg(219, 160, 160);
+export const dim = fg(145, 146, 154);
+export const faint = fg(105, 106, 114);
+export const userText = fg(209, 201, 181);
+export const neutral = fg(229, 231, 235);
+export const reasoningText = fg(180, 173, 191);
+export const directoryText = fg(167, 188, 192);
+export const permissionText = fg(203, 189, 152);
+export const branchText = fg(170, 192, 172);
+export const italic = ansi(3);

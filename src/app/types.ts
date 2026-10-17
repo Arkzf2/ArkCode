@@ -23,9 +23,11 @@ export interface Choice {
   value: string;
   label: string;
   description?: string;
+  tone?: "accent" | "directory" | "positive" | "muted";
   status?: { text: string; tone: "positive" | "muted" | "neutral" };
 }
 export interface ChoiceOptions { transient?: boolean; hint?: string; notice?: string; initialValue?: string }
+export interface ToggleChoice { value: string; label: string; description: string; detail: string; enabled: boolean }
 export interface ToolDetails { target?: string; exitCode?: number; diff?: string }
 export type SessionState = "needs-you" | "working" | "ready" | "inactive" | "unconfirmed";
 export interface SessionItem {
@@ -57,6 +59,7 @@ export interface Status {
   executionBlocked?: boolean;
   initializing?: boolean;
   mcpServers?: string[];
+  skills?: Array<{ name: string; description: string; scope: "user" | "project" }>;
 }
 export interface UserInterface {
   status(value: Status): void;
@@ -66,6 +69,7 @@ export interface UserInterface {
   reasoning(id: string, text: string, active: boolean): void;
   tool(id: string, name: string, text: string, state: "running" | "done" | "error", details?: ToolDetails): void;
   choose(title: string, choices: Choice[], options?: ChoiceOptions): Promise<string | null>;
+  toggleList?(title: string, items: ToggleChoice[], toggle: (value: string) => Promise<ToggleChoice[]>): Promise<void>;
   inspect(title: string, text: string): Promise<void>;
   browseSessions?(sessions: SessionItem[], details?: (item: SessionItem) => Promise<SessionDetails>): Promise<SessionBrowserResult | null>;
   input(title: string, initial?: string): Promise<string | null>;

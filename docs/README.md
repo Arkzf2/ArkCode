@@ -4,7 +4,7 @@
 
 | 分类 | 入口 | 内容 |
 | --- | --- | --- |
-| 架构 | [源码结构](architecture/ARCHITECTURE.md)、[上下文机制](architecture/CONTEXT.md) | 当前实现与模块职责 |
+| 架构 | [源码结构](architecture/ARCHITECTURE.md)、[上下文机制](architecture/CONTEXT.md)、[Skills 机制](architecture/SKILLS.md) | 当前实现与模块职责 |
 | 开发 | [Pi SDK 补丁维护](development/PI_SDK_PATCH.md) | 安装校验、宿主接口和 SDK 升级要求 |
 | 实施与验证 | [验收记录](implementation/VERIFICATION.md)、[初期计划](implementation/PLAN.md) | 实施流程、验证结果和已知限制 |
 | SDK 迁移 | [迁移计划](implementation/SDK_MIGRATION.md)、[决策记录](implementation/sdk-migration.tsv) | Pi 1.2.0 迁移过程 |

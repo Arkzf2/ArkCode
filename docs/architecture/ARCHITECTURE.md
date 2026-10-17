@@ -9,6 +9,7 @@ Pi 管理模型请求、agent 循环、历史格式、压缩、MCP 协议和 Cod
 | `src/config/` | 用户设置、模型连接及 SDK 资源装配 |
 | `src/context/` | 静态提示、项目指令、动态上下文、工具停用通知、文件提及与压缩跟踪 |
 | `src/integrations/mcp/` | 配置边界和官方 MCP 扩展的宿主适配 |
+| `src/integrations/skills.ts` | `.agents/skills` 发现、Pi 解析、启停持久化、正文快照与参考文件读取 |
 | `src/permissions/` | 三种权限策略、审批状态和 shell 风险分析 |
 | `src/session/` | session writer 锁、会话检查、运行标记与分支工具策略快照 |
 | `src/tools/index.ts` | 六个 SDK 工具定义的宿主适配 |
@@ -20,10 +21,11 @@ Pi 管理模型请求、agent 循环、历史格式、压缩、MCP 协议和 Cod
 | `src/ui/` | TUI、补全、slash 命令目录及 Git 状态 |
 | `src/ui/mcp.ts` | MCP 临时子菜单、逐级返回和服务操作选择 |
 | `src/ui/tool-mode.ts` | 临时工具模式菜单，显示当前和待生效配置 |
+| `src/ui/skills.ts`、`src/ui/colors.ts` | Skills 临时菜单、复选启停和共用 Prism 配色 |
 | `scripts/pi-sdk-patch/` | 固定版本 SDK 补丁的声明、片段和校验清单 |
 | `test/` | 真实 SDK 会话、本地 HTTP/stdio 服务、文件系统和 shell 回归 |
 
-`ArkHost` 管理多个常驻 `SessionRuntime`，只路由当前会话的输入。每个 runtime 拥有自己的 Pi AgentSession、运行标记、审批、shell、工具设置及 MCP。`SessionView` 保存每个 runtime 的输出和草稿，切换时重放当前视图；后台交互等待聚焦，取消仅影响所属会话。打开会话列表时也暂停当前会话的交互展示，避免审批盖住列表。关闭宿主会停止并清理所有 runtime。
+`ArkHost` 管理多个常驻 `SessionRuntime`，只路由当前会话的输入。每个 runtime 拥有自己的 Pi AgentSession、运行标记、审批、shell、工具设置、SkillsManager 及 MCP。`SessionView` 保存每个 runtime 的输出和草稿，切换时重放当前视图；后台交互等待聚焦，取消仅影响所属会话。打开会话列表时也暂停当前会话的交互展示，避免审批盖住列表。关闭宿主会停止并清理所有 runtime。
 
 `SessionLease` 按 session ID 在系统临时目录独占创建锁文件。独立 session 可在同一目录运行；同一 session 的其他宿主只读，不持久化 SDK 初始化产生的条目，也不连接 MCP。viewer 轮询有效 JSONL，遇到尚未写完的条目等待下一次读取。重新打开会话时重新尝试取得输入权，取得后再读取最新磁盘历史。恢复限制来自该 session 自己的运行标记，不扫描整个 workspace 的活动运行。
 

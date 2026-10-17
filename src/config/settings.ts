@@ -207,11 +207,11 @@ export async function configureConnection(home: string, runtime: ModelRuntime, r
   return model;
 }
 
-export function createResources(hostExtensions?: LoadExtensionsResult): ResourceLoader {
+export function createResources(hostExtensions?: LoadExtensionsResult, skills: ResourceLoader["getSkills"] = () => ({ skills: [], diagnostics: [] })): ResourceLoader {
   const extensions = hostExtensions ?? { extensions: [], errors: [], runtime: createExtensionRuntime() };
   return {
     getExtensions: () => extensions,
-    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getSkills: skills,
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),

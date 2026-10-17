@@ -21,7 +21,7 @@ export class ArkHost {
   private exitTask: Promise<void> | null = null;
   readonly home: string;
 
-  constructor(readonly options: CliOptions, private ui: UserInterface) { this.home = options.home; }
+  constructor(readonly options: CliOptions, private ui: UserInterface, private environment: { userHome?: string } = {}) { this.home = options.home; }
   get cwd(): string { return this.current?.runtime.cwd ?? this.options.cwd; }
   get outcome(): string | null { return this.current?.runtime.outcome ?? null; }
   private samePath(a: string, b: string): boolean { return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b; }
@@ -45,6 +45,7 @@ export class ArkHost {
     this.current?.view.deactivate();
     this.current = entry;
     entry.view.activate();
+    entry.runtime.refreshSkills();
   }
   async start(): Promise<void> {
     await this.open(this.options);
@@ -59,7 +60,7 @@ export class ArkHost {
     const runtime: SessionRuntime = new SessionRuntime(options, view, {
       open: (manager, draft): Promise<void> => this.open({ ...options, command: undefined, target: undefined, last: false, trust: false, cwd: runtime.cwd }, manager, draft),
       cancelTrust: previous !== null && !this.samePath(previous.runtime.cwd, options.cwd),
-    });
+    }, this.environment.userHome);
     const entry = { runtime, view };
     this.opening.add(entry);
     this.focus(entry);

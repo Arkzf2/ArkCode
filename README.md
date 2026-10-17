@@ -22,7 +22,7 @@ arkcode resume <session-id>
 arkcode fork <session-id>
 ```
 
-首次打开目录时选择是否信任。全局配置目录的 `AGENTS.md` 始终加载；信任后加载 Git 根到 workspace 的祖先规则，以及 workspace 内递归发现的 `AGENTS.md`，并允许项目 MCP 配置连接服务器和启动本地进程。没有 Git 根时只加载 workspace 及其子目录。ArkCode 不加载项目扩展、插件或 `.pi` 设置。
+首次打开目录时选择是否信任。全局配置目录的 `AGENTS.md` 和用户 `~/.agents/skills` 始终可用；信任后加载项目 AGENTS.md、`.agents/skills`，并允许项目 MCP 配置连接服务器和启动本地进程。AGENTS.md 覆盖 Git 根到 workspace 的祖先及 workspace 子目录；项目 Skills 仅发现 Git 根到 cwd 各级 `.agents/skills`。没有 Git 根时，Skills 只读取 cwd 下的来源。ArkCode 不加载项目扩展、插件或 `.pi` 设置。
 
 ## 配置模型
 
@@ -52,6 +52,7 @@ arkcode --model local/my-model
 | `models.json` | Pi 格式的模型及端点配置 |
 | `auth.json` | Pi 的凭据存储 |
 | `mcp.json` | 用户级 MCP 服务器、工具过滤及自动批准规则 |
+| `skills.json` | 按实际 manifest 路径保存的 Skill 禁用偏好 |
 | `mcp-auth.json`、`mcp.log` | MCP OAuth 凭据及服务日志，随 `--home` 隔离 |
 | `sessions/` | Pi JSONL 历史，按真实工作区分组 |
 | `runs/` | 运行结束与中断标记，不保存第二份对话 |
@@ -85,6 +86,16 @@ Edit/Write 沿用 Pi 的同文件修改队列。同一进程内不同会话、�
 历史恢复不重放工具、草稿或队列，中断不会回滚文件。恢复某个 session 时发现其 active 运行标记，会显示 Execution unconfirmed，并限制该会话进行文件检查。其他 session 的运行标记不会阻止新会话或正常并发任务。强制结束宿主不保证所有子进程已退出；确认旧命令已结束后，才能手动将对应 `runs/` 标记改为 `interrupted`，补上 `endedAt` 并去掉 `pid`，然后重新打开该会话。
 
 如果宿主在创建或回收 session 锁时崩溃，CLI 可能保持 viewer。启动消息给出残留锁的完整路径。确认没有进程持有或正在恢复该 session 后，才能手动清理残留锁文件。程序不自动清理无法确认归属的锁。
+
+## Skills
+
+用户 Skills 位于 `~/.agents/skills`，项目 Skills 位于 Git 根到当前 cwd 各级 `.agents/skills`。仅发现 `SKILL.md`，不读取 `.pi/skills`、`~/.arkcode/skills` 或普通散装 Markdown。`--home` 和 `ARKCODE_HOME` 只改变 ArkCode 配置位置，不改变用户 Skills 来源。项目来源需要工作区信任。同名时距离 cwd 最近的项目项优先，随后是祖先项目项和用户项；禁用高优先级项后可使用仍启用的同名项。
+
+`/skills` 打开 List skills、Enable/Disable Skills、Reload skills 和来源诊断菜单。List skills 选择后加入草稿，不会直接提交。启停页支持输入过滤、方向键与翻页，Space 或 Enter 切换，Esc／Ctrl+C 返回。更改立即保存到 ArkCode 配置目录的 `skills.json`。Skill 使用紫色，文件与来源使用青色，启用使用绿色，禁用使用灰色，管理标题使用暖黄色。
+
+输入 `@` 搜索文件和已启用 Skill，也可用名称或描述搜索。选择 Skill 后插入 `@skill:name`；输入 `@skill:` 只搜索 Skills。支持在一条消息中选择多个 Skill，也支持 `/skill:name 任务描述`。宿主在提交或入队时读取所选正文并固定快照；普通请求只包含名称、描述和路径，模型按需使用 Read 加载正文及参考文件。`disable-model-invocation: true` 的 Skill 只供用户明确选择。
+
+也可直接使用 `/skills list`、`/skills reload`、`/skills enable <name 或完整 SKILL.md 路径>` 和 `/skills disable <name 或完整 SKILL.md 路径>`。同名项的启停必须使用完整路径。重新扫描和启停要求当前会话空闲且无待消费队列，viewer 只可查看。禁用影响新输入和后续可用目录，历史正文与已入队快照保留。新增目录后用 reload 或打开新会话发现；无需重建 MCP 连接。完整的发现、上下文与读取规则见 [Skills 机制](docs/architecture/SKILLS.md)。
 
 ## MCP
 
@@ -158,7 +169,7 @@ Read、Write、Edit、Grep、Glob、Bash 复用 Pi SDK 工具定义，宿主仅�
 
 ## 操作
 
-Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交付；Tab 排队下一轮。Ctrl+J 或支持该键位的终端中的 Shift+Enter 换行。粘贴不会发送任务或批准工具。输入 `@` 自动列出当前工作区的文件和目录，Tab 补全所选路径；`@path` 和 `@"path with spaces"` 添加文件内容，单个文件最多 128 KiB。
+Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交付；Tab 排队下一轮。Ctrl+J 或支持该键位的终端中的 Shift+Enter 换行。粘贴不会发送任务或批准工具。输入 `@` 自动列出文件、目录和已启用 Skill，Tab 补全所选项。`@path` 和 `@"path with spaces"` 保留文件路径供模型通过 Read 读取；图片由支持图片输入的模型接收。`@skill:name` 则随请求加载所选 Skill 正文。
 
 `!command` 执行用户命令，经过相同权限检查，结果加入会话。运行中提交 `!command` 会排队到当前模型循环结束。
 
@@ -168,6 +179,7 @@ Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交�
 | `/model`、`/connect` | 模型选择、端点配置 |
 | `/permissions`、`/status` | 权限与实际运行配置 |
 | `/mcp` | MCP 状态、工具列表、启停及重连 |
+| `/skills` | Skills 列表、启停、重新发现与来源诊断 |
 | `/tool-mode [direct\|codemode\|codemode-only]` | 基础工具调用方式，下次成功 compact 或新会话生效 |
 | `/new` | 新会话，保留旧历史和工作区文件 |
 | `/sessions`、`/sessions <id>`、`/rename`、`/fork [id]` | 打开会话列表、按当前项目 ID 恢复、重命名、分支 |
@@ -187,7 +199,7 @@ TUI 使用 Prism 配色和完整输入框。工具调用使用醒目的绿色圆
 
 Esc 中断 agent；面板中的 Esc 返回。Ctrl+C 运行时中断，空闲时退出。Ctrl+D 在空输入区退出。Ctrl+T 展开工具转录及模型提供的推理内容，Ctrl+O 复制最近完整回答，Ctrl+R 搜索提示历史，Ctrl+G 使用 `VISUAL` 或 `EDITOR` 编辑草稿。Ctrl+L 仅清理视图。Shift+Left 编辑未消费队列输入。空输入区双 Esc 编辑上一条提示并创建分支，不回滚文件。
 
-Goal、多代理、skills、插件、持久 Plan、学习式记忆、云执行和媒体输入后置。已知后置 slash 命令显示不可用，未知命令不会发送给模型。
+Goal、多代理、插件、持久 Plan、学习式记忆和云执行后置。已知后置 slash 命令显示不可用，未知命令不会发送给模型。
 
 ## 单轮与验证
 

@@ -39,6 +39,7 @@ import type {
   SessionState,
   Status,
   ToolDetails,
+  ToggleChoice,
   UiActions,
   UserInterface,
 } from "../app/types.js";
@@ -47,6 +48,7 @@ import { permissionLabels } from "../permissions/policy.js";
 import { mentionPrefix, WorkspaceAutocompleteProvider } from "./autocomplete.js";
 import { diffStats, highlightCommand, renderDiff, toolColors } from "./tool-rendering.js";
 import { contextDetails, contextReadout } from "./context-usage.js";
+import { ansi, fg, bold, accent, green, yellow, red, dim, faint, userText, neutral, reasoningText, directoryText, permissionText, branchText, italic } from "./colors.js";
 
 class SecretInput extends Input {
   override render(width: number): string[] {
@@ -70,6 +72,7 @@ type TranscriptEntry =
 type Panel = { transient?: boolean } & (
   | { kind: "choice"; component: Container; cancel: () => void; select: (index: number) => void }
   | { kind: "input"; component: Container; cancel: () => void }
+  | { kind: "toggle"; component: Container; cancel: () => void; input: (data: string) => void }
   | { kind: "inspection"; component: Container; cancel: () => void; scroll: (delta: number) => void });
 type BrowserFilter = "all" | "needs-you" | "working" | "ready" | "inactive";
 interface BrowserState {
@@ -96,23 +99,6 @@ export function sanitizeTerminalText(text: string): string {
     .replace(/\r\n?/g, "\n")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
 }
-
-const ansi = (code: number) => (text: string): string => `\x1b[${code}m${text}\x1b[0m`;
-const fg = (red: number, green: number, blue: number) => (text: string): string => `\x1b[38;2;${red};${green};${blue}m${text}\x1b[0m`;
-const bold = ansi(1);
-const accent = fg(184, 178, 213);
-const green = fg(146, 189, 160);
-const yellow = fg(199, 183, 164);
-const red = fg(219, 160, 160);
-const dim = fg(145, 146, 154);
-const faint = fg(105, 106, 114);
-const userText = fg(209, 201, 181);
-const neutral = fg(229, 231, 235);
-const reasoningText = fg(180, 173, 191);
-const directoryText = fg(167, 188, 192);
-const permissionText = fg(203, 189, 152);
-const branchText = fg(170, 192, 172);
-const italic = ansi(3);
 
 function themes(): { editor: EditorTheme; markdown: MarkdownTheme; select: SelectListTheme } {
   const muted = dim;
@@ -267,7 +253,7 @@ export class TerminalUI implements UserInterface {
     if (value.state.kind === "idle") {
       for (const entry of this.entries) if (entry.kind === "reasoning") entry.active = false;
     }
-    if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(value.cwd, () => this.currentStatus?.mcpServers ?? []));
+    if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(value.cwd, () => this.currentStatus?.mcpServers ?? [], () => this.currentStatus?.skills ?? []));
     if (wasInitializing !== (value.initializing === true)) this.rebuild();
     this.render();
   }
@@ -336,7 +322,7 @@ export class TerminalUI implements UserInterface {
     return new Promise((resolve) => {
       const list = new SelectList(choices.map((choice) => ({
         value: choice.value,
-        label: sanitizeTerminalText(choice.label),
+        label: (choice.tone === "accent" ? accent : choice.tone === "directory" ? directoryText : choice.tone === "positive" ? green : choice.tone === "muted" ? dim : (text: string) => text)(sanitizeTerminalText(choice.label)),
         ...(choice.description || choice.status ? { description: [
           ...(choice.status ? [(choice.status.tone === "positive" ? green : choice.status.tone === "muted" ? faint : dim)(sanitizeTerminalText(choice.status.text))] : []),
           ...(choice.description ? [dim(sanitizeTerminalText(choice.description))] : []),
@@ -368,6 +354,69 @@ export class TerminalUI implements UserInterface {
       this.rebuild();
       this.tui.setFocus(list);
       this.render();
+    });
+  }
+
+  toggleList(title: string, initialItems: ToggleChoice[], toggle: (value: string) => Promise<ToggleChoice[]>): Promise<void> {
+    this.dismiss();
+    return new Promise((resolve) => {
+      let items = initialItems;
+      let query = "";
+      let selected = 0;
+      let pending = false;
+      let error = "";
+      let closed = false;
+      const filtered = () => items.filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(query.toLowerCase()));
+      const component = new Container();
+      component.addChild(new RenderComponent((width) => {
+        const available = Math.max(1, width - 4);
+        const clip = (text: string) => `  ${truncateToWidth(text, available, "")}`;
+        const matches = filtered();
+        selected = Math.min(selected, Math.max(0, matches.length - 1));
+        const count = Math.max(1, Math.min(8, this.terminal.rows - 12));
+        const start = Math.max(0, selected - count + 1);
+        const rows = [clip(bold(yellow(sanitizeTerminalText(title)))), clip(dim(`Search Skills: ${sanitizeTerminalText(query) || "type to filter"}`)), ""];
+        for (let index = start; index < Math.min(matches.length, start + count); index++) {
+          const item = matches[index];
+          if (!item) continue;
+          const paint = item.enabled ? green : faint;
+          rows.push(clip(`${index === selected ? accent("›") : " "} ${paint(item.enabled ? "[x]" : "[ ]")} ${accent(sanitizeTerminalText(item.label))} ${paint(item.enabled ? "enabled" : "disabled")}`));
+        }
+        if (!matches.length) rows.push(clip(dim(items.length ? "No matching Skills." : "No Skills found. Add SKILL.md under .agents/skills, then /skills reload.")));
+        const item = matches[selected];
+        rows.push("");
+        if (item) {
+          rows.push(clip(directoryText(sanitizeTerminalText(item.description))));
+          rows.push(clip(dim(sanitizeTerminalText(item.detail))));
+        }
+        rows.push(clip(dim(`${matches.length} Skills · ${pending ? "Saving..." : "Changes save immediately"}`)));
+        rows.push(clip(dim("↑/↓ select · Space/Enter toggle · Esc/Ctrl+C back")));
+        rows.push(clip(dim("New inputs use the saved state. Loaded history and queued inputs remain.")));
+        if (error) rows.push(...wrapTextWithAnsi(red(sanitizeTerminalText(error)), available).slice(0, 3).map((line) => `  ${line}`));
+        return rows;
+      }));
+      const finish = () => { closed = true; this.closePanel(); resolve(); };
+      const input = (data: string) => {
+        if (pending) return;
+        const matches = filtered();
+        if (matchesKey(data, "up")) selected = Math.max(0, selected - 1);
+        else if (matchesKey(data, "down")) selected = Math.min(Math.max(0, matches.length - 1), selected + 1);
+        else if (matchesKey(data, "pageUp")) selected = Math.max(0, selected - 8);
+        else if (matchesKey(data, "pageDown")) selected = Math.min(Math.max(0, matches.length - 1), selected + 8);
+        else if (data === " " || matchesKey(data, "enter")) {
+          const item = matches[selected];
+          if (!item) return;
+          pending = true; error = "";
+          void toggle(item.value).then((updated) => { items = updated; }).catch((failure: unknown) => {
+            error = failure instanceof Error ? failure.message : String(failure);
+          }).finally(() => { pending = false; if (!closed) this.render(); });
+        } else if (matchesKey(data, "backspace")) { query = [...query].slice(0, -1).join(""); selected = 0; }
+        else if (matchesKey(data, "ctrl+u")) { query = ""; selected = 0; }
+        else if (!/[\x00-\x1f\x7f-\x9f]/.test(data)) { query += data; selected = 0; }
+        this.render();
+      };
+      this.panel = { kind: "toggle", component, transient: true, cancel: finish, input };
+      this.rebuild(); this.render();
     });
   }
 
@@ -495,7 +544,7 @@ export class TerminalUI implements UserInterface {
 
   private createEditor(): Editor {
     const editor = new ArkEditor(this.tui, this.theme.editor, { paddingX: 4, autocompleteMaxVisible: 6 });
-    editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(this.currentStatus?.cwd ?? process.cwd(), () => this.currentStatus?.mcpServers ?? []));
+    editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(this.currentStatus?.cwd ?? process.cwd(), () => this.currentStatus?.mcpServers ?? [], () => this.currentStatus?.skills ?? []));
     editor.onSubmit = (value) => this.submit(value, this.busy() ? "steer" : "prompt");
     return editor;
   }
@@ -887,7 +936,7 @@ export class TerminalUI implements UserInterface {
     }
     if (this.pasting || data.includes("\x1b[200~")) {
       this.pasting = !data.includes("\x1b[201~");
-      return this.browser || this.panel?.kind === "choice" || this.panel?.kind === "inspection" || (!this.panel && this.currentStatus?.state.kind === "stopping") ? { consume: true } : undefined;
+      return this.browser || this.panel?.kind === "choice" || this.panel?.kind === "inspection" || this.panel?.kind === "toggle" || (!this.panel && this.currentStatus?.state.kind === "stopping") ? { consume: true } : undefined;
     }
     if (this.browser) return this.browserKey(data);
     const now = Date.now();
@@ -901,6 +950,7 @@ export class TerminalUI implements UserInterface {
         this.dismiss();
         return { consume: true };
       }
+      if (this.panel.kind === "toggle") { this.panel.input(data); return { consume: true }; }
       if (this.panel.kind === "inspection") {
         if (matchesKey(data, "up")) this.panel.scroll(-1);
         else if (matchesKey(data, "down")) this.panel.scroll(1);

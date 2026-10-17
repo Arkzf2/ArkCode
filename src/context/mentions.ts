@@ -1,12 +1,17 @@
 import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
-import { convertToPng, detectSupportedImageMimeTypeFromFile, resizeImage } from "@earendil-works/pi-coding-agent";
+import { convertToPng, detectSupportedImageMimeTypeFromFile, resizeImage, parseSkillBlock } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { workspacePath } from "../tools/workspace.js";
 
 const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 
 export function displayUserText(text: string): string {
+  const loadedSkill = /^User activated the skill "[^"\n]+"\. Follow the loaded skill instructions\.\n\n<skill-loaded name="[^"\n]+">\n[\s\S]*?\n<\/skill-loaded>\n\n/;
+  let loaded = loadedSkill.exec(text);
+  while (loaded) { text = text.slice(loaded[0].length); loaded = loadedSkill.exec(text); }
+  let skill = parseSkillBlock(text);
+  while (skill?.userMessage) { text = skill.userMessage; skill = parseSkillBlock(text); }
   const legacyAttachment = /\n<file path="[^"\n]+">\n/.exec(text);
   return legacyAttachment && /(?:^|\s)@(?:"[^"]+"|[^\s]+)/.test(text.slice(0, legacyAttachment.index))
     ? text.slice(0, legacyAttachment.index)
@@ -14,7 +19,7 @@ export function displayUserText(text: string): string {
 }
 
 export async function prepareMentions(text: string, cwd: string, supportsImages: boolean): Promise<{ text: string; images: ImageContent[] }> {
-  const matches = [...text.matchAll(/(?:^|\s)@(?:"([^"]+)"|([^\s]+))/g)];
+  const matches = [...text.matchAll(/(?:^|\s)@(?:"([^"]+)"|([^\s]+))/g)].filter((match) => !(match[1] ?? match[2])?.startsWith("skill:"));
   if (matches.length > 8) throw new Error("At most 8 file references per input.");
   const images: ImageContent[] = [];
   for (const match of matches) {

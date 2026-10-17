@@ -28,6 +28,109 @@ const requestSchema = z.object({
   messages: z.array(z.object({ role: z.string(), content: z.unknown().optional(), tool_call_id: z.string().optional() }).passthrough()),
   tools: z.array(z.object({ function: z.object({ name: z.string() }).passthrough() }).passthrough()).optional(),
 }).passthrough();
+
+test("Skills advertise only .agents metadata, expand selections, and read registered references", async (t) => {
+  let reference = "";
+  const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tool", name: "Read", arguments: { path: reference } } : { kind: "text", text: "Reviewed." });
+  const directory = join(f.home, ".agents", "skills", "review");
+  await mkdir(join(directory, "references"), { recursive: true });
+  reference = join(directory, "references", "guide.md");
+  await writeFile(reference, "Skill reference evidence.");
+  await writeFile(join(directory, "SKILL.md"), "---\nname: review\ndescription: Review a patch.\n---\nPrivate full Skill instructions.");
+  const secondDirectory = join(f.home, ".agents", "skills", "style");
+  await mkdir(secondDirectory, { recursive: true });
+  await writeFile(join(secondDirectory, "SKILL.md"), "---\nname: style\ndescription: Check style.\n---\nSecond full Skill instructions.");
+  await mkdir(join(f.cwd, ".pi", "skills", "sentinel"), { recursive: true });
+  await writeFile(join(f.cwd, ".pi", "skills", "sentinel", "SKILL.md"), "---\nname: sentinel\ndescription: Must not be discovered.\n---\nForbidden pi body.");
+  const { host, ui } = await f.start();
+  assert.equal(ui.statuses.at(-1)?.skills?.[0]?.name, "review");
+  const input = "Use @skill:review and @skill:style with @skill:review to inspect the change.";
+  await host.submit(input);
+  const system = JSON.stringify(f.requests[0]?.messages.filter((message) => message.role === "system"));
+  const user = JSON.stringify(f.requests[0]?.messages.filter((message) => message.role === "user"));
+  assert.match(system, /Review a patch/); assert.doesNotMatch(system, /Private full Skill instructions|Second full Skill instructions|sentinel|Forbidden pi body|Use Read to load Skill files/);
+  assert.match(user, /Private full Skill instructions/);
+  assert.match(user, /Second full Skill instructions/);
+  assert.equal(user.split('<skill-loaded name=\\"review\\">').length - 1, 1);
+  assert.equal(user.split('<skill-loaded name=\\"style\\">').length - 1, 1);
+  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("Skill reference evidence")));
+  assert.ok(ui.messages.some((message) => message.kind === "user" && message.text === input));
+  assert.ok(ui.messages.every((message) => !/Private full Skill instructions|Second full Skill instructions|<skill-loaded/.test(message.text)));
+  await host.submit("/skills disable style");
+  await host.submit("/skills disable review");
+  const count = f.requests.length;
+  await host.submit("/skill:review inspect again");
+  assert.equal(f.requests.length, count); assert.match(ui.messages.at(-1)?.text ?? "", /disabled/);
+  assert.deepEqual(ui.statuses.at(-1)?.skills, []);
+  await host.submit("An unrelated task.");
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /No Skills are available for automatic selection/);
+  await host.submit("/skills enable review");
+  await host.submit("/skill:review inspect again");
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /Private full Skill instructions/);
+});
+
+test("Skill follow-ups retain submission-time instructions and hide expanded bodies in the queue", async (t) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, async (_request, index) => { if (index === 0) await gate; return { kind: "text", text: "Done." }; });
+  const directory = join(f.cwd, ".agents", "skills", "review"); await mkdir(directory, { recursive: true });
+  const file = join(directory, "SKILL.md");
+  await writeFile(file, "---\nname: review\ndescription: Inspect changes.\n---\nQueued Skill version one.");
+  const { host, ui } = await f.start();
+  const active = host.submit("Start work.");
+  await until(() => f.requests.length === 1);
+  await host.submit("@skill:review inspect", "follow-up");
+  assert.ok(ui.statuses.at(-1)?.queued.some((text) => text.includes("@skill:review")));
+  assert.ok(ui.statuses.at(-1)?.queued.every((text) => !text.includes("Queued Skill version")));
+  await writeFile(file, "---\nname: review\ndescription: Inspect changes.\n---\nQueued Skill version two.");
+  await host.submit("/skills disable review");
+  assert.match(ui.messages.at(-1)?.text ?? "", /Wait until/);
+  release(); await active;
+  assert.match(JSON.stringify(f.requests[1]?.messages), /Queued Skill version one/);
+  assert.doesNotMatch(JSON.stringify(f.requests[1]?.messages), /Queued Skill version two/);
+});
+
+test("Skills reload discovers new entries and manual-only Skills load only on selection", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  const { host, ui } = await f.start();
+  const directory = join(f.cwd, ".agents", "skills", "manual"); await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "SKILL.md"), "---\nname: manual\ndescription: Manual workflow.\ndisable-model-invocation: true\n---\nSelected manual instructions.");
+  assert.deepEqual(ui.statuses.at(-1)?.skills, []);
+  await host.submit("/skills reload");
+  assert.equal(f.requests.length, 0);
+  assert.equal(ui.statuses.at(-1)?.skills?.[0]?.name, "manual");
+  await host.submit("Ordinary task.");
+  assert.doesNotMatch(JSON.stringify(f.requests[0]?.messages), /Manual workflow|Selected manual instructions/);
+  await host.submit("@skill:manual perform the task");
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages.filter((message) => message.role === "user")), /Selected manual instructions/);
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)?.messages.filter((message) => message.role === "system")), /Manual workflow|Selected manual instructions/);
+  const viewer = await f.start(new RecordingUI(), ["resume", ui.statuses.at(-1)?.sessionId ?? ""]);
+  assert.equal(viewer.ui.statuses.at(-1)?.viewer, true);
+  await viewer.host.submit("/skills list");
+  assert.match(viewer.ui.inspections.at(-1)?.text ?? "", /manual/);
+  await viewer.host.submit("/skills disable manual");
+  assert.match(viewer.ui.messages.at(-1)?.text ?? "", /Read-only/);
+  assert.equal(viewer.ui.statuses.at(-1)?.skills?.[0]?.name, "manual");
+});
+
+test("Skill queues return only authored text when edited or interrupted", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "tool", name: "Write", arguments: { path: "cancelled.txt", content: "must not exist" } }));
+  const directory = join(f.cwd, ".agents", "skills", "review"); await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "SKILL.md"), "---\nname: review\ndescription: Inspect changes.\n---\nHidden queued instructions.");
+  const ui = new RecordingUI(() => new Promise<ApprovalDecision>(() => {}));
+  const { host } = await f.start(ui, ["--permissions", "always-ask"]);
+  const run = host.submit("Start a write");
+  await until(() => ui.statuses.at(-1)?.state.kind === "awaiting-approval");
+  await host.submit("@skill:review steering", "steer");
+  await host.submit("@skill:review follow-up", "follow-up");
+  await host.editPrevious();
+  assert.equal(ui.draft(), "@skill:review follow-up");
+  await host.interrupt(); await run;
+  assert.equal(ui.draft(), "@skill:review follow-up\n\n@skill:review steering");
+  assert.equal(f.requests.length, 1);
+  await assert.rejects(readFile(join(f.cwd, "cancelled.txt")), { code: "ENOENT" });
+});
 type ModelRequest = z.infer<typeof requestSchema>;
 type ToolReply = { kind: "tool"; name: string; arguments: object };
 type Reply = { kind: "text"; text: string; thinking?: string } | ToolReply | { kind: "tools"; calls: ToolReply[] };
@@ -361,7 +464,7 @@ async function fixture(t: TestContext, respond: (request: ModelRequest, index: n
   await writeFile(join(home, "settings.json"), JSON.stringify({ provider: "fixture", model: "test", thinking: "off", trustedWorkspaces: [cwd] }));
   const hosts: ArkHost[] = [];
   const start = async (ui = new RecordingUI(), args: string[] = []) => {
-    const host = new ArkHost(parseCli(["--cwd", cwd, "--home", home, "--model", "fixture/test", "--permissions", "never-ask", ...args]), ui);
+    const host = new ArkHost(parseCli(["--cwd", cwd, "--home", home, "--model", "fixture/test", "--permissions", "never-ask", ...args]), ui, { userHome: home });
     hosts.push(host);
     await host.start();
     return { host, ui };
@@ -1421,7 +1524,7 @@ test("removed commands are rejected without running the agent, while @ reference
   const f = await fixture(t, () => ({ kind: "text", text: "File reference received." }));
   const { host, ui } = await f.start();
   await host.submit("/help");
-  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /tool-mode /web-search /mcp /status /new /sessions /rename /fork /compact /copy /init /exit");
+  assert.equal(ui.messages.at(-1)?.text.split("\n")[0], "/help /model /connect /permissions /tool-mode /web-search /mcp /skills /status /new /sessions /rename /fork /compact /copy /init /exit");
   for (const command of ["diff", "review", "ps", "theme", "statusline", "stop", "quit", "mention", "clear", "resume"]) {
     await host.submit(`/${command}`);
     assert.deepEqual(ui.messages.at(-1), { kind: "error", text: `Unknown command /${command}. Use /help.` });

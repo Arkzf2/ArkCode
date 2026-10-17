@@ -11,6 +11,7 @@ import { createBashToolDefinition, createEditToolDefinition, createFindToolDefin
 import type { ApprovalRequest } from "../app/types.js";
 import type { ManagedShell, ShellReceipt } from "./shell.js";
 import type { ToolOutputFiles } from "./output-files.js";
+import type { SkillsManager } from "../integrations/skills.js";
 import { collect, readBuffer, workspacePath } from "./workspace.js";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -24,9 +25,10 @@ export function createTools(options: {
   authorize: (request: ApprovalRequest) => Promise<boolean>;
   shell: ManagedShell;
   outputFiles?: ToolOutputFiles;
+  skills?: SkillsManager;
 }): ToolDefinition[] {
-  const { cwd, authorize, shell, outputFiles } = options;
-  const readPath = async (path: string) => await outputFiles?.resolve(cwd, path) ?? workspacePath(cwd, path);
+  const { cwd, authorize, shell, outputFiles, skills } = options;
+  const readPath = async (path: string) => await skills?.resolve(cwd, path) ?? await outputFiles?.resolve(cwd, path) ?? workspacePath(cwd, path);
   const wrap = <T extends TSchema, D, S>(name: string, tool: ToolDefinition<T, D, S>): Omit<ToolDefinition<T, D, S>, "renderCall" | "renderResult"> => {
     const { renderCall: _renderCall, renderResult: _renderResult, ...definition } = tool;
     return {
@@ -59,7 +61,7 @@ export function createTools(options: {
   const read = wrap("Read", createReadToolDefinition(cwd, {
     operations: {
       access: async (path) => access(await readPath(path)),
-      readFile: async (path) => await outputFiles?.read(cwd, path) ?? readBuffer(cwd, path, false, true),
+      readFile: async (path) => await skills?.read(cwd, path) ?? await outputFiles?.read(cwd, path) ?? readBuffer(cwd, path, false, true),
       detectImageMimeType: async (path) => detectSupportedImageMimeTypeFromFile(await readPath(path)),
     },
   }));
