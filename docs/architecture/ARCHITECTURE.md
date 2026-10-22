@@ -29,11 +29,11 @@ Pi 管理模型请求、agent 循环、历史格式、压缩、MCP 协议和 Cod
 
 `SessionLease` 按 session ID 在系统临时目录独占创建锁文件。独立 session 可在同一目录运行；同一 session 的其他宿主只读，不持久化 SDK 初始化产生的条目，也不连接 MCP。viewer 轮询有效 JSONL，遇到尚未写完的条目等待下一次读取。重新打开会话时重新尝试取得输入权，取得后再读取最新磁盘历史。恢复限制来自该 session 自己的运行标记，不扫描整个 workspace 的活动运行。
 
-Edit/Write 继续由 Pi SDK 的模块级文件队列排序，宿主不另建版本检查或合并机制。该队列只覆盖同一进程的同一 SDK 模块实例，不保证跨终端进程排序，也不约束任意 shell 写入。
+edit/write 继续由 Pi SDK 的模块级文件队列排序，宿主不另建版本检查或合并机制。该队列只覆盖同一进程的同一 SDK 模块实例，不保证跨终端进程排序，也不约束任意 shell 写入。
 
-增加基础工具时，在 `src/tools/index.ts` 定义能力并加入 `TOOL_NAMES`；该集合同时控制白名单和非 MCP 模式范围。审批放在实际执行边界，直接与 CodeMode 调用共用；不能仅通过 UI 或模型提示控制权限。审批 UI 排队展示请求，取消使整代等待请求失效。六个基础工具使用 Pi 默认并行调度，Write/Edit 复用 SDK 同文件修改队列；MCP 保留 SDK 的执行策略。
+增加基础工具时，在 `src/tools/index.ts` 定义能力并加入 `TOOL_NAMES`；该集合同时控制白名单和非 MCP 模式范围。审批放在实际执行边界，直接与 CodeMode 调用共用；不能仅通过 UI 或模型提示控制权限。审批 UI 排队展示请求，取消使整代等待请求失效。六个基础工具使用 Pi 默认并行调度，write/edit 复用 SDK 同文件修改队列；MCP 保留 SDK 的执行策略。
 
-`SessionToolSettings` 从当前分支读取模式与 MCP exposure 快照，新会话使用最新配置；旧会话缺少快照时沿用原有 hybrid 行为。`createToolLoadout()` 保留官方 CodeMode `on`，按基础工具 exposure 实现局部 direct/hybrid/only，并限制官方 `tool_search` 不加载基础工具。成功 `session_compact` 事件应用最新策略、更新注册与 MCP exposure，再保存快照；下一次请求检查应用结果。恢复时若发现 compact 后缺少策略记录，会完成该边界的策略初始化。
+`SessionToolSettings` 从当前分支读取模式、MCP exposure 快照与首次模型请求状态，新会话使用最新配置；旧会话缺少快照时沿用原有 hybrid 行为。`createToolLoadout()` 保留官方 CodeMode `on`，按基础工具 exposure 实现局部 direct/hybrid/only，并限制官方 `tool_search` 不加载基础工具。尚未请求 LLM 时，首次 run 准备阶段重新应用最新选择；首次请求后，成功 `session_compact` 才应用最新策略、更新注册与 MCP exposure，再保存快照。恢复时若发现 compact 后缺少策略记录，会完成该边界的策略初始化。
 
 MCP 的 `McpManager` 仅将 ArkCode 配置和权限接到 `createMcpExtension()`。它不创建 MCP client，不维护连接池，也不转换工具结果。SDK controller 负责状态、等待启动、按名称重载、取消和关闭。项目配置需经过工作区信任检查，自动批准规则只能来自用户配置。授权绑定配置、工具元数据和实际连接身份；等待授权期间发生变化时拒绝旧调用。
 
@@ -41,7 +41,7 @@ exposure 修改只保存配置；重载时合并当前会话的 exposure 快照�
 
 CodeMode 通过 SDK 的嵌套工具管线调用这些工具。它不会绕过白名单，也没有独立访问操作系统的接口。MCP resources 未接入逐服务审批，因此明确禁用；模型子调用同样禁用。
 
-SDK 截断 MCP/Bash 输出时会保存临时文件。宿主只从这些工具的结果元数据登记文件，记录真实路径与文件身份，允许本会话的 Read 读取；Write/Edit 和其他工作区外文件仍被拒绝。文件被替换后授权失效，授权不随历史恢复。普通文件保留 2 MiB 上限，已登记的大结果文件允许读取最多 64 MiB；更大的结果应在 CodeMode 中先过滤。
+SDK 截断 MCP/bash 输出时会保存临时文件。宿主只从这些工具的结果元数据登记文件，记录真实路径与文件身份，允许本会话的 read 读取；write/edit 和其他工作区外文件仍被拒绝。文件被替换后授权失效，授权不随历史恢复。普通文件保留 2 MiB 上限，已登记的大结果文件允许读取最多 64 MiB；更大的结果应在 CodeMode 中先过滤。
 
 `npm install` 会安装 SDK 补丁，`npm run check`、`npm test`、`npm run build` 会再次核对补丁。构建清理旧输出再编译，避免移动模块后发布遗留文件。发布包保留安装补丁和必要说明，不能使用忽略安装脚本的方式部署未经补丁的 SDK。
 

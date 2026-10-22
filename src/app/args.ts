@@ -77,5 +77,5 @@ Use /web-search [status|check|on|off] for provider Web Search. Check runs a real
 Print mode requires --model or a saved default model.
 Use /new for another concurrent session; /sessions opens the session list. Left also works on an empty composer.
 Switching sessions keeps background runs active. Another terminal opening the same session is read-only.
-/exit stops all sessions owned by this terminal. Edit/Write use Pi's in-process same-file queue.
+/exit stops all sessions owned by this terminal. edit/write use Pi's in-process same-file queue.
 `;

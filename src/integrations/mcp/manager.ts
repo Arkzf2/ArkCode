@@ -99,7 +99,7 @@ export class McpManager {
       `Configuration: ${join(this.options.home, "mcp.json")} or ${join(this.options.cwd, ".arkcode", "mcp.json")}`,
       "Commands: /mcp tools <server>, /mcp reload, /mcp reconnect [server], /mcp enable|disable|login|logout <server>, /mcp exposure <server> <codemode|deferred|direct|hidden>",
       "Sign in is available when a remote server requests OAuth. Sign out is available when it has stored OAuth tokens. Local stdio servers do not use these actions.",
-      "Exposure changes apply after successful compact or to new sessions. Reconnect keeps the current exposure; disable stops calls immediately.",
+      "Exposure changes apply before the first LLM request, after successful compact, or to new sessions. After the first request, reconnect keeps the current exposure; disable stops calls immediately.",
     ].join("\n"));
   }
 
@@ -123,9 +123,12 @@ export class McpManager {
     const saved = loadMcpConfig(this.options).entries.find((candidate) => candidate.name === name && candidate.source === entry.source);
     if (saved) Object.assign(entry, saved);
   }
+  exposures(): McpServerConfig["exposure"][] {
+    return (this.controller?.snapshot().servers ?? []).filter(({ entry }) => entry.config.enabled !== false)
+      .flatMap(({ entry }) => [entry.config.exposure ?? "codemode", ...Object.values(entry.config.toolExposure ?? {})]);
+  }
   discoveryTools(): string[] {
-    const exposures = (this.controller?.snapshot().servers ?? []).filter(({ entry }) => entry.config.enabled !== false)
-      .flatMap(({ entry }) => [entry.config.exposure, ...Object.values(entry.config.toolExposure ?? {})]);
+    const exposures = this.exposures();
     return [...(exposures.includes("codemode") ? ["codemode"] : []), ...(exposures.includes("deferred") ? ["tool_search"] : [])];
   }
   async applyExposure(): Promise<void> {

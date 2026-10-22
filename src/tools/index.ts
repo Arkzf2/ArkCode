@@ -15,8 +15,8 @@ import type { SkillsManager } from "../integrations/skills.js";
 import { collect, readBuffer, workspacePath } from "./workspace.js";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
-export const TOOL_NAMES = ["Read", "Write", "Edit", "Grep", "Glob", "Bash"];
-export const READ_TOOL_NAMES = ["Read", "Grep", "Glob"];
+export const TOOL_NAMES = ["read", "write", "edit", "grep", "glob", "bash"];
+export const READ_TOOL_NAMES = ["read", "grep", "glob"];
 const invocationSchema = z.union([z.object({ command: z.string() }), z.object({ path: z.string() })]);
 
 
@@ -35,8 +35,8 @@ export function createTools(options: {
       ...definition,
       name,
       label: name,
-      promptGuidelines: definition.promptGuidelines?.map((guideline) => guideline.replace(/\b(read|write|edit|grep|find|bash|powershell)\b/g,
-        (toolName) => ({ read: "Read", write: "Write", edit: "Edit", grep: "Grep", find: "Glob", bash: "Bash", powershell: "Bash" })[toolName] ?? toolName)),
+      promptGuidelines: definition.promptGuidelines?.map((guideline) => guideline.replace(/\b(find|powershell)\b/g,
+        (toolName) => toolName === "find" ? "glob" : "bash")),
       async execute(id, params, signal, onUpdate, ctx) {
         signal?.throwIfAborted();
         const args = invocationSchema.safeParse(params);
@@ -44,8 +44,8 @@ export function createTools(options: {
           ? { kind: "shell", command: args.data.command, shell: shell.executable }
           : { kind: "file", path: args.data.path };
         if (invocation?.kind === "file") {
-          if (name === "Read") await readPath(invocation.path);
-          else await workspacePath(cwd, invocation.path, name === "Write" || name === "Edit");
+          if (name === "read") await readPath(invocation.path);
+          else await workspacePath(cwd, invocation.path, name === "write" || name === "edit");
         }
         const description = `${name}\nArguments:\n${JSON.stringify(params)}`;
         if (!await authorize({ id, tool: name, description, cwd, invocation })) throw new Error("Tool execution denied.");
@@ -58,7 +58,7 @@ export function createTools(options: {
     if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw new Error("Content exceeds the 2 MiB text limit.");
     await writeFile(await workspacePath(cwd, path, true), content, "utf8");
   };
-  const read = wrap("Read", createReadToolDefinition(cwd, {
+  const read = wrap("read", createReadToolDefinition(cwd, {
     operations: {
       access: async (path) => access(await readPath(path)),
       readFile: async (path) => await skills?.read(cwd, path) ?? await outputFiles?.read(cwd, path) ?? readBuffer(cwd, path, false, true),
@@ -66,7 +66,7 @@ export function createTools(options: {
     },
   }));
   const { renderCall: _writeCall, renderResult: _writeResult, ...writeDefinition } = createWriteToolDefinition(cwd);
-  const write = wrap<typeof writeDefinition.parameters, { diff: string } | undefined, unknown>("Write", {
+  const write = wrap<typeof writeDefinition.parameters, { diff: string } | undefined, unknown>("write", {
     ...writeDefinition,
     async execute(id, params, signal, update, ctx) {
       let diff: string | undefined;
@@ -85,7 +85,7 @@ export function createTools(options: {
       return { ...result, details: diff === undefined ? undefined : { diff } };
     },
   });
-  const edit = wrap("Edit", createEditToolDefinition(cwd, {
+  const edit = wrap("edit", createEditToolDefinition(cwd, {
     operations: {
       access: async (path) => access(await workspacePath(cwd, path, true)),
       readFile: (path) => readBuffer(cwd, path, true),
@@ -93,7 +93,7 @@ export function createTools(options: {
     },
   }));
   const findDefinition = createFindToolDefinition(cwd);
-  const find = wrap("Glob", {
+  const find = wrap("glob", {
     ...findDefinition,
     description: "Find workspace files by glob pattern, excluding dependency, metadata and credential paths. Returns paths relative to the search directory.",
     promptSnippet: "Find workspace files by glob pattern",
@@ -110,7 +110,7 @@ export function createTools(options: {
       return definition.execute(id, params, signal, update, ctx);
     },
   });
-  const grep = wrap("Grep", createGrepToolDefinition(cwd, {
+  const grep = wrap("grep", createGrepToolDefinition(cwd, {
     maxFileBytes: MAX_FILE_BYTES,
     excludeGlobs: ["**/.git/**", "**/.arkcode/**", "**/node_modules/**", "**/.env", "**/.env.*"],
     operations: {
@@ -120,7 +120,7 @@ export function createTools(options: {
   }));
   const createShell = process.platform === "win32" ? createPowerShellToolDefinition : createBashToolDefinition;
   const shellDefinition = createShell(cwd, { exposeSessionEnvironment: false });
-  const bash = wrap("Bash", {
+  const bash = wrap("bash", {
     ...shellDefinition,
     description: `${shellDefinition.description} Runs in ${shell.executable} with your OS privileges; commands can access paths outside the workspace.`,
     async execute(id, params, signal, update, ctx) {

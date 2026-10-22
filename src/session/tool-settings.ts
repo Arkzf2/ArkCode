@@ -6,6 +6,7 @@ import { loadMcpConfig, type McpEntry } from "../integrations/mcp/config.js";
 import { toolModeSchema } from "../tools/mode.js";
 
 const exposureSchema = z.enum(["direct", "codemode", "deferred", "hidden"]);
+const requestStateSchema = z.object({ version: z.literal(1), requested: z.boolean() }).strict();
 const snapshotSchema = z.object({
   version: z.literal(1),
   toolMode: toolModeSchema,
@@ -16,6 +17,7 @@ const snapshotSchema = z.object({
 }).strict();
 export type ToolSettingsSnapshot = z.infer<typeof snapshotSchema>;
 export const TOOL_SETTINGS_ENTRY = "arkcode-tool-settings";
+export const TOOL_REQUEST_STATE_ENTRY = "arkcode-tool-request-state";
 
 function serverKey(entry: McpEntry): string {
   const path = resolve(entry.source);
@@ -25,21 +27,36 @@ function serverKey(entry: McpEntry): string {
 export class SessionToolSettings {
   current: ToolSettingsSnapshot;
   private failure: { error: unknown } | null = null;
+  private requested: boolean;
 
   constructor(private manager: SessionManager, private options: { home: string; cwd: string; trusted: boolean }) {
     let saved: ToolSettingsSnapshot | undefined;
     let compacted = false;
     let hasHistory = false;
+    let requested: boolean | undefined;
     for (const entry of manager.getBranch()) {
       if (entry.type === "message" || entry.type === "custom_message" || entry.type === "compaction") hasHistory = true;
+      if (entry.type === "custom" && entry.customType === TOOL_REQUEST_STATE_ENTRY) requested = requestStateSchema.parse(entry.data).requested;
       if (entry.type === "custom" && entry.customType === TOOL_SETTINGS_ENTRY) {
         saved = snapshotSchema.parse(entry.data);
         compacted = false;
       } else if (entry.type === "compaction" && saved) compacted = true;
     }
     this.current = saved && !compacted ? saved : this.defaults();
+    this.requested = requested ?? hasHistory;
     if (!saved && hasHistory) this.current.toolMode = "codemode";
     if (!saved || compacted) this.persist();
+    if (requested === undefined) this.persistRequestState();
+  }
+
+  get canApplyBeforeRequest(): boolean { return !this.requested; }
+  markRequested(): void {
+    if (this.requested) return;
+    this.requested = true;
+    this.persistRequestState();
+  }
+  private persistRequestState(): void {
+    this.manager.appendCustomEntry(TOOL_REQUEST_STATE_ENTRY, { version: 1, requested: this.requested });
   }
 
   defaults(): ToolSettingsSnapshot {

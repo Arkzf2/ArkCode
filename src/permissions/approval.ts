@@ -17,7 +17,7 @@ export class ApprovalBroker {
     const permission = this.permission();
     if (permission === "never-ask") return true;
     const mcp = request.invocation?.kind === "mcp" ? request.invocation : undefined;
-    if (!mcp && ["Read", "Grep", "Glob"].includes(request.tool)) return true;
+    if (!mcp && ["read", "grep", "glob"].includes(request.tool)) return true;
     const generation = this.generation;
     const inspection = request.invocation?.kind === "shell"
       ? await inspectShell(request.invocation.command, request.invocation.shell) : undefined;

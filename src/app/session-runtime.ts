@@ -482,7 +482,7 @@ export class SessionRuntime {
   }
   private async userShell(command: string, id: string): Promise<void> {
     if (!command) throw new Error("Use ! followed by a shell command.");
-    if (!await this.authorizeTool({ id, tool: "Bash", cwd: this.cwd, description: command,
+    if (!await this.authorizeTool({ id, tool: "bash", cwd: this.cwd, description: command,
       invocation: { kind: "shell", command, shell: this.shell.executable },
     })) throw new Error("Shell command denied.");
     if (this.interrupted) return;
@@ -636,6 +636,7 @@ export class SessionRuntime {
         };
         if (argument) save(toolModeSchema.parse(argument));
         else await browseToolMode({ ui: this.ui, current: () => settings.current.toolMode,
+          beforeFirstRequest: () => settings.canApplyBeforeRequest,
           pending: () => loadConfig(this.home).toolMode, save,
           active: () => !this.closing && this.toolSettings === settings,
         });

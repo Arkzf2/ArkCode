@@ -18,7 +18,7 @@ import { loadConfig } from "../src/config/settings.js";
 import { ApprovalBroker } from "../src/permissions/approval.js";
 import { CONTEXT_MESSAGE } from "../src/context/dynamic.js";
 import { TOOL_NAMES } from "../src/tools/index.js";
-import { TOOL_SETTINGS_ENTRY } from "../src/session/tool-settings.js";
+import { TOOL_REQUEST_STATE_ENTRY, TOOL_SETTINGS_ENTRY } from "../src/session/tool-settings.js";
 import { echoMcpTool, httpMcpFixture } from "./mcp-fixture.js";
 import { inspectSession, SessionLease, writeRunMarker } from "../src/session/storage.js";
 import type { ApprovalDecision, ApprovalRequest, Choice, ChoiceOptions, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/app/types.js";
@@ -31,7 +31,7 @@ const requestSchema = z.object({
 
 test("Skills advertise only .agents metadata, expand selections, and read registered references", async (t) => {
   let reference = "";
-  const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tool", name: "Read", arguments: { path: reference } } : { kind: "text", text: "Reviewed." });
+  const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tool", name: "read", arguments: { path: reference } } : { kind: "text", text: "Reviewed." });
   const directory = join(f.home, ".agents", "skills", "review");
   await mkdir(join(directory, "references"), { recursive: true });
   reference = join(directory, "references", "guide.md");
@@ -53,7 +53,7 @@ test("Skills advertise only .agents metadata, expand selections, and read regist
   assert.match(user, /Second full Skill instructions/);
   assert.equal(user.split('<skill-loaded name=\\"review\\">').length - 1, 1);
   assert.equal(user.split('<skill-loaded name=\\"style\\">').length - 1, 1);
-  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("Skill reference evidence")));
+  assert.ok(ui.tools.some((tool) => tool.name === "read" && tool.state === "done" && tool.text.includes("Skill reference evidence")));
   assert.ok(ui.messages.some((message) => message.kind === "user" && message.text === input));
   assert.ok(ui.messages.every((message) => !/Private full Skill instructions|Second full Skill instructions|<skill-loaded/.test(message.text)));
   await host.submit("/skills disable style");
@@ -63,7 +63,8 @@ test("Skills advertise only .agents metadata, expand selections, and read regist
   assert.equal(f.requests.length, count); assert.match(ui.messages.at(-1)?.text ?? "", /disabled/);
   assert.deepEqual(ui.statuses.at(-1)?.skills, []);
   await host.submit("An unrelated task.");
-  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /No Skills are available for automatic selection/);
+  assert.equal(toolPrompt(f.requests.at(-1), "skills"), "");
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)?.messages), /No Skills are available for automatic selection/);
   await host.submit("/skills enable review");
   await host.submit("/skill:review inspect again");
   assert.match(JSON.stringify(f.requests.at(-1)?.messages), /Private full Skill instructions/);
@@ -115,7 +116,7 @@ test("Skills reload discovers new entries and manual-only Skills load only on se
 });
 
 test("Skill queues return only authored text when edited or interrupted", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, () => ({ kind: "tool", name: "Write", arguments: { path: "cancelled.txt", content: "must not exist" } }));
+  const f = await fixture(t, () => ({ kind: "tool", name: "write", arguments: { path: "cancelled.txt", content: "must not exist" } }));
   const directory = join(f.cwd, ".agents", "skills", "review"); await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "SKILL.md"), "---\nname: review\ndescription: Inspect changes.\n---\nHidden queued instructions.");
   const ui = new RecordingUI(() => new Promise<ApprovalDecision>(() => {}));
@@ -132,6 +133,12 @@ test("Skill queues return only authored text when edited or interrupted", { time
   await assert.rejects(readFile(join(f.cwd, "cancelled.txt")), { code: "ENOENT" });
 });
 type ModelRequest = z.infer<typeof requestSchema>;
+
+function toolPrompt(request: ModelRequest | undefined, section: "builtin_tool_mode" | "mcp_tool_modes" | "skills"): string {
+  assert.ok(request);
+  const text = request.messages.map((message) => typeof message.content === "string" ? message.content : "").join("\n");
+  return [...text.matchAll(new RegExp(`<${section}>\\n([\\s\\S]*?)\\n</${section}>`, "g"))].at(-1)?.[1] ?? "";
+}
 type ToolReply = { kind: "tool"; name: string; arguments: object };
 type Reply = { kind: "text"; text: string; thinking?: string } | ToolReply | { kind: "tools"; calls: ToolReply[] };
 
@@ -368,7 +375,7 @@ test("background approvals wait for their session and never open over the foregr
   const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
   const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
   const f = await fixture(t, async (_request, index) => {
-    if (index === 0) { await gateA; return { kind: "tool", name: "Write", arguments: { path: "background.txt", content: "approved A" } }; }
+    if (index === 0) { await gateA; return { kind: "tool", name: "write", arguments: { path: "background.txt", content: "approved A" } }; }
     if (index === 1) await gateB;
     return { kind: "text", text: "Done" };
   });
@@ -501,9 +508,9 @@ for (const permission of ["always-ask", "ask-when-needed", "never-ask"]) {
 }
 
 test("CodeMode composes SDK basic tools and MCP structured results, serializes approvals and restores nested history", async (t) => {
-  const code = `await Promise.all([tools.Write({path:"one.txt",content:"first"}), tools.Write({path:"two.txt",content:"second"})]);
+  const code = `await Promise.all([tools.write({path:"one.txt",content:"first"}), tools.write({path:"two.txt",content:"second"})]);
     const result = await tools.mcp__fixture__echo({text:"structured"}); text(result.structuredContent.answer);
-    text(await tools.Read({path:"one.txt"}));`;
+    text(await tools.read({path:"one.txt"}));`;
   const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tool", name: "codemode", arguments: { code } } : { kind: "text", text: "Done." });
   const mcp = await httpMcpFixture(t, { tools: [{ ...echoMcpTool, outputSchema: { type: "object", properties: { answer: { type: "number" } } } }],
     call: () => ({ content: [{ type: "text", text: "summary" }], structuredContent: { answer: 42 } }),
@@ -520,26 +527,26 @@ test("CodeMode composes SDK basic tools and MCP structured results, serializes a
   assert.match(output, /42/); assert.match(output, /first/);
   await host.exit();
   const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
-  assert.ok(resumed.ui.tools.some((tool) => tool.name === "Write" && tool.details?.target === "one.txt" && tool.state === "done"));
+  assert.ok(resumed.ui.tools.some((tool) => tool.name === "write" && tool.details?.target === "one.txt" && tool.state === "done"));
 });
 
-for (const source of ["MCP", "Bash"]) {
+for (const source of ["MCP", "bash"]) {
   test(`${source} truncated output can be read without granting writes or access to other external files`, async (t) => {
     let outputPath = "";
     let privatePath = "";
     const longOutput = "prefix evidence line\n".repeat(2500) + "middle evidence marker\n" + "suffix evidence line\n".repeat(2500);
     const f = await fixture(t, (request, index) => {
       if (index === 0) return source === "MCP" ? { kind: "tool", name: "mcp__fixture__echo", arguments: { text: "large" } }
-        : { kind: "tool", name: "Bash", arguments: { command: `node -e "process.stdout.write('prefix evidence line\\n'.repeat(2500)+'middle evidence marker\\n'+'suffix evidence line\\n'.repeat(2500))"` } };
+        : { kind: "tool", name: "bash", arguments: { command: `node -e "process.stdout.write('prefix evidence line\\n'.repeat(2500)+'middle evidence marker\\n'+'suffix evidence line\\n'.repeat(2500))"` } };
       if (index === 1) {
         const output = request.messages.findLast((message) => message.role === "tool")?.content;
         assert.equal(typeof output, "string");
         const match = /Full output: (.*?)(?: \(read it with offset\/limit\)|\])/.exec(String(output));
         assert.ok(match?.[1]); outputPath = match[1];
-        return { kind: "tool", name: "Read", arguments: { path: outputPath, offset: 2501, limit: 1 } };
+        return { kind: "tool", name: "read", arguments: { path: outputPath, offset: 2501, limit: 1 } };
       }
-      if (index === 2) return { kind: "tool", name: "Write", arguments: { path: outputPath, content: "forbidden replacement" } };
-      if (index === 3) return { kind: "tool", name: "Read", arguments: { path: privatePath } };
+      if (index === 2) return { kind: "tool", name: "write", arguments: { path: outputPath, content: "forbidden replacement" } };
+      if (index === 3) return { kind: "tool", name: "read", arguments: { path: privatePath } };
       return { kind: "text", text: "Done." };
     });
     privatePath = join(f.home, "private.txt");
@@ -551,9 +558,9 @@ for (const source of ["MCP", "Bash"]) {
     const { host, ui } = await f.start();
     t.after(async () => { if (outputPath) await rm(outputPath, { force: true }); });
     await host.submit("Inspect the middle of the output.");
-    assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("middle evidence marker")));
-    assert.ok(ui.tools.some((tool) => tool.name === "Write" && tool.state === "error"));
-    assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "error" && tool.text.includes("workspace")));
+    assert.ok(ui.tools.some((tool) => tool.name === "read" && tool.state === "done" && tool.text.includes("middle evidence marker")));
+    assert.ok(ui.tools.some((tool) => tool.name === "write" && tool.state === "error"));
+    assert.ok(ui.tools.some((tool) => tool.name === "read" && tool.state === "error" && tool.text.includes("workspace")));
     assert.equal(await readFile(outputPath, "utf8"), longOutput);
     assert.doesNotMatch(JSON.stringify(f.requests), /outside-private-evidence/);
   });
@@ -566,10 +573,13 @@ test("/mcp exposure persists without changing declarations until successful comp
   await writeFile(path, JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
   const { host } = await f.start();
   await host.submit("Initial tools.");
+  assert.match(toolPrompt(f.requests[0], "mcp_tool_modes"), /codemode: Access these MCP tools through codemode/);
   assert.ok(!f.requests[0]?.tools?.some((tool) => tool.function.name.startsWith("mcp__")));
   await host.submit("/mcp exposure fixture direct");
   assert.equal(JSON.parse(await readFile(path, "utf8")).mcpServers.fixture.exposure, "direct");
   await host.submit("Updated tools.");
+  assert.match(toolPrompt(f.requests[1], "mcp_tool_modes"), /codemode: Access these MCP tools through codemode/);
+  assert.doesNotMatch(toolPrompt(f.requests[1], "mcp_tool_modes"), /direct: MCP tools/);
   assert.ok(!f.requests[1]?.tools?.some((tool) => tool.function.name === "mcp__fixture__echo"));
   await host.submit("/mcp reconnect fixture");
   await host.submit("Keep the session exposure.");
@@ -577,13 +587,15 @@ test("/mcp exposure persists without changing declarations until successful comp
   await host.submit("/compact");
   assert.equal(host.outcome, "completed");
   await host.submit("Apply after compact.");
+  assert.match(toolPrompt(f.requests.at(-1), "mcp_tool_modes"), /direct: MCP tools/);
+  assert.doesNotMatch(toolPrompt(f.requests.at(-1), "mcp_tool_modes"), /codemode: Access these MCP tools through codemode/);
   assert.ok(f.requests.at(-1)?.tools?.some((tool) => tool.function.name === "mcp__fixture__echo"));
 });
 
 for (const mode of ["direct", "codemode", "codemode-only"]) {
   test(`tool mode ${mode} scopes declarations and script calls to built-in tools`, async (t) => {
     const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tool", name: "codemode", arguments: {
-      code: `text(typeof tools.Read); text(await tools.mcp__fixture__echo({text:"allowed"}));`,
+      code: `text(typeof tools.read); text(await tools.mcp__fixture__echo({text:"allowed"}));`,
     } } : { kind: "text", text: "Done." });
     const mcp = await httpMcpFixture(t);
     await writeFile(join(f.home, "settings.json"), JSON.stringify({ ...loadConfig(f.home), toolMode: mode }));
@@ -591,6 +603,8 @@ for (const mode of ["direct", "codemode", "codemode-only"]) {
     const { host } = await f.start();
     await host.submit("Check callability.");
     const names = f.requests[0]?.tools?.map((tool) => tool.function.name) ?? [];
+    assert.ok(toolPrompt(f.requests[0], "builtin_tool_mode").startsWith(`Built-in tool mode: ${mode}.`));
+    assert.match(toolPrompt(f.requests[0], "mcp_tool_modes"), /direct: MCP tools/);
     assert.deepEqual(TOOL_NAMES.filter((name) => names.includes(name)), mode === "codemode-only" ? [] : TOOL_NAMES);
     assert.ok(names.includes("mcp__fixture__echo"));
     if (mode !== "direct") {
@@ -601,9 +615,101 @@ for (const mode of ["direct", "codemode", "codemode-only"]) {
   });
 }
 
+test("MCP prompt composes mixed server and tool modes and omits disabled servers", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  const mcp = await httpMcpFixture(t);
+  const path = join(f.home, "mcp.json");
+  await writeFile(path, JSON.stringify({ mcpServers: {
+    fixture: { url: mcp.url, exposure: "hidden", toolExposure: { echo: "deferred", "other*": "direct" } },
+    disabled: { url: mcp.url, enabled: false, exposure: "codemode" },
+  } }));
+  const { host } = await f.start();
+  await host.submit("Inspect mixed exposure modes.");
+  const mixed = toolPrompt(f.requests[0], "mcp_tool_modes");
+  assert.match(mixed, /direct: MCP tools/);
+  assert.match(mixed, /deferred: These MCP tools are discovered on demand/);
+  assert.doesNotMatch(mixed, /codemode: Access these MCP tools through codemode/);
+  assert.ok(mixed.indexOf("direct:") < mixed.indexOf("deferred:"));
+  await host.submit("/mcp disable fixture");
+  await host.submit("Inspect disabled MCP.");
+  assert.equal(toolPrompt(f.requests.at(-1), "mcp_tool_modes"), "");
+});
+
+test("unchanged mode prompts reuse their persisted sections across runs", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  const { host } = await f.start();
+  await host.submit("First task.");
+  await host.submit("Second task.");
+  assert.equal(toolPrompt(f.requests[0], "builtin_tool_mode"), toolPrompt(f.requests[1], "builtin_tool_mode"));
+  assert.equal(toolPrompt(f.requests[0], "mcp_tool_modes"), toolPrompt(f.requests[1], "mcp_tool_modes"));
+  assert.equal(toolPrompt(f.requests[0], "mcp_tool_modes"), "");
+  assert.equal(toolPrompt(f.requests[0], "skills"), "");
+  assert.doesNotMatch(JSON.stringify(f.requests[0]?.messages), /<mcp_tool_modes>|<skills>|No MCP tools are exposed|No Skills are available/);
+  const entries = SessionManager.open((await f.sessions())[0] ?? "").getBranch();
+  assert.equal(entries.filter((entry) => entry.type === "message" && entry.message.role === "system"
+    && entry.message.sections?.builtin_tool_mode !== undefined).length, 1);
+  assert.ok(entries.every((entry) => entry.type !== "message" || entry.message.role !== "system"
+    || !entry.message.sections?.mcp_tool_modes && !entry.message.sections?.skills));
+});
+
+test("first request applies the latest built-in and MCP choices, then stages further changes until a new session", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
+  const mcp = await httpMcpFixture(t);
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  const { host } = await f.start();
+  await host.submit("/tool-mode direct");
+  await host.submit("/tool-mode codemode-only");
+  await host.submit("/mcp exposure fixture direct");
+  await host.submit("/mcp exposure fixture deferred");
+  assert.equal(f.requests.length, 0);
+  await host.submit("Use my latest choices.");
+  assert.match(toolPrompt(f.requests[0], "builtin_tool_mode"), /^Built-in tool mode: codemode-only\./);
+  assert.match(toolPrompt(f.requests[0], "mcp_tool_modes"), /deferred: These MCP tools/);
+  assert.doesNotMatch(toolPrompt(f.requests[0], "mcp_tool_modes"), /codemode: Access these MCP tools|direct: MCP tools/);
+  const names = f.requests[0]?.tools?.map((tool) => tool.function.name) ?? [];
+  assert.ok(names.includes("codemode") && names.includes("tool_search"));
+  assert.ok(!names.some((name) => TOOL_NAMES.includes(name) || name.startsWith("mcp__")));
+  await host.submit("/tool-mode direct");
+  await host.submit("/mcp exposure fixture direct");
+  await host.submit("/mcp reconnect fixture");
+  await host.submit("Keep the established mode.");
+  assert.deepEqual(f.requests[1]?.tools, f.requests[0]?.tools);
+  assert.equal(toolPrompt(f.requests[1], "builtin_tool_mode"), toolPrompt(f.requests[0], "builtin_tool_mode"));
+  assert.equal(toolPrompt(f.requests[1], "mcp_tool_modes"), toolPrompt(f.requests[0], "mcp_tool_modes"));
+  await host.submit("/new");
+  await host.submit("Use the new session defaults.");
+  assert.match(toolPrompt(f.requests[2], "builtin_tool_mode"), /^Built-in tool mode: direct\./);
+  assert.match(toolPrompt(f.requests[2], "mcp_tool_modes"), /direct: MCP tools/);
+  assert.ok(TOOL_NAMES.every((name) => f.requests[2]?.tools?.some((tool) => tool.function.name === name)));
+  assert.ok(f.requests[2]?.tools?.some((tool) => tool.function.name === "mcp__fixture__echo"));
+});
+
+test("an interrupted first request locks mode choices across resume", async (t) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, async (_request, index) => {
+    if (index === 0) await gate;
+    return { kind: "text", text: "Done." };
+  });
+  const { host } = await f.start();
+  const run = host.submit("Start a request.");
+  await until(() => f.requests.length === 1);
+  await host.interrupt(); release(); await run;
+  await host.submit("/tool-mode codemode-only");
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  await resumed.host.submit("Continue with the established mode.");
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
+  const entries = SessionManager.open((await f.sessions())[0] ?? "").getBranch();
+  assert.ok(entries.some((entry) => entry.type === "custom" && entry.customType === TOOL_REQUEST_STATE_ENTRY
+    && JSON.stringify(entry.data).includes('"requested":true')));
+  assert.ok(!JSON.stringify(f.requests.at(-1)?.messages).includes(TOOL_REQUEST_STATE_ENTRY));
+});
+
 test("strict direct built-ins cannot be called from MCP CodeMode", async (t) => {
   const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tool", name: "codemode", arguments: {
-    code: "text('Write' in tools); text(await tools.mcp__fixture__echo({text:'allowed'}));",
+    code: "text('write' in tools); text(await tools.mcp__fixture__echo({text:'allowed'}));",
   } } : { kind: "text", text: "Done." });
   const mcp = await httpMcpFixture(t);
   await writeFile(join(f.home, "settings.json"), JSON.stringify({ ...loadConfig(f.home), toolMode: "direct" }));
@@ -622,7 +728,7 @@ test("MCP directory changes during a run do not expose unused discovery tools in
       await until(() => mcp.streams > 0);
       mcp.setTools([{ ...echoMcpTool, name: "replacement" }]);
       await until(() => mcp.listed > 1);
-      return { kind: "tool", name: "Read", arguments: { path: "source.txt" } };
+      return { kind: "tool", name: "read", arguments: { path: "source.txt" } };
     }
     return { kind: "text", text: "Done." };
   });
@@ -639,7 +745,7 @@ test("MCP directory changes during a run do not expose unused discovery tools in
 test("CodeMode-only tool search cannot activate built-ins and executes them through scripts", async (t) => {
   const f = await fixture(t, (_request, index) => index === 0
     ? { kind: "tool", name: "tool_search", arguments: { query: "Write Read file content" } }
-    : index === 1 ? { kind: "tool", name: "codemode", arguments: { code: 'await tools.Write({path:"script.txt",content:"saved"}); text(await tools.Read({path:"script.txt"}));' } }
+    : index === 1 ? { kind: "tool", name: "codemode", arguments: { code: 'await tools.write({path:"script.txt",content:"saved"}); text(await tools.read({path:"script.txt"}));' } }
       : { kind: "text", text: "Done." });
   const mcp = await httpMcpFixture(t);
   await writeFile(join(f.home, "settings.json"), JSON.stringify({ ...loadConfig(f.home), toolMode: "codemode-only" }));
@@ -661,17 +767,22 @@ test("pending tool modes survive resume and fork, then apply together with MCP a
   await host.submit("/mcp exposure fixture direct");
   await host.submit("Keep current declarations.");
   assert.deepEqual(f.requests[1]?.tools, first);
+  assert.match(toolPrompt(f.requests[1], "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
   assert.ok(ui.messages.every((message) => !/Current:|Pending:/.test(message.text)));
   await host.exit();
   const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
   await resumed.host.submit("Resume with old mode.");
   assert.deepEqual(f.requests.at(-1)?.tools, first);
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
   await resumed.host.submit("/fork");
   await resumed.host.submit("Fork with old mode.");
   assert.deepEqual(f.requests.at(-1)?.tools, first);
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
   await resumed.host.submit("/compact");
   assert.equal(resumed.host.outcome, "completed", JSON.stringify(resumed.ui.messages.filter((message) => message.kind === "error")));
   await resumed.host.submit("Apply both pending modes.");
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode-only\./);
+  assert.match(toolPrompt(f.requests.at(-1), "mcp_tool_modes"), /direct: MCP tools/);
   const after = f.requests.at(-1)?.tools?.map((tool) => tool.function.name) ?? [];
   assert.ok(after.includes("codemode"));
   assert.ok(after.includes("mcp__fixture__echo"));
@@ -679,23 +790,27 @@ test("pending tool modes survive resume and fork, then apply together with MCP a
   await resumed.host.submit("/tool-mode direct");
   await resumed.host.submit("/new");
   await resumed.host.submit("Use new defaults.");
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: direct\./);
   const fresh = f.requests.at(-1)?.tools?.map((tool) => tool.function.name) ?? [];
   assert.ok(!fresh.includes("codemode"));
   assert.ok(TOOL_NAMES.every((name) => fresh.includes(name)));
   assert.ok(fresh.includes("mcp__fixture__echo"));
 });
 
-test("automatic compact applies pending mode before the next request in the same run", async (t) => {
+test("automatic compact applies pending modes and prompts before the next request in the same run", async (t) => {
   let home = "";
+  const mcp = await httpMcpFixture(t);
   const f = await fixture(t, async (_request, index) => {
     if (index === 0) {
       await writeFile(join(home, "settings.json"), JSON.stringify({ ...loadConfig(home), toolMode: "codemode-only" }));
-      return { kind: "tool", name: "Read", arguments: { path: "large.txt", offset: 1, limit: 2000 } };
+      await writeFile(join(home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url, exposure: "direct" } } }));
+      return { kind: "tool", name: "read", arguments: { path: "large.txt", offset: 1, limit: 2000 } };
     }
-    if (index === 1) return { kind: "tool", name: "Read", arguments: { path: "large.txt", offset: 2001, limit: 2000 } };
+    if (index === 1) return { kind: "tool", name: "read", arguments: { path: "large.txt", offset: 2001, limit: 2000 } };
     return { kind: "text", text: "Summary or completed answer." };
   }, false, 24000);
   home = f.home;
+  await writeFile(join(home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
   await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
   const { host, ui } = await f.start();
   await host.submit("Read enough to trigger compact.");
@@ -704,16 +819,47 @@ test("automatic compact applies pending mode before the next request in the same
   assert.ok(after);
   assert.ok(!after.tools?.some((tool) => TOOL_NAMES.includes(tool.function.name)));
   assert.ok(after.tools?.some((tool) => tool.function.name === "codemode"));
+  assert.ok(after.tools?.some((tool) => tool.function.name === "mcp__fixture__echo"));
+  assert.match(toolPrompt(after, "builtin_tool_mode"), /^Built-in tool mode: codemode-only\./);
+  assert.match(toolPrompt(after, "mcp_tool_modes"), /direct: MCP tools/);
+  assert.doesNotMatch(toolPrompt(after, "mcp_tool_modes"), /codemode: Access these MCP tools through codemode/);
+  const persisted = (await Promise.all((await f.sessions()).map((path) => readFile(path, "utf8")))).join("\n");
+  assert.match(persisted, /Built-in tool mode: codemode-only/);
 });
 
-test("failed compact keeps the pending mode unapplied", async (t) => {
+test("failed compact before the first request still allows initial mode selection", async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
   const { host } = await f.start();
   await host.submit("/tool-mode codemode-only");
   await host.submit("/compact");
   assert.equal(host.outcome, "failed");
   await host.submit("Use the original mode.");
-  assert.ok(TOOL_NAMES.every((name) => f.requests[0]?.tools?.some((tool) => tool.function.name === name)));
+  assert.match(toolPrompt(f.requests[0], "builtin_tool_mode"), /^Built-in tool mode: codemode-only\./);
+  assert.ok(!f.requests[0]?.tools?.some((tool) => TOOL_NAMES.includes(tool.function.name)));
+});
+
+test("cancelled compact preserves established built-in and MCP modes", async (t) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, async (_request, index) => {
+    if (index === 1) await gate;
+    return { kind: "text", text: index === 0 ? "Earlier inspected evidence. ".repeat(5000) : "Done." };
+  });
+  const mcp = await httpMcpFixture(t);
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  const { host } = await f.start();
+  await host.submit("Create compactable history.");
+  await host.submit("/tool-mode codemode-only");
+  await host.submit("/mcp exposure fixture direct");
+  const compact = host.submit("/compact");
+  await until(() => f.requests.length === 2);
+  await host.interrupt(); release(); await compact;
+  await host.submit("Keep the established policy after cancellation.");
+  assert.deepEqual(f.requests.at(-1)?.tools, f.requests[0]?.tools);
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
+  assert.match(toolPrompt(f.requests.at(-1), "mcp_tool_modes"), /codemode: Access these MCP tools/);
+  assert.doesNotMatch(toolPrompt(f.requests.at(-1), "mcp_tool_modes"), /direct: MCP tools/);
 });
 
 test("a tool-policy failure after compact prevents the next model request", async (t) => {
@@ -750,10 +896,12 @@ test("tool-mode submenu shows current and pending without adding messages or mod
   await host.submit("/tool-mode");
   assert.match(notices[0] ?? "", /Current: codemode/);
   assert.match(notices[1] ?? "", /Pending: codemode-only/);
+  assert.match(notices[1] ?? "", /Changes apply before the first LLM request/);
   assert.equal(f.requests.length, 0);
   assert.equal(loadConfig(f.home).toolMode, "codemode-only");
   assert.ok(!ui.messages.some((message) => /Current:|Pending:/.test(message.text)));
   await host.submit("Save the conversation.");
+  assert.match(toolPrompt(f.requests[0], "builtin_tool_mode"), /^Built-in tool mode: codemode-only\./);
   const entries = SessionManager.open((await f.sessions())[0] ?? "").getBranch();
   assert.ok(entries.some((entry) => entry.type === "custom" && entry.customType === TOOL_SETTINGS_ENTRY));
   assert.ok(!JSON.stringify(f.requests[0]?.messages).includes(TOOL_SETTINGS_ENTRY));
@@ -766,14 +914,14 @@ test("direct built-in shell calls execute concurrently through the real SDK sche
     const script = `const fs=require("node:fs");fs.writeFileSync("${name}.ready","");const timeout=setTimeout(()=>process.exit(3),5000);const check=setInterval(()=>{if(fs.existsSync("${peer}.ready")){clearInterval(check);clearTimeout(timeout);console.log("overlapped")}},20)`;
     scripts.push({ path: `${name}.cjs`, code: script });
     const quote = (value: string) => `'${value.replaceAll("'", process.platform === "win32" ? "''" : "'\\''")}'`;
-    return { kind: "tool", name: "Bash", arguments: { command: `${process.platform === "win32" ? "& " : ""}${quote(process.execPath)} ${quote(`${name}.cjs`)}` } };
+    return { kind: "tool", name: "bash", arguments: { command: `${process.platform === "win32" ? "& " : ""}${quote(process.execPath)} ${quote(`${name}.cjs`)}` } };
   });
   const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tools", calls } : { kind: "text", text: "Done." });
   for (const script of scripts) await writeFile(join(f.cwd, script.path), script.code);
   const { host, ui } = await f.start();
   await host.submit("Run independent commands.");
-  const shells = ui.tools.filter((tool) => tool.name === "Bash" && tool.state === "done");
-  assert.equal(shells.length, 2, JSON.stringify(ui.tools.filter((tool) => tool.name === "Bash")));
+  const shells = ui.tools.filter((tool) => tool.name === "bash" && tool.state === "done");
+  assert.equal(shells.length, 2, JSON.stringify(ui.tools.filter((tool) => tool.name === "bash")));
   assert.ok(shells.every((tool) => tool.details?.exitCode === 0 && tool.text.includes("overlapped")));
 });
 
@@ -782,7 +930,7 @@ test("cancelling concurrent approvals denies the entire queue and ignores a late
   const decision = new Promise<ApprovalDecision>((resolve) => { finish = resolve; });
   const ui = new RecordingUI(() => decision);
   const broker = new ApprovalBroker(ui, () => "always-ask", () => {});
-  const request: ApprovalRequest = { id: "one", tool: "Write", description: "write one.txt", cwd: "/workspace" };
+  const request: ApprovalRequest = { id: "one", tool: "write", description: "write one.txt", cwd: "/workspace" };
   const calls = [broker.authorize(request), broker.authorize({ ...request, id: "two" }), broker.authorize({ ...request, id: "three" })];
   assert.equal(ui.approvals.length, 1);
   broker.cancel();
@@ -912,7 +1060,7 @@ for (const permission of ["always-ask", "ask-when-needed", "never-ask"]) {
     await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url, disabledTools: ["hidden"] } } }));
     const { host, ui } = await f.start(new RecordingUI(async () => "deny"), ["--permissions", permission]);
     await host.submit("Use the MCP echo tool.");
-    assert.deepEqual(f.requests[0]?.tools?.map(({ function: tool }) => tool.name), ["Read", "Write", "Edit", "Grep", "Glob", "Bash", "codemode", "mcp__fixture__echo"]);
+    assert.deepEqual(f.requests[0]?.tools?.map(({ function: tool }) => tool.name), ["read", "write", "edit", "grep", "glob", "bash", "codemode", "mcp__fixture__echo"]);
     assert.equal(ui.approvals.length, permission === "never-ask" ? 0 : 1);
     assert.equal(mcp.calls.length, permission === "never-ask" ? 1 : 0);
     if (permission !== "never-ask") {
@@ -1071,13 +1219,13 @@ test("interrupt cancels a real in-flight MCP request without replaying it", asyn
   await host.exit();
 });
 
-test("MCP session grants bind exact arguments and connection identity, including tools named Read", async () => {
+test("MCP session grants bind exact arguments and connection identity, including tools named read", async () => {
   const ui = new RecordingUI(async () => "session");
   const broker = new ApprovalBroker(ui, () => "always-ask", () => {});
-  const invocation = { kind: "mcp", server: "fixture", tool: "Read", source: "/home/mcp.json", identity: "connection-one",
+  const invocation = { kind: "mcp", server: "fixture", tool: "read", source: "/home/mcp.json", identity: "connection-one",
     arguments: { path: "file.txt" }, autoApprove: true, destructive: false,
   } satisfies NonNullable<ApprovalRequest["invocation"]>;
-  const request: ApprovalRequest = { id: "one", tool: "Read", cwd: "/workspace", description: "external read", invocation };
+  const request: ApprovalRequest = { id: "one", tool: "read", cwd: "/workspace", description: "external read", invocation };
   assert.equal(await broker.authorize(request), true);
   assert.equal(ui.approvals.length, 1);
   assert.equal(await broker.authorize({ ...request, id: "two" }), true);
@@ -1546,10 +1694,10 @@ test("removed commands are rejected without running the agent, while @ reference
 test("a streamed agent turn reads, writes, edits and executes the native shell", { timeout: 30000 }, async (t) => {
   const shell = process.platform === "win32" ? "[Console]::Write('shell verified')" : "printf 'shell verified'";
   const replies: Reply[] = [
-    { kind: "tool", name: "Read", arguments: { path: "input.txt" } },
-    { kind: "tool", name: "Write", arguments: { path: "result.txt", content: "before\n" } },
-    { kind: "tool", name: "Edit", arguments: { path: "result.txt", oldText: "before", newText: "after" } },
-    { kind: "tool", name: "Bash", arguments: { command: shell } },
+    { kind: "tool", name: "read", arguments: { path: "input.txt" } },
+    { kind: "tool", name: "write", arguments: { path: "result.txt", content: "before\n" } },
+    { kind: "tool", name: "edit", arguments: { path: "result.txt", oldText: "before", newText: "after" } },
+    { kind: "tool", name: "bash", arguments: { command: shell } },
     { kind: "text", text: "Verified all changes." },
   ];
   const f = await fixture(t, (_request, index) => {
@@ -1562,17 +1710,17 @@ test("a streamed agent turn reads, writes, edits and executes the native shell",
   assert.equal(await readFile(join(f.cwd, "result.txt"), "utf8"), "after\n");
   assert.equal(ui.deltas, "Verified all changes.");
   assert.deepEqual(ui.tools.filter((tool) => tool.state === "running" && tool.text === "" && tool.details?.target).map((tool) => tool.details?.target), ["input.txt", "result.txt", "result.txt", shell]);
-  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("source evidence")));
-  assert.ok(ui.tools.some((tool) => tool.name === "Bash" && tool.state === "done" && tool.text.includes("shell verified") && tool.details?.exitCode === 0));
+  assert.ok(ui.tools.some((tool) => tool.name === "read" && tool.state === "done" && tool.text.includes("source evidence")));
+  assert.ok(ui.tools.some((tool) => tool.name === "bash" && tool.state === "done" && tool.text.includes("shell verified") && tool.details?.exitCode === 0));
   const lastRequest = f.requests.at(-1); assert.ok(lastRequest);
   assert.ok(lastRequest.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("Successfully replaced 1 block(s) in result.txt")));
   const saved = await f.sessions(); assert.equal(saved.length, 1);
   assert.ok((await readFile(saved[0] ?? "", "utf8")).includes("Verified all changes."));
-  assert.match(ui.tools.findLast((tool) => tool.name === "Write" && tool.state === "done")?.details?.diff ?? "", /\+1 before/);
-  assert.match(ui.tools.findLast((tool) => tool.name === "Edit" && tool.state === "done")?.details?.diff ?? "", /-1 before\n\+1 after/);
+  assert.match(ui.tools.findLast((tool) => tool.name === "write" && tool.state === "done")?.details?.diff ?? "", /\+1 before/);
+  assert.match(ui.tools.findLast((tool) => tool.name === "edit" && tool.state === "done")?.details?.diff ?? "", /-1 before\n\+1 after/);
   await host.exit();
   const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
-  assert.match(resumed.ui.tools.findLast((tool) => tool.name === "Edit")?.details?.diff ?? "", /-1 before\n\+1 after/);
+  assert.match(resumed.ui.tools.findLast((tool) => tool.name === "edit")?.details?.diff ?? "", /-1 before\n\+1 after/);
 });
 
 test("context status follows the active model window and carries token estimates", async (t) => {
@@ -1611,7 +1759,7 @@ test("actual provider reasoning reaches the transcript with a stable identity an
 test("failed shell receipts retain the exit code in the TUI and restored history", { timeout: 30000 }, async (t) => {
   const command = 'node -e "process.exit(9)"';
   const f = await fixture(t, (_request, index) => index === 0
-    ? { kind: "tool", name: "Bash", arguments: { command } }
+    ? { kind: "tool", name: "bash", arguments: { command } }
     : { kind: "text", text: "The command failed with exit code 9." });
   const { host, ui } = await f.start();
   await host.submit("Run the diagnostic command.");
@@ -1666,13 +1814,13 @@ test("an unrelated active run marker never blocks a new session in the same work
 
 test("denied writes return a tool error and the agent can continue", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => index === 0
-    ? { kind: "tool", name: "Write", arguments: { path: "denied.txt", content: "must not exist" } }
+    ? { kind: "tool", name: "write", arguments: { path: "denied.txt", content: "must not exist" } }
     : { kind: "text", text: "Write was denied." });
   const ui = new RecordingUI(async () => "deny");
   const { host } = await f.start(ui, ["--permissions", "always-ask"]);
   await host.submit("Write a file.");
-  assert.equal(ui.approvals[0]?.tool, "Write");
-  assert.ok(ui.tools.some((tool) => tool.name === "Write" && tool.state === "error" && tool.text.includes("denied")));
+  assert.equal(ui.approvals[0]?.tool, "write");
+  assert.ok(ui.tools.some((tool) => tool.name === "write" && tool.state === "error" && tool.text.includes("denied")));
   await assert.rejects(readFile(join(f.cwd, "denied.txt")), { code: "ENOENT" });
   assert.equal(ui.answers.at(-1), "Write was denied.");
   assert.equal(host.outcome, "completed");
@@ -1680,8 +1828,8 @@ test("denied writes return a tool error and the agent can continue", { timeout: 
 
 test("unconfirmed agents retain six tools but can only inspect files", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => {
-    if (index === 0) return { kind: "tool", name: "Read", arguments: { path: "input.txt" } };
-    if (index === 1) return { kind: "tool", name: "Write", arguments: { path: "denied.txt", content: "must not exist" } };
+    if (index === 0) return { kind: "tool", name: "read", arguments: { path: "input.txt" } };
+    if (index === 1) return { kind: "tool", name: "write", arguments: { path: "denied.txt", content: "must not exist" } };
     return { kind: "text", text: "Inspection complete. Writing unavailable." };
   });
   await writeFile(join(f.cwd, "input.txt"), "read-only evidence\n");
@@ -1692,12 +1840,12 @@ test("unconfirmed agents retain six tools but can only inspect files", { timeout
   const { host, ui } = await f.start(new RecordingUI(), ["resume", manager.getSessionId()]);
   await host.submit("Inspect the input");
   assert.equal(host.outcome, "completed");
-  assert.ok(ui.tools.some((tool) => tool.name === "Read" && tool.state === "done" && tool.text.includes("read-only evidence")));
+  assert.ok(ui.tools.some((tool) => tool.name === "read" && tool.state === "done" && tool.text.includes("read-only evidence")));
   assert.equal(ui.approvals.length, 0);
-  assert.ok(ui.tools.some((tool) => tool.name === "Write" && tool.state === "error"));
+  assert.ok(ui.tools.some((tool) => tool.name === "write" && tool.state === "error"));
   await assert.rejects(readFile(join(f.cwd, "denied.txt")), { code: "ENOENT" });
   assert.equal(ui.answers.at(-1), "Inspection complete. Writing unavailable.");
-  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["Bash", "Edit", "Glob", "Grep", "Read", "Write", "codemode"]);
+  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["bash", "codemode", "edit", "glob", "grep", "read", "write"]);
 });
 
 test("steering and follow-up inputs are consumed by the real agent queue", { timeout: 30000 }, async (t) => {
@@ -1724,7 +1872,7 @@ test("steering and follow-up inputs are consumed by the real agent queue", { tim
 });
 
 test("interrupting pending approval restores queued inputs and prevents the write", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, () => ({ kind: "tool", name: "Write", arguments: { path: "cancelled.txt", content: "must not exist" } }));
+  const f = await fixture(t, () => ({ kind: "tool", name: "write", arguments: { path: "cancelled.txt", content: "must not exist" } }));
   const ui = new RecordingUI(() => new Promise<ApprovalDecision>(() => {}));
   const { host } = await f.start(ui, ["--permissions", "always-ask"]);
   const run = host.submit("Start a write");
@@ -1742,7 +1890,7 @@ test("interrupting pending approval restores queued inputs and prevents the writ
 
 test("resume and fork preserve conversation history without replaying tools", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => index === 0
-    ? { kind: "tool", name: "Write", arguments: { path: "result.txt", content: "first result" } }
+    ? { kind: "tool", name: "write", arguments: { path: "result.txt", content: "first result" } }
     : { kind: "text", text: "Original completed answer." });
   const original = await f.start();
   await original.host.submit("Create one result");
@@ -1912,7 +2060,7 @@ test("a user shell queued during a turn runs afterward and persists its result",
 });
 
 test("interrupt restores queued local commands without executing them", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, () => ({ kind: "tool", name: "Write", arguments: { path: "blocked.txt", content: "blocked mutation" } }));
+  const f = await fixture(t, () => ({ kind: "tool", name: "write", arguments: { path: "blocked.txt", content: "blocked mutation" } }));
   const ui = new RecordingUI(() => new Promise<ApprovalDecision>(() => {}));
   const { host } = await f.start(ui, ["--permissions", "always-ask"]);
   const run = host.submit("Wait for approval");
@@ -1982,12 +2130,12 @@ for (const command of ["/new", "/sessions --last", "/fork"]) {
 test("session approval grants apply only to the same tool, cwd and exact operation", async () => {
   const ui: RecordingUI = new RecordingUI(async (): Promise<ApprovalDecision> => ui.approvals.length === 1 ? "session" : "deny");
   const broker = new ApprovalBroker(ui, () => "always-ask", () => {});
-  const request: ApprovalRequest = { id: "first", tool: "Write", cwd: "/workspace", description: "Write file.txt\ncontent A" };
+  const request: ApprovalRequest = { id: "first", tool: "write", cwd: "/workspace", description: "Write file.txt\ncontent A" };
   assert.equal(await broker.authorize(request), true);
   assert.equal(await broker.authorize({ ...request, id: "another-call" }), true);
   assert.equal(ui.approvals.length, 1);
   assert.equal(await broker.authorize({ ...request, id: "content-change", description: "Write file.txt\ncontent B" }), false);
-  assert.equal(await broker.authorize({ ...request, id: "tool-change", tool: "Edit" }), false);
+  assert.equal(await broker.authorize({ ...request, id: "tool-change", tool: "edit" }), false);
   assert.equal(await broker.authorize({ ...request, id: "cwd-change", cwd: "/another-workspace" }), false);
   assert.equal(ui.approvals.length, 4);
   assert.equal(await broker.authorize(request), true);
@@ -2002,7 +2150,7 @@ test("cancelled approvals ignore late session grants and require fresh approval"
   const ui: RecordingUI = new RecordingUI(async (): Promise<ApprovalDecision> => ui.approvals.length === 1 ? late : "deny");
   const changes: Array<ApprovalRequest | null> = [];
   const broker = new ApprovalBroker(ui, () => "always-ask", (request) => changes.push(request));
-  const request: ApprovalRequest = { id: "cancelled", tool: "Bash", cwd: "/workspace", description: "echo command" };
+  const request: ApprovalRequest = { id: "cancelled", tool: "bash", cwd: "/workspace", description: "echo command" };
   const pending = broker.authorize(request);
   broker.cancel();
   assert.equal(await pending, false);
@@ -2054,7 +2202,7 @@ test("permission changes invalidate pending approval decisions", async () => {
   const decision = new Promise<ApprovalDecision>((resolve) => { resolveDecision = resolve; });
   const ui: RecordingUI = new RecordingUI(async (): Promise<ApprovalDecision> => ui.approvals.length === 1 ? decision : "once");
   const broker = new ApprovalBroker(ui, () => permission, () => {});
-  const request: ApprovalRequest = { id: "permission-change", tool: "Write", cwd: "/workspace", description: "Write output.txt\ncontent" };
+  const request: ApprovalRequest = { id: "permission-change", tool: "write", cwd: "/workspace", description: "Write output.txt\ncontent" };
   const pending = broker.authorize(request);
   permission = "ask-when-needed";
   resolveDecision("session");
@@ -2075,7 +2223,7 @@ test("permission modes keep the same tool schemas and append-only hidden context
   const { host, ui } = await f.start(new RecordingUI(), ["--permissions", "always-ask"]);
   await host.submit("First task");
   const first = f.requests[0]; assert.ok(first);
-  assert.deepEqual(first.tools?.map((tool) => tool.function.name), ["Read", "Write", "Edit", "Grep", "Glob", "Bash", "codemode"]);
+  assert.deepEqual(first.tools?.map((tool) => tool.function.name), ["read", "write", "edit", "grep", "glob", "bash", "codemode"]);
   const context = first.messages.filter((message) => JSON.stringify(message.content).includes("<environment_context>"));
   assert.equal(context.length, 1);
   assert.equal(context[0]?.role, "user");
@@ -2125,9 +2273,9 @@ test("permission modes keep the same tool schemas and append-only hidden context
 
 test("Ask When Needed executes ordinary writes, edits and shell commands without approvals", { timeout: 30000 }, async (t) => {
   const replies: Reply[] = [
-    { kind: "tool", name: "Write", arguments: { path: "automatic.txt", content: "before" } },
-    { kind: "tool", name: "Edit", arguments: { path: "automatic.txt", oldText: "before", newText: "after" } },
-    { kind: "tool", name: "Bash", arguments: { command: "node --version" } },
+    { kind: "tool", name: "write", arguments: { path: "automatic.txt", content: "before" } },
+    { kind: "tool", name: "edit", arguments: { path: "automatic.txt", oldText: "before", newText: "after" } },
+    { kind: "tool", name: "bash", arguments: { command: "node --version" } },
     { kind: "text", text: "Done." },
   ];
   const f = await fixture(t, (_request, index) => { const reply = replies[index]; assert.ok(reply); return reply; });
@@ -2142,8 +2290,8 @@ test("finite danger policy precedes session grants, Never Ask skips approval and
   const ui = new RecordingUI(async () => "session");
   let permission: Permission = "always-ask";
   const broker = new ApprovalBroker(ui, () => permission, () => {});
-  const request = (command: string): ApprovalRequest => ({ id: command, tool: "Bash", cwd: "/workspace", description: command, invocation: { kind: "shell", command, shell: "/bin/sh" } });
-  for (const tool of ["Read", "Grep", "Glob"]) assert.equal(await broker.authorize({ id: tool, tool, cwd: "/workspace", description: "inspect" }), true);
+  const request = (command: string): ApprovalRequest => ({ id: command, tool: "bash", cwd: "/workspace", description: command, invocation: { kind: "shell", command, shell: "/bin/sh" } });
+  for (const tool of ["read", "grep", "glob"]) assert.equal(await broker.authorize({ id: tool, tool, cwd: "/workspace", description: "inspect" }), true);
   assert.equal(await broker.authorize(request("ls -la")), true);
   assert.equal(ui.approvals.length, 0);
   assert.equal(await broker.authorize(request("echo hello")), true);
@@ -2166,16 +2314,16 @@ test("mode changes during asynchronous command inspection cannot authorize a sta
   const ui = new RecordingUI();
   let permission: Permission = "always-ask";
   const broker = new ApprovalBroker(ui, () => permission, () => {});
-  const pending = broker.authorize({ id: "stale", tool: "Bash", cwd: "/workspace", description: "ls", invocation: { kind: "shell", command: "ls", shell: "/bin/sh" } });
+  const pending = broker.authorize({ id: "stale", tool: "bash", cwd: "/workspace", description: "ls", invocation: { kind: "shell", command: "ls", shell: "/bin/sh" } });
   permission = "never-ask";
   broker.reset();
   assert.equal(await pending, false);
   assert.equal(ui.approvals.length, 0);
 });
 
-test("manual compact preserves uppercase file tracking and refreshes hidden context when its anchor is removed", { timeout: 30000 }, async (t) => {
+test("manual compact preserves file tracking and refreshes hidden context when its anchor is removed", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => {
-    if (index === 0) return { kind: "tool", name: "Write", arguments: { path: "tracked.txt", content: "saved" } };
+    if (index === 0) return { kind: "tool", name: "write", arguments: { path: "tracked.txt", content: "saved" } };
     if (index === 1) return { kind: "text", text: "Earlier detailed evidence. ".repeat(5000) };
     return { kind: "text", text: "Summary or completed answer." };
   });
@@ -2202,7 +2350,7 @@ test("manual compact preserves uppercase file tracking and refreshes hidden cont
 
 test("automatic compact during tool continuation reinjects current context before the next conversational request", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => index < 2
-    ? { kind: "tool", name: "Read", arguments: { path: "large.txt", offset: index * 2000 + 1, limit: 2000 } }
+    ? { kind: "tool", name: "read", arguments: { path: "large.txt", offset: index * 2000 + 1, limit: 2000 } }
     : { kind: "text", text: "Compacted evidence or completed answer." }, false, 24000);
   await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
   await writeFile(join(f.cwd, "AGENTS.md"), "Current automatic compact instructions.");

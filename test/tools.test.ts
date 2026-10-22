@@ -56,13 +56,13 @@ test("independent tool sets for overlapping workspaces share Pi's queue for the 
     const path = join(child, "shared.txt");
     await writeFile(path, "alpha=0\nbeta=0\n");
     await Promise.all([
-      call(0, "Edit", { path: "child/shared.txt", edits: [{ oldText: "alpha=0", newText: "alpha=1" }] }),
-      call(1, "Edit", { path: "shared.txt", edits: [{ oldText: "beta=0", newText: "beta=2" }] }),
+      call(0, "edit", { path: "child/shared.txt", edits: [{ oldText: "alpha=0", newText: "alpha=1" }] }),
+      call(1, "edit", { path: "shared.txt", edits: [{ oldText: "beta=0", newText: "beta=2" }] }),
     ]);
     assert.equal(await readFile(path, "utf8"), "alpha=1\nbeta=2\n");
     const conflicting = await Promise.allSettled([
-      call(0, "Edit", { path: "child/shared.txt", edits: [{ oldText: "alpha=1", newText: "alpha=3" }] }),
-      call(1, "Edit", { path: "shared.txt", edits: [{ oldText: "alpha=1", newText: "alpha=4" }] }),
+      call(0, "edit", { path: "child/shared.txt", edits: [{ oldText: "alpha=1", newText: "alpha=3" }] }),
+      call(1, "edit", { path: "shared.txt", edits: [{ oldText: "alpha=1", newText: "alpha=4" }] }),
     ]);
     assert.equal(conflicting.filter((item) => item.status === "fulfilled").length, 1);
     assert.equal(conflicting.filter((item) => item.status === "rejected").length, 1);
@@ -79,18 +79,18 @@ test("file tools preserve exact edits and reject duplicate or denied writes", as
       assert.ok(tool);
       return executeTool(tool, "call", params);
     };
-    await call("Write", { path: "source.txt", content: "first\nsecond\n" });
-    await call("Edit", { path: "source.txt", oldText: "second", newText: "changed" });
+    await call("write", { path: "source.txt", content: "first\nsecond\n" });
+    await call("edit", { path: "source.txt", oldText: "second", newText: "changed" });
     assert.equal(await readFile(join(files.cwd, "source.txt"), "utf8"), "first\nchanged\n");
-    const read = await call("Read", { path: "source.txt", offset: 2, limit: 1 });
+    const read = await call("read", { path: "source.txt", offset: 2, limit: 1 });
     const expectedRead = "changed\n\n[1 more lines in file. Use offset=3 to continue.]";
     assert.deepEqual(read, { content: [{ type: "text", text: expectedRead }], details: undefined, structuredContent: expectedRead });
-    await call("Write", { path: "repeat.txt", content: "same same" });
-    await assert.rejects(call("Edit", { path: "repeat.txt", oldText: "same", newText: "other" }), /occurrences|unique/);
+    await call("write", { path: "repeat.txt", content: "same same" });
+    await assert.rejects(call("edit", { path: "repeat.txt", oldText: "same", newText: "other" }), /occurrences|unique/);
     await assert.rejects(workspacePath(files.cwd, "../outside.txt"), /limited/);
-    await assert.rejects(call("Write", { path: ".git/config", content: "bad" }), /Protected/);
-    await assert.rejects(call("Write", { path: ".GIT/config", content: "bad" }), /Protected/);
-    const denied = createTools({ cwd: files.cwd, shell, authorize: async () => false }).find((tool) => tool.name === "Write");
+    await assert.rejects(call("write", { path: ".git/config", content: "bad" }), /Protected/);
+    await assert.rejects(call("write", { path: ".GIT/config", content: "bad" }), /Protected/);
+    const denied = createTools({ cwd: files.cwd, shell, authorize: async () => false }).find((tool) => tool.name === "write");
     assert.ok(denied);
     await assert.rejects(executeTool(denied, "denied", { path: "blocked.txt", content: "bad" }), /denied/);
     await assert.rejects(readFile(join(files.cwd, "blocked.txt")), /ENOENT/);
@@ -115,7 +115,7 @@ test("concurrent SDK edits to the same file preserve both changes", async (t) =>
   const shell = new ManagedShell(files.cwd);
   t.after(async () => { await shell.stopAll(); await files.cleanup(); });
   await writeFile(join(files.cwd, "source.txt"), "first\nsecond\n");
-  const edit = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Edit");
+  const edit = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "edit");
   assert.ok(edit);
   await Promise.all([
     executeTool(edit, "first", { path: "source.txt", oldText: "first", newText: "changed first" }),
@@ -129,7 +129,7 @@ test("Write returns real changes for new files and overwrites without changing i
   t.after(() => files.cleanup());
   const shell = new ManagedShell(files.cwd);
   t.after(() => shell.stopAll());
-  const write = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Write");
+  const write = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "write");
   assert.ok(write);
   const resultSchema = z.object({ content: z.array(z.object({ text: z.string() })), details: z.object({ diff: z.string() }) });
   const created = resultSchema.parse(await executeTool(write, "new", { path: "preview.txt", content: "first\r\nsecond\r\n" }));
@@ -151,7 +151,7 @@ test("find supports globstar, character classes and brace alternatives", async (
     await writeFile(join(files.cwd, "src", "a.ts"), "export const a = 1;");
     await writeFile(join(files.cwd, "src", "b.js"), "export const b = 1;");
     await writeFile(join(files.cwd, "src", "c.txt"), "text");
-    const find = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Glob");
+    const find = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "glob");
     assert.ok(find);
     const output = await executeTool(find, "glob", { pattern: "**/[ab].{ts,js}" });
     assert.deepEqual(output, { content: [{ type: "text", text: "src/a.ts\nsrc/b.js" }], details: undefined });
@@ -163,7 +163,7 @@ test("SDK edit applies disjoint changes against the original file and preserves 
   const shell = new ManagedShell(files.cwd);
   try {
     await writeFile(join(files.cwd, "source.txt"), "\uFEFFfirst\r\nsecond\r\nthird\r\n");
-    const edit = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Edit");
+    const edit = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "edit");
     assert.ok(edit);
     const output = z.object({ details: z.object({ diff: z.string(), patch: z.string() }) }).parse(await executeTool(edit, "edit", {
       path: "source.txt", edits: [{ oldText: "first", newText: "second" }, { oldText: "third", newText: "last" }],
@@ -184,7 +184,7 @@ test("SDK read returns a structured image and enforces credential guards", async
     await writeFile(join(files.cwd, "pixel.gif"), Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64"));
     await writeFile(join(files.cwd, ".env"), "PASSWORD=hidden");
     await writeFile(join(files.cwd, ".env.example"), "PASSWORD=example");
-    const read = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Read");
+    const read = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "read");
     assert.ok(read);
     const output = z.object({ structuredContent: z.object({ type: z.literal("image"), data: z.string(), mimeType: z.string() }) }).parse(await executeTool(read, "image", { path: "pixel.gif" }));
     assert.equal(output.structuredContent.mimeType, "image/gif");
@@ -206,8 +206,8 @@ test("SDK grep searches with ripgrep while host exclusions override the model gl
     await writeFile(join(files.cwd, "nested", ".ArKcOdE", "state.txt"), "needle metadata");
     await writeFile(join(files.cwd, "node_modules", "dep.txt"), "needle dependency");
     const tools = createTools({ cwd: files.cwd, shell, authorize: async () => true });
-    const grep = tools.find((tool) => tool.name === "Grep");
-    const find = tools.find((tool) => tool.name === "Glob");
+    const grep = tools.find((tool) => tool.name === "grep");
+    const find = tools.find((tool) => tool.name === "glob");
     assert.ok(grep);
     assert.ok(find);
     const result = z.object({ content: z.array(z.object({ type: z.literal("text"), text: z.string() })) });
@@ -231,7 +231,7 @@ test("Grep applies the same file size limit with and without context", async () 
   try {
     await writeFile(join(files.cwd, "large.txt"), "needle\n" + "x".repeat(2 * 1024 * 1024));
     await writeFile(join(files.cwd, "small.txt"), "needle\n");
-    const grep = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Grep");
+    const grep = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "grep");
     assert.ok(grep);
     for (const context of [0, 1]) {
       const result = JSON.stringify(await executeTool(grep, `size-${context}`, { pattern: "needle", context }));
@@ -245,7 +245,7 @@ test("SDK shell provides structured output beyond the bounded process receipt", 
   const files = await fixture();
   const shell = new ManagedShell(files.cwd);
   try {
-    const bash = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Bash");
+    const bash = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "bash");
     assert.ok(bash);
     const output = z.object({ structuredContent: z.object({ output: z.string(), exit_code: z.number() }) }).parse(await executeTool(bash, "large", {
       command: "node -e \"process.stdout.write('a'.repeat(150000)+'END')\"",
@@ -264,8 +264,8 @@ test("approval requests identify exact write content and shell timeout", async (
   const requests: ApprovalRequest[] = [];
   try {
     const tools = createTools({ cwd: files.cwd, shell, authorize: async (request) => { requests.push(request); return false; } });
-    const write = tools.find((tool) => tool.name === "Write");
-    const bash = tools.find((tool) => tool.name === "Bash");
+    const write = tools.find((tool) => tool.name === "write");
+    const bash = tools.find((tool) => tool.name === "bash");
     assert.ok(write);
     assert.ok(bash);
     await assert.rejects(executeTool(write, "first", { path: "file.txt", content: "first" }), /denied/);
@@ -304,7 +304,7 @@ test("bash timeout and nonzero exit report a failed tool result", { timeout: 150
   const files = await fixture();
   const shell = new ManagedShell(files.cwd);
   try {
-    const bash = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "Bash");
+    const bash = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "bash");
     assert.ok(bash);
     const failedReceipt = z.object({ isError: z.literal(true), content: z.array(z.object({ type: z.literal("text"), text: z.string() })), details: z.object({ exitCode: z.number().nullable(), status: z.string() }) });
     const failure = failedReceipt.parse(await executeTool(bash, "failure", { command: "node -e \"process.exit(9)\"" }));

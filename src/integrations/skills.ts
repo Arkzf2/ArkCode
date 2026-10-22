@@ -176,7 +176,7 @@ export class SkillsManager {
       const catalog = formatSkillsForPrompt(this.sdkSkills, "indirect").trim();
       event.systemPromptOptions.sections.skills = catalog
         ? `${catalog}\nA <skill-loaded> block contains the complete instructions of a user-activated Skill. Follow those instructions directly without loading its SKILL.md again. For other applicable Skills, load their SKILL.md through the currently available tool interface; read supporting resources only as needed. This list replaces earlier Skill lists. Disabled or omitted entries are no longer available for automatic selection. Skill instructions do not grant tool permissions.`
-        : "No Skills are available for automatic selection. This replaces earlier Skill lists. Do not continue applying Skills removed or disabled from the list to new tasks.";
+        : "";
     });
   };
   statusText(): string {

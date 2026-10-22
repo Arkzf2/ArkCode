@@ -22,7 +22,7 @@ test("switching away from a displayed approval preserves it until its session is
   const second = new SessionView(ui, () => {});
   t.after(() => { first.stop(); second.stop(); ui.stop(); });
   ui.status(idle); ui.start(); first.activate();
-  const approval = first.approve({ id: "a", tool: "Write", description: "Only approve in session A", cwd: idle.cwd });
+  const approval = first.approve({ id: "a", tool: "write", description: "Only approve in session A", cwd: idle.cwd });
   await terminal.flush();
   assert.match(terminal.text(), /Only approve in session A/);
   first.deactivate(); second.activate();
@@ -81,6 +81,7 @@ test("tool-mode menu updates pending and closes without leaving transcript conte
   ui.start();
   let pending: ToolMode = "codemode";
   const menu = browseToolMode({ ui, current: () => "codemode", pending: () => pending,
+    beforeFirstRequest: () => false,
     save: (mode) => { pending = mode; }, active: () => true,
   });
   await terminal.flush();
@@ -127,7 +128,7 @@ test("activity and messages use the same full-size dot as tools", async (t) => {
   t.after(() => ui.stop());
   ui.status({ ...idle, state: { kind: "running", id: "run", startedAt: Date.now() } });
   ui.message("info", "Preparing the command.");
-  ui.tool("command", "Bash", "", "running", { target: "git status" });
+  ui.tool("command", "bash", "", "running", { target: "git status" });
   ui.start();
   await terminal.flush();
   const dots = terminal.lines().filter((line) => line.trimStart().startsWith("●"));
@@ -143,7 +144,7 @@ test("terminal cells distinguish messages, commands, flags, paths and gray outpu
   ui.status(idle);
   ui.message("info", "Checking the current changes.");
   ui.message("assistant", "I will inspect the source.");
-  ui.tool("shell", "Bash", "+ ordinary output\nPASS is still output", "running", { target: 'git diff --stat "src/main.ts"' });
+  ui.tool("shell", "bash", "+ ordinary output\nPASS is still output", "running", { target: 'git diff --stat "src/main.ts"' });
   ui.start();
   await terminal.flush();
   assert.equal(terminal.foreground("● Running"), 0x44d374);
@@ -165,8 +166,8 @@ test("mouse expands and collapses one receipt while Ctrl+T controls all receipts
   t.after(() => ui.stop());
   ui.status(idle);
   ui.setDraft("Keep this draft");
-  ui.tool("first", "Bash", "one\ntwo\nthree\nfirst hidden\nfirst last", "done", { target: "git status --short" });
-  ui.tool("second", "Read", "alpha\nbeta\ngamma\nsecond hidden", "done", { target: "src/中文.ts" });
+  ui.tool("first", "bash", "one\ntwo\nthree\nfirst hidden\nfirst last", "done", { target: "git status --short" });
+  ui.tool("second", "read", "alpha\nbeta\ngamma\nsecond hidden", "done", { target: "src/中文.ts" });
   ui.start();
   await terminal.flush();
   assert.doesNotMatch(terminal.text(), /first hidden|second hidden/);
@@ -198,7 +199,7 @@ test("receipt clicks track wrapping, resizes and the terminal viewport", async (
   t.after(() => ui.stop());
   ui.status(idle);
   ui.message("assistant", Array.from({ length: 50 }, (_, index) => `Earlier message ${index}`).join("\n"));
-  ui.tool("long", "Bash", "first\nsecond\nthird\nlast visible after click", "done", { target: "git status --short" });
+  ui.tool("long", "bash", "first\nsecond\nthird\nlast visible after click", "done", { target: "git status --short" });
   ui.start();
   await terminal.flush();
   terminal.resize(40, 26);
@@ -218,7 +219,7 @@ test("mouse events do not leak into drafts or bypass approval", async (t) => {
   t.after(() => ui.stop());
   ui.status(idle);
   ui.setDraft("Retained");
-  ui.tool("tool", "Bash", "1\n2\n3\nsecret fourth line", "done");
+  ui.tool("tool", "bash", "1\n2\n3\nsecret fourth line", "done");
   ui.start();
   await terminal.flush();
   const { row, column } = terminal.find("+1 lines");
@@ -228,7 +229,7 @@ test("mouse events do not leak into drafts or bypass approval", async (t) => {
   terminal.press(`\x1b[<2;${column + 1};${row + 1}m`);
   await terminal.flush();
   assert.doesNotMatch(terminal.text(), /secret fourth line/);
-  const approval = ui.approve({ id: "approve", tool: "Write", description: "Write a file", cwd: idle.cwd });
+  const approval = ui.approve({ id: "approve", tool: "write", description: "Write a file", cwd: idle.cwd });
   await terminal.flush();
   terminal.press("\x1b[<0;10;10M");
   terminal.press("\x1b[<0;10;10m");
@@ -244,7 +245,7 @@ test("wheel and page keys browse earlier output and End returns to the latest re
   t.after(() => ui.stop());
   ui.status(idle);
   ui.message("assistant", Array.from({ length: 80 }, (_, index) => `History ${index}`).join("\n"));
-  ui.tool("last", "Bash", "latest result", "done", { target: "git status" });
+  ui.tool("last", "bash", "latest result", "done", { target: "git status" });
   ui.start();
   await terminal.flush();
   assert.match(terminal.text(), /latest result/);
@@ -266,7 +267,7 @@ test("edits render real numbered changes and statistics, and wrap CJK within ter
     const ui = new TerminalUI(actions, terminal);
     t.after(() => ui.stop());
     ui.status(idle);
-    ui.tool("edit", "Edit", "Successfully edited file", "done", { target: "src/中文.ts", diff: " 1 header\n-2 oldValue\n+2 newValue\n+3 中文内容需要正确换行且保留行号" });
+    ui.tool("edit", "edit", "Successfully edited file", "done", { target: "src/中文.ts", diff: " 1 header\n-2 oldValue\n+2 newValue\n+3 中文内容需要正确换行且保留行号" });
     ui.start();
     await terminal.flush();
     assert.match(terminal.text(), /\+2 -1/);

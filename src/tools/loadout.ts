@@ -4,6 +4,7 @@ import type { SessionToolSettings } from "../session/tool-settings.js";
 import type { McpManager } from "../integrations/mcp/manager.js";
 import { TOOL_NAMES } from "./index.js";
 import { builtinExposure } from "./mode.js";
+import { builtinToolModePrompt, mcpToolModesPrompt } from "../context/tool-modes.js";
 
 export function createToolLoadout(options: {
   settings: SessionToolSettings; tools: ToolDefinition[]; mcp: McpManager; resetApprovals: () => void;
@@ -43,8 +44,7 @@ export function createToolLoadout(options: {
         .filter((name) => !TOOL_NAMES.includes(name) && name !== "codemode" && name !== "tool_search");
       activate();
     });
-    pi.on("before_agent_start", () => { settings.ready(); activate(); restored = []; });
-    pi.on("session_compact", async () => {
+    const applyPending = async () => {
       const previous = settings.current;
       try {
         const next = settings.defaults();
@@ -61,6 +61,15 @@ export function createToolLoadout(options: {
         settings.persist();
         settings.clearFailure();
       } catch (error) { settings.current = previous; settings.block(error); throw error; }
+    };
+    pi.on("before_agent_start", async (event) => {
+      settings.ready();
+      if (settings.canApplyBeforeRequest) await applyPending();
+      activate(); restored = [];
+      event.systemPromptOptions.sectionProviders.builtin_tool_mode = () => builtinToolModePrompt(settings.current.toolMode);
+      event.systemPromptOptions.sectionProviders.mcp_tool_modes = () => mcpToolModesPrompt(mcp.exposures());
     });
+    pi.on("before_provider_request", () => { settings.markRequested(); });
+    pi.on("session_compact", applyPending);
   };
 }

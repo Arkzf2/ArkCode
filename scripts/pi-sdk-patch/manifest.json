@@ -42,6 +42,17 @@
     "dist/extensions/mcp/runtime.d.ts": {
       "original": "d5c9561f03ff23a629e9744971ba218a9092fa1a9635c4079dbda816b99e8178",
       "patched": "7c6b4ccc7e60dd4e6b40dbecca4b7f0687dd49afee7fe757559c4a55ce522bbb"
+    },
+    "dist/core/system-prompt.js": {
+      "original": "ab02924fa078eef81addcf39bc0e43d3663f06d627cb42ead403662a004a9e5c",
+      "patched": "a7b9e7999f3dac38597f68b8d170145b325ae1ca9f4a60b0b4a3d22421f6baea",
+      "previousPatched": [
+        "a454080fe7930c0e00011395a5b6c15c456bf72ca3e1222bab5470bf88680793"
+      ]
+    },
+    "dist/core/system-prompt.d.ts": {
+      "original": "4304c6b9a20f0ee613c64cc67f96adde1357c2af525200418780238111b40966",
+      "patched": "ba1bcb03523edadc4e3864107f72186abb63574d775a7254cfda812fe769a4a9"
     }
   }
 }

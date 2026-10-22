@@ -6,7 +6,7 @@ import { test, type TestContext } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { loadConfig, saveConfig } from "../src/config/settings.js";
 import { loadMcpConfig } from "../src/integrations/mcp/config.js";
-import { SessionToolSettings, TOOL_SETTINGS_ENTRY } from "../src/session/tool-settings.js";
+import { SessionToolSettings, TOOL_REQUEST_STATE_ENTRY, TOOL_SETTINGS_ENTRY } from "../src/session/tool-settings.js";
 
 async function fixture(t: TestContext) {
   const home = await mkdtemp(join(tmpdir(), "arkcode-tool-settings-"));
@@ -59,4 +59,20 @@ test("invalid tool snapshots and invalid configured modes fail validation", asyn
   assert.throws(() => new SessionToolSettings(f.manager, f.options));
   await writeFile(join(f.home, "settings.json"), JSON.stringify({ toolMode: "unsafe" }));
   assert.throws(() => loadConfig(f.home), /Cannot load ArkCode settings/);
+});
+
+test("request state survives non-model history, resume, and branch changes", async (t) => {
+  const f = await fixture(t);
+  const settings = new SessionToolSettings(f.manager, f.options);
+  assert.equal(settings.canApplyBeforeRequest, true);
+  f.manager.appendCustomMessageEntry("local-shell", "Local work without an LLM request.", false);
+  const initial = f.manager.getLeafId(); assert.ok(initial);
+  const unrequested = new SessionToolSettings(f.manager, f.options);
+  assert.equal(unrequested.canApplyBeforeRequest, true);
+  unrequested.markRequested(); unrequested.markRequested();
+  assert.equal(unrequested.canApplyBeforeRequest, false);
+  assert.equal(new SessionToolSettings(f.manager, f.options).canApplyBeforeRequest, false);
+  assert.equal(f.manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === TOOL_REQUEST_STATE_ENTRY).length, 2);
+  f.manager.branch(initial);
+  assert.equal(new SessionToolSettings(f.manager, f.options).canApplyBeforeRequest, true);
 });

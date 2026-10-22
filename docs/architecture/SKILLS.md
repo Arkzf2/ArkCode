@@ -19,13 +19,15 @@ ArkCode 使用 Pi SDK 1.2.0 的 `Skill` 类型、`loadSkills()`、`formatSkillsF
 
 默认 system prompt 只包含名称、描述和 manifest 路径。`disable-model-invocation: true` 的项从自动目录排除，但仍可在 `@` 或 List skills 中由用户选择。名称含有无法用于 mention 的分隔符时跳过并显示诊断。
 
-每次 agent run 的 `before_agent_start` 更新 Pi system prompt 的 skills 段，当前目录替换此前目录。正文不预加载到该段。模型根据描述自行选择后，通过 ArkCode 的 Read 加载 `SKILL.md` 和所需参考文件。CodeMode 模式中仍通过现有工具发现与调用路径读取，不新增执行接口。
+每次 agent run 的 `before_agent_start` 更新 Pi system prompt 的 skills 段，当前目录替换此前目录。正文不预加载到该段。模型根据描述自行选择后，通过 ArkCode 的 read 加载 `SKILL.md` 和所需参考文件。CodeMode 模式中仍通过现有工具发现与调用路径读取，不新增执行接口。
+
+没有已启用且允许模型自行选择的 Skill 时，不加载 skills 段，也不添加空目录占位提示。若此前存在目录，SDK 发送 section 删除更新，使旧目录不再属于当前 system。只有手动选择型 Skill 时同样省略自动目录，用户仍可明确选择并随用户消息加载正文。
 
 用户输入 `/skill:name 任务` 或 `@skill:name` 时，宿主在提交或入队时读取所选正文，去除 frontmatter，并为每个 Skill 生成 `User activated the skill "...". Follow the loaded skill instructions.` 和 `<skill-loaded name="...">` 正文块。原始用户输入放在所有正文块之后，可一次选择多个 Skill，同名重复提及只加载一次。提示要求直接遵循已加载正文，不再为激活而重复读取同一 `SKILL.md`；其他适用 Skill 通过当前可用工具接口加载。宿主提前展开是为了支持多项 `@` 选择、明确报错和固定队列快照；SDK 的私有单项展开方法没有被调用。未知、禁用或已丢失的项会报错，不向模型提交不完整请求。行内代码和围栏代码中的 mention 不触发加载。界面隐藏激活说明和正文块，旧会话的 `<skill>` 块仍支持隐藏。
 
 一条输入最多选择 8 个不同 Skill，单个正文和参考文件最多 2 MiB。目录元信息没有额外的 token 或总字节预算，沿用 Pi 的格式化行为。目录很多时会增加每轮 system prompt 长度。
 
-已登记且启用的 Skill 根目录内文件可由 Read 只读访问，包括用户目录和 cwd 外的祖先项目 Skill。读取前重新验证根目录与 manifest 的真实路径，资源链接不得越出已登记根目录，`.git`、`.arkcode` 与 `.env*` 文件不开放。Write/Edit 和其他工具继续遵循原有工作区与审批检查。Skills 不授予 shell、MCP 或额外工具权限；这不是操作系统沙箱。
+已登记且启用的 Skill 根目录内文件可由 read 只读访问，包括用户目录和 cwd 外的祖先项目 Skill。读取前重新验证根目录与 manifest 的真实路径，资源链接不得越出已登记根目录，`.git`、`.arkcode` 与 `.env*` 文件不开放。write/edit 和其他工具继续遵循原有工作区与审批检查。Skills 不授予 shell、MCP 或额外工具权限；这不是操作系统沙箱。
 
 ## 会话中的变化
 
@@ -35,7 +37,7 @@ ArkCode 使用 Pi SDK 1.2.0 的 `Skill` 类型、`loadSkills()`、`formatSkillsF
 | enable / disable | 按实际 manifest 路径保存偏好，更新后续可用目录与新输入校验 |
 | 已加载正文被禁用 | 历史保留；当前目录和提示要求后续新任务停止沿用已禁用项 |
 | 已排队的选择 | 保留入队时正文快照；不会用磁盘新版本改写已排队输入 |
-| 修改现有正文 | 下次明确选择或 Read 读取当前文件，不需要 reload |
+| 修改现有正文 | 下次明确选择或 read 读取当前文件，不需要 reload |
 | 新增、删除或修改元信息 | reload 或打开新会话后刷新发现结果 |
 | 切换现有会话 | 使用该会话目录，重新读取共享启停偏好，补全跟随当前会话 |
 | resume / fork | 重新发现当前来源，保留原有历史，不重放 Skill 加载或脚本 |

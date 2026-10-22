@@ -63,17 +63,17 @@ arkcode --model local/my-model
 
 | 模式 | 实际行为 |
 | --- | --- |
-| Always Ask (`always-ask`) | 内建 Read/Grep/Glob、独立的 `ls` 及已获会话批准的相同操作自动允许；其余动作和 MCP 调用需要批准 |
-| Ask When Needed (`ask-when-needed`) | 普通 Write/Edit/Bash 自动允许，高危命令询问；MCP 默认询问，用户级 `autoApproveTools` 中的工具可自动批准，服务标记为 destructive 的工具仍询问 |
+| Always Ask (`always-ask`) | 内建 read/grep/glob、独立的 `ls` 及已获会话批准的相同操作自动允许；其余动作和 MCP 调用需要批准 |
+| Ask When Needed (`ask-when-needed`) | 普通 write/edit/bash 自动允许，高危命令询问；MCP 默认询问，用户级 `autoApproveTools` 中的工具可自动批准，服务标记为 destructive 的工具仍询问 |
 | Never Ask (`never-ask`) | 使用当前用户的 OS 权限执行，内建工具和 MCP 不等待调用审批；仍遵守服务器启用状态、工具过滤、viewer 和恢复保护 |
 
-六个内建工具 `Read`、`Write`、`Edit`、`Grep`、`Glob`、`Bash` 在三种权限模式中都可使用，暴露形式由 `/tool-mode` 决定。MCP 工具由已连接服务器的当前目录动态注册，名称为 `mcp__<server>__<tool>`，清洗或超长名称加 hash。权限切换不会改变工具 schema。原 `find` 改名为 `Glob`，原 `ls` 工具删除；目录列表使用 Bash。Windows 默认执行 PowerShell，因此 `Bash` 是工具名，实际 shell 由环境上下文提供。Always Ask 也允许独立的 `Get-ChildItem`；重定向、管道、命令替换和串联命令不属于列表豁免。
+六个内建工具 `read`、`write`、`edit`、`grep`、`glob`、`bash` 在三种权限模式中都可使用，暴露形式由 `/tool-mode` 决定。MCP 工具由已连接服务器的当前目录动态注册，名称为 `mcp__<server>__<tool>`，清洗或超长名称加 hash。权限切换不会改变工具 schema。原 `find` 改名为 `glob`，原 `ls` 工具删除；目录列表使用 bash。Windows 默认执行 PowerShell，因此 `bash` 是工具名，实际 shell 由环境上下文提供。Always Ask 也允许独立的 `Get-ChildItem`；重定向、管道、命令替换和串联命令不属于列表豁免。
 
 未信任目录跳过项目 AGENTS.md，保留全局规则，默认 Always Ask；显式 CLI 权限仍生效。通过 `/permissions` 选择的模式会保存，下次启动自动恢复；`--permissions always-ask/ask-when-needed/never-ask` 可覆盖当次启动的模式。旧 `ask`、`full-access` 和 `--full-access` 仍映射到相应新模式；旧 `read-only` 配置及 `--read-only` 会报错，要求明确选择新模式。
 
 Ask When Needed 采用 Kimi 的普通动作自动批准、有限高危规则优先询问的机制。规则覆盖关机/重启、磁盘格式化、写入设备的 `dd`、递归强制删除等，并检查命令包装、命令替换与嵌套 shell。无通配、变量和 `..` 的 `/tmp`、`/temp` 删除目标有例外。PowerShell 使用原生 AST，增加对应 Windows 命令规则。POSIX 使用 `bash-parser` 在独立解析进程中检查；超时、解析失败及尚不支持的 heredoc 视为无法分析，在 Ask When Needed 中自动允许，在 Always Ask 中询问。它不检查任意脚本或所有副作用，例如 `git push`、`git reset --hard` 和 Python 脚本不会仅因该有限规则要求批准。
 
-会话授权绑定完整工具参数、shell 和目录。停止、切换权限或切换会话撤销旧审批，恢复历史不会恢复批准记录；已知高危命令优先于会话授权，每次仍询问，Never Ask 跳过此检查。拒绝当前调用会返回工具错误，不创建持久黑名单。文件工具保留工作区、受保护路径、symlink 和文件大小限制。Bash 命令使用当前用户权限，并可访问工作区之外的路径。
+会话授权绑定完整工具参数、shell 和目录。停止、切换权限或切换会话撤销旧审批，恢复历史不会恢复批准记录；已知高危命令优先于会话授权，每次仍询问，Never Ask 跳过此检查。拒绝当前调用会返回工具错误，不创建持久黑名单。文件工具保留工作区、受保护路径、symlink 和文件大小限制。bash 命令使用当前用户权限，并可访问工作区之外的路径。
 
 MCP 会话授权还绑定原始 server/tool、配置来源、配置与 schema 指纹、连接身份及完整参数，不能沿用到重连后的同名服务。`readOnlyHint` 不自动授予权限；服务的 destructive 标记在两种询问模式中优先于自动批准和会话批准。MCP 的执行权限与工具是否暴露分别管理。外部服务不受 ArkCode 文件工具的工作区限制，MCP roots 也不是 OS 沙箱。
 
@@ -81,7 +81,7 @@ MCP 会话授权还绑定原始 server/tool、配置来源、配置与 schema �
 
 可以在多个终端同时打开同一工作区，运行不同会话。同一个 session 同时只有一个可写宿主，其他终端恢复该 session 时进入 Read-only viewer，定期刷新已保存的历史，不能发送、steer、改名或修改该会话设置。viewer 可以 `/new` 或 `/fork` 创建独立会话。原宿主退出后，在 viewer 中用 `/sessions` 重新打开该会话，即可重新尝试取得输入权。会话锁按 session ID 管理，不按 workspace 或 `--home` 划分。
 
-Edit/Write 沿用 Pi 的同文件修改队列。同一进程内不同会话、不同 cwd 访问同一个实际文件时，SDK 会让这些文件修改依次执行。队列不跨独立终端进程，也不覆盖 shell、MCP 或外部编辑器；完整 Write 仍可覆盖旧内容。这与 Pi 原生行为一致，没有额外的版本检查或自动合并。
+edit/write 沿用 Pi 的同文件修改队列。同一进程内不同会话、不同 cwd 访问同一个实际文件时，SDK 会让这些文件修改依次执行。队列不跨独立终端进程，也不覆盖 shell、MCP 或外部编辑器；完整 write 仍可覆盖旧内容。这与 Pi 原生行为一致，没有额外的版本检查或自动合并。
 
 历史恢复不重放工具、草稿或队列，中断不会回滚文件。恢复某个 session 时发现其 active 运行标记，会显示 Execution unconfirmed，并限制该会话进行文件检查。其他 session 的运行标记不会阻止新会话或正常并发任务。强制结束宿主不保证所有子进程已退出；确认旧命令已结束后，才能手动将对应 `runs/` 标记改为 `interrupted`，补上 `endedAt` 并去掉 `pid`，然后重新打开该会话。
 
@@ -93,7 +93,7 @@ Edit/Write 沿用 Pi 的同文件修改队列。同一进程内不同会话、�
 
 `/skills` 打开 List skills、Enable/Disable Skills、Reload skills 和来源诊断菜单。List skills 选择后加入草稿，不会直接提交。启停页支持输入过滤、方向键与翻页，Space 或 Enter 切换，Esc／Ctrl+C 返回。更改立即保存到 ArkCode 配置目录的 `skills.json`。Skill 使用紫色，文件与来源使用青色，启用使用绿色，禁用使用灰色，管理标题使用暖黄色。
 
-输入 `@` 搜索文件和已启用 Skill，也可用名称或描述搜索。选择 Skill 后插入 `@skill:name`；输入 `@skill:` 只搜索 Skills。支持在一条消息中选择多个 Skill，也支持 `/skill:name 任务描述`。宿主在提交或入队时读取所选正文并固定快照；普通请求只包含名称、描述和路径，模型按需使用 Read 加载正文及参考文件。`disable-model-invocation: true` 的 Skill 只供用户明确选择。
+输入 `@` 搜索文件和已启用 Skill，也可用名称或描述搜索。选择 Skill 后插入 `@skill:name`；输入 `@skill:` 只搜索 Skills。支持在一条消息中选择多个 Skill，也支持 `/skill:name 任务描述`。宿主在提交或入队时读取所选正文并固定快照；普通请求只包含名称、描述和路径，模型按需使用 read 加载正文及参考文件。`disable-model-invocation: true` 的 Skill 只供用户明确选择。
 
 也可直接使用 `/skills list`、`/skills reload`、`/skills enable <name 或完整 SKILL.md 路径>` 和 `/skills disable <name 或完整 SKILL.md 路径>`。同名项的启停必须使用完整路径。重新扫描和启停要求当前会话空闲且无待消费队列，viewer 只可查看。禁用影响新输入和后续可用目录，历史正文与已入队快照保留。新增目录后用 reload 或打开新会话发现；无需重建 MCP 连接。完整的发现、上下文与读取规则见 [Skills 机制](docs/architecture/SKILLS.md)。
 
@@ -127,11 +127,11 @@ Edit/Write 沿用 Pi 的同文件修改队列。同一进程内不同会话、�
 
 启动、新建或首次恢复会话时，composer 等待全部已启用且允许连接的 MCP 完成连接和工具发现，等待期间不接收对话输入，Ctrl+C 可退出。单个服务失败不阻止其他服务连接，但交互模式会停留在失败处理页，明确选择重试或使用当前可用工具继续后才开放 composer；非交互模式直接报错，不发送工具不完整的首轮请求。禁用、viewer 或恢复保护阻止的连接不参与等待。服务器的 tools/list_changed 更新目录，禁用或删除后旧工具不可调用；断线后 SDK 可在下次调用时重新连接，并对新连接重新审批。审批期间 schema 改变会取消旧调用。新建、恢复、fork 和退出会等待旧连接关闭；历史恢复不重放调用或恢复旧授权。中断发送协议取消请求，但外部服务未必能撤销已发生的副作用。普通失败和超时不自动重放工具；SDK 对服务器明确返回 session expired 的请求可重建会话后再尝试一次，仍需经过新连接的授权检查。
 
-MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目录更新和结果转换。`exposure` 默认 `codemode`，工具在脚本中按需发现；设为 `direct` 可直接声明给模型，`deferred` 通过 `tool_search` 加载，`hidden` 隐藏。`toolExposure` 可按原始工具名或 Pi 的 `*` 模式覆盖单项，`enabledTools` / `disabledTools` 始终优先过滤。使用 `/mcp exposure <server> <codemode|deferred|direct|hidden>` 保存模式，在新会话或成功 compact 后应用；reload、reconnect 和 enable 保留当前会话的 exposure。disable、配置删除和工具过滤会立即阻止实际调用。
+MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目录更新和结果转换。`exposure` 默认 `codemode`，工具在脚本中按需发现；设为 `direct` 可直接声明给模型，`deferred` 通过 `tool_search` 加载，`hidden` 隐藏。`toolExposure` 可按原始工具名或 Pi 的 `*` 模式覆盖单项，`enabledTools` / `disabledTools` 始终优先过滤。使用 `/mcp exposure <server> <codemode|deferred|direct|hidden>` 保存模式，在首次 LLM 请求前、新会话或成功 compact 后应用；首次请求后，reload、reconnect 和 enable 保留当前会话的 exposure。disable、配置删除和工具过滤会立即阻止实际调用。没有启用的 MCP 模式时不拼接 MCP 指南。
 
 `/mcp login <server>` 使用 SDK 的 OAuth 自动发现和动态客户端注册。交互界面显示授权链接，浏览器回调完成后自动重连，也可粘贴回调 URL。`/mcp logout <server>` 删除对应凭据并断开服务。中断或退出会取消登录。菜单只在远程服务器要求 OAuth 时显示 Sign in，有已存 OAuth token 时显示 Sign out；stdio 和已有 header / bearer token 服务不显示这些动作。
 
-文本、图片、工具错误和结构化结果由 SDK 转换。CodeMode 获得完整 MCP 结果对象，可读取 `result.structuredContent`；直接调用以服务提供的文本内容为主。SDK 对大文本输出截断并保存临时文件，宿主只允许本会话的 Read 读取已登记的输出文件，文件被替换或会话运行实例结束后失效，不放开整个临时目录。MCP resources/prompts 和旧式 HTTP+SSE 尚未开放；资源工具在扩展与模型白名单中均关闭，待补上逐服务器资源审批后再接入。`pi mcp add` 属于 Pi CLI，不会自动变为 `arkcode mcp add`，当前通过配置文件接入。
+文本、图片、工具错误和结构化结果由 SDK 转换。CodeMode 获得完整 MCP 结果对象，可读取 `result.structuredContent`；直接调用以服务提供的文本内容为主。SDK 对大文本输出截断并保存临时文件，宿主只允许本会话的 read 读取已登记的输出文件，文件被替换或会话运行实例结束后失效，不放开整个临时目录。MCP resources/prompts 和旧式 HTTP+SSE 尚未开放；资源工具在扩展与模型白名单中均关闭，待补上逐服务器资源审批后再接入。`pi mcp add` 属于 Pi CLI，不会自动变为 `arkcode mcp add`，当前通过配置文件接入。
 
 ## CodeMode 与基础工具
 
@@ -139,7 +139,7 @@ MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目�
 
 `/tool-mode` 打开临时子菜单，仅在这里显示 Current 和有变化时的 Pending。支持 `direct`（六个基础工具仅直接调用）、`codemode`（直接与脚本调用，默认）、`codemode-only`（仅脚本调用）；也可用 `/tool-mode <mode>` 保存设置。菜单和命令不进入聊天或输入历史。MCP exposure 独立配置，基础工具的 only 模式仍可保留 MCP direct 工具。只有基础工具和当前 MCP 策略需要时才声明 CodeMode／工具搜索入口。
 
-模式修改在新会话或手动、自动 compact 成功后生效。当前会话、resume 和 fork 保留所在分支的策略；fork 后成功 compact 可应用最新设置。compact 取消或失败保留旧策略。策略快照只保存工具模式和 MCP exposure，不保存凭据或执行命令，也不发送给模型。MCP 按需发现及真实服务端工具目录变化仍可在会话内发生。新增声明复用 Pi 的协议能力；工具卸载同时停止执行并追加隐藏通知，不承诺所有协议都能保留缓存。
+新会话首次 LLM 请求前可反复修改模式，首次请求使用最新选择并同步拼接 system prompt。首次请求后，模式修改在新会话或手动、自动 compact 成功后生效。resume 和 fork 保留所在分支的策略及是否请求过 LLM 的状态；fork 后成功 compact 可应用最新设置。compact 取消或失败保留已请求会话的旧策略。策略快照只保存工具模式和 MCP exposure，不保存凭据或执行命令；首次请求状态另行保存，两者都不发送给模型。MCP 按需发现及真实服务端工具目录变化仍可在会话内发生。新增声明复用 Pi 的协议能力；工具卸载同时停止执行并追加隐藏通知，不承诺所有协议都能保留缓存。
 
 `WebSearch` 使用当前模型供应商的服务端搜索，支持官方入口和兼容的自定义端点。OpenAI Responses 发送 `web_search`；Anthropic Messages 发送基础版本 `web_search_20250305`，并优先查看模型详情中的 `capabilities.server_tools.web_search.supported`。搜索由独立模型请求执行，只发送查询，不上传当前对话或本地文件。普通 Chat Completions 和其他协议不声明此工具。
 
@@ -147,11 +147,11 @@ MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目�
 
 `/web-search status` 查看当前模型的验证状态，`/web-search check` 发出一次真实搜索验证，可能产生供应商费用；`on` / `off` 保存启停设置，并在下次对话生效。默认启用，可在 `settings.json` 设置 `"webSearch": false`。兼容端点在首次实际搜索时验证，必须返回成功的服务端搜索记录，不能只返回普通文本。能力记录仅保留在当前进程中，按端点、协议、模型及凭据身份区分；明确不支持后隐藏工具，可用 `check` 重新验证。限流、鉴权、超时和服务端执行错误不会被记作永久不支持。搜索格式被代理接受不代表它支持所有其他内置工具。
 
-六个基础工具复用 Pi 的并行调度；Write/Edit 对同一文件的修改排队，不同文件可以并行。审批界面逐项展示，通过后的独立调用可并行执行。读后编辑、同仓库 Git 修改等有依赖的操作仍应按顺序调用；Bash 不受文件工具的同文件队列保护。
+六个基础工具复用 Pi 的并行调度；write/edit 对同一文件的修改排队，不同文件可以并行。审批界面逐项展示，通过后的独立调用可并行执行。读后编辑、同仓库 Git 修改等有依赖的操作仍应按顺序调用；bash 不受文件工具的同文件队列保护。
 
 脚本没有直接 Node、文件系统或网络能力，模型子调用也已关闭。每个嵌套调用经过与直接调用相同的审批和恢复保护；`Promise.all` 中需要审批的调用也会逐项展示审批。中断信号传入嵌套调用，会话历史保存嵌套调用的名称、参数和状态；恢复不重放操作，compact 继续跟踪其文件路径。
 
-Read、Write、Edit、Grep、Glob、Bash 复用 Pi SDK 工具定义，宿主仅保留路径保护、审批和进程管理适配。Read 支持图片，文本采用 SDK 输出格式。Edit 使用 `edits: [{oldText,newText}]`，SDK 仍接受旧的单段参数。Grep 使用 rg 的正则及 gitignore 行为，排除元数据、凭据与依赖目录，跳过超过 2 MiB 的文件。Glob 保留安全目录遍历，超过 10000 个文件明确报错并要求缩小路径。Bash 在 Windows 实际运行 PowerShell，取消调用的工具退出码为 130，原始进程退出码保留在 receipt 中。
+read、write、edit、grep、glob、bash 复用 Pi SDK 工具定义，宿主仅保留路径保护、审批和进程管理适配。read 支持图片，文本采用 SDK 输出格式。edit 使用 `edits: [{oldText,newText}]`，SDK 仍接受旧的单段参数。grep 使用 rg 的正则及 gitignore 行为，排除元数据、凭据与依赖目录，跳过超过 2 MiB 的文件。glob 保留安全目录遍历，超过 10000 个文件明确报错并要求缩小路径。bash 在 Windows 实际运行 PowerShell，取消调用的工具退出码为 130，原始进程退出码保留在 receipt 中。
 
 安装、开发、检查及构建时会运行固定版本的 [SDK 接入补丁](docs/development/PI_SDK_PATCH.md)。补丁补充宿主生命周期、审批、凭据目录和搜索限制接口，校验 SDK 版本与文件 SHA-256，遇到不匹配立即失败。升级 Pi 时需要审查并删去上游已提供的补丁。源码分层与验证入口见 [架构说明](docs/architecture/ARCHITECTURE.md)，全部项目文档见 [文档目录](docs/README.md)。外部项目研究按主题保存在被 Git 忽略的 `research/`。
 
@@ -169,7 +169,7 @@ Read、Write、Edit、Grep、Glob、Bash 复用 Pi SDK 工具定义，宿主仅�
 
 ## 操作
 
-Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交付；Tab 排队下一轮。Ctrl+J 或支持该键位的终端中的 Shift+Enter 换行。粘贴不会发送任务或批准工具。输入 `@` 自动列出文件、目录和已启用 Skill，Tab 补全所选项。`@path` 和 `@"path with spaces"` 保留文件路径供模型通过 Read 读取；图片由支持图片输入的模型接收。`@skill:name` 则随请求加载所选 Skill 正文。
+Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交付；Tab 排队下一轮。Ctrl+J 或支持该键位的终端中的 Shift+Enter 换行。粘贴不会发送任务或批准工具。输入 `@` 自动列出文件、目录和已启用 Skill，Tab 补全所选项。`@path` 和 `@"path with spaces"` 保留文件路径供模型通过 read 读取；图片由支持图片输入的模型接收。`@skill:name` 则随请求加载所选 Skill 正文。
 
 `!command` 执行用户命令，经过相同权限检查，结果加入会话。运行中提交 `!command` 会排队到当前模型循环结束。
 
@@ -187,7 +187,7 @@ Enter 发送任务。运行时 Enter 提交 steer，在当前工具完成后交�
 | `/copy`、`/init` | 复制完整回答、生成 AGENTS.md |
 | `/exit` | 停止执行并退出 |
 
-TUI 使用 Prism 配色和完整输入框。工具调用使用醒目的绿色圆点，失败时变红；命令中的程序名、参数、字符串和路径分色。工具结果为灰色，中间说明与回答使用正常文字亮度。终端输出默认预览三行，点击 `+N lines` 单独展开，点击 `Show less` 收起；Ctrl+T 控制全部详情。Edit 和 Write 显示真实文件变更、行号及增删数量，默认预览八行；Write 的变更预览限于新旧内容合计不超过 256 KiB 的文本，较大文件仍正常写入并显示执行结果。失败命令保留退出码。模型提供的推理内容默认收起。
+TUI 使用 Prism 配色和完整输入框。工具调用使用醒目的绿色圆点，失败时变红；命令中的程序名、参数、字符串和路径分色。工具结果为灰色，中间说明与回答使用正常文字亮度。终端输出默认预览三行，点击 `+N lines` 单独展开，点击 `Show less` 收起；Ctrl+T 控制全部详情。edit 和 write 显示真实文件变更、行号及增删数量，默认预览八行；write 的变更预览限于新旧内容合计不超过 256 KiB 的文本，较大文件仍正常写入并显示执行结果。失败命令保留退出码。模型提供的推理内容默认收起。
 
 底栏显示模型名称、推理等级、目录、权限和 Git 分支，模型名称不带供应商前缀。上下文另起一行靠右显示当前模型的已用/总 token 和百分比，空间足够时附带进度条。用量达到 70% 和 90% 时分别使用提示色和红色。点击上下文查看完整 token 数字；`~` 表示估算值，压缩后等待模型返回新用量时显示 `?`。模型切换后使用新模型的上下文窗口。`--json` 的 status 事件中，`context` 为 `{ tokens, contextWindow, percent }`，无法取得上下文时为 `null`。
 

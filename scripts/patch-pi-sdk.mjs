@@ -54,6 +54,21 @@ for (const [path] of Object.entries(manifest.files)) {
   replacements.set(path, { original, text: normalize(original) });
 }
 
+patch('dist/core/system-prompt.js', (text) => {
+  text = replace(text, '        sections: { ...(input.sections ?? {}) },',
+    '        sections: { ...(input.sections ?? {}) },\n        sectionProviders: { ...(input.sectionProviders ?? {}) },');
+  text = replace(text, '    for (const name of Object.keys(customSections)) {',
+    '    for (const [name, provide] of Object.entries(options.sectionProviders))\n        customSections[name] = provide();\n    for (const name of Object.keys(customSections)) {');
+  return replace(text, '        if (content)\n            promptSections[name] = content;',
+    '        if (content)\n            promptSections[name] = content;\n        else\n            delete promptSections[name];');
+});
+patch('dist/core/system-prompt.d.ts', (text) => {
+  text = replace(text, '    sections?: Record<string, string>;',
+    '    sections?: Record<string, string>;\n    /** Recomputed at each prompt build, including continuations after automatic compaction. */\n    sectionProviders?: Record<string, () => string>;');
+  return replace(text, '    sections: Record<string, string>;',
+    '    sections: Record<string, string>;\n    sectionProviders: Record<string, () => string>;');
+});
+
 patch('dist/core/tools/grep.js', (text) => replace(text,
   '                        args.push("--", pattern, searchPath);',
   '                        for (const pattern of options?.excludeGlobs ?? [])\n                            args.push("--iglob", `!${pattern}`);\n                        if (options?.maxFileBytes !== undefined)\n                            args.push("--max-filesize", String(options.maxFileBytes));\n                        args.push("--", pattern, searchPath);'));

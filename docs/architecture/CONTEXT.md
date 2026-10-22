@@ -1,13 +1,14 @@
 # ArkCode 静态与动态上下文机制
 
-本文记录当前实现，更新于 2026-10-17。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。
+本文记录当前实现，更新于 2026-10-20。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。
 
 ## 请求由哪些部分组成
 
 | 部分 | 内容 | 提供方式 | 更新时机 |
 | --- | --- | --- | --- |
-| 静态行为准则 | ArkCode 身份、任务范围、工具使用、用户改动保护、拒绝处理、验证与沟通要求 | `SYSTEM_PROMPT`，由 Pi 构建 system prompt | 创建或替换 AgentSession 时使用当前代码中的版本 |
+| 静态行为准则 | ArkCode 身份、个性、自主推进、写作、编码、用户协作、工具使用和回复格式 | `SYSTEM_PROMPT`，由 Pi 构建 system prompt | 创建或替换 AgentSession 时使用当前代码中的版本 |
 | Pi 工作目录段 | 当前会话的 cwd | SDK 添加的 system prompt `cwd` 段 | 创建或替换会话时确定 |
+| 工具模式指南 | 内置工具当前模式和 MCP 启用的暴露方式 | `builtin_tool_mode` 与 `mcp_tool_modes` system 段 | 首次请求前及成功 compact 后应用最新配置；其余请求沿用有效策略 |
 | 工具声明 | 基础工具、CodeMode／搜索入口与 MCP 的名称、描述及参数 schema | 由 Pi 按实际协议序列化 | 模式在新会话／成功 compact 更新；MCP 发现与目录变化按运行时处理；权限切换不改变声明 |
 | 对话历史 | 用户输入、模型回答、工具调用及结果、compact 摘要 | Pi 会话历史的有效投影 | 随对话追加，compact 可改变模型可见的历史 |
 | 动态上下文 | 环境信息、全局 AGENTS.md 及可信项目 AGENTS.md | 内部隐藏 custom 消息，发送前转换为 user role | 每次对话模型请求准备时检查，仅有变化时追加 |
@@ -16,7 +17,7 @@
 
 “静态”指行为文本不随日期、权限模式和 AGENTS.md 改写。当前 SDK 仍会添加 cwd 段，因此不同工作区的完整 system prompt 可以不同。
 
-Skills 只发现用户及可信项目 `.agents/skills`，默认不将正文加入上下文。宿主复用 Pi 的解析、目录格式与消息接口，使用 Read 按需读取，或在用户明确选择时加载正文。启停后的目录变化会改写下一个 run 的 skills 段，因此该变化可能影响 system prompt 缓存；它没有复用 AGENTS.md 的追加式差量机制。历史正文不会因禁用而删除，当前目录明确取代此前目录。发现层级、读取限制与会话行为见 [Skills 机制](SKILLS.md)。
+Skills 只发现用户及可信项目 `.agents/skills`，默认不将正文加入上下文。宿主复用 Pi 的解析、目录格式与消息接口，使用 read 按需读取，或在用户明确选择时加载正文。启停后的目录变化会改写下一个 run 的 skills 段，因此该变化可能影响 system prompt 缓存；它没有复用 AGENTS.md 的追加式差量机制。历史正文不会因禁用而删除，当前目录明确取代此前目录。发现层级、读取限制与会话行为见 [Skills 机制](SKILLS.md)。
 
 ArkCode 不加载项目 prompt templates、主题或扩展。用于 compact 文件操作跟踪、Skills 和其他能力的内置扩展由宿主显式注册。
 
@@ -26,13 +27,36 @@ ArkCode 不加载项目 prompt templates、主题或扩展。用于 compact 文�
 
 ## 静态 system prompt
 
-`src/context/prompt.ts` 中的 `SYSTEM_PROMPT` 分为身份说明和三个行为部分。
+`src/context/prompt.ts` 中的 `SYSTEM_PROMPT` 依据中文草稿翻译为英文，分为身份说明和七个部分。
 
-- 任务范围：落实用户要求，分析任务只调查和报告；先检查实现及项目指令，保留用户修改和无关工作，接收运行中的用户调整。
-- 工具使用：Read 读取文件，Grep 搜索内容，Glob 搜索文件名，Edit 精确替换，Write 新建或完整覆盖，Bash 执行实际宿主 shell；宿主处理工具审批，模型尊重拒绝和任务边界。
-- 证据与沟通：依据工具结果判断成功、失败和中断，执行相关验证，使用用户语言汇报；识别动态上下文更新的替换语义，不把 compact 摘要作为当前环境事实的权威来源。
+- Personality：保持友善、好奇和独立判断。
+- Autonomy and persistence：推断任务范围，自主推进，完成未受阻的工作，交付前核对明确要求。
+- Writing：匹配用户语言，使用平实、连贯的文字，按内容选择结构。
+- Coding：遵循周围代码，限制无意义注释和测试，运行相称检查，并按复杂度撰写 PR 描述。
+- Working with the user：区分进度与最终交付，解释必要确认，接收中途调整，压缩后持续工作。
+- Tool use：专用文件工具优先，独立调用并行，依赖和冲突写入串行；用户拒绝调用后调整方案。
+- Response formatting：Markdown、本地文件链接和列表空行等输出约定。
+
+静态正文保留面向未来 Web/桌面端的进度消息折叠约定，并不表示当前终端已经实现折叠。六个基础工具的注册名称已统一为 `read`、`write`、`edit`、`grep`、`glob`、`bash`。脚本环境说明、参数 schema 和生成的工具目录继续位于 SDK 的工具描述中。
 
 `createResources()` 提供这段文本，其 `getAgentsFiles()` 始终返回空集合，避免 AGENTS.md 同时进入 system prompt。动态机制通过独立的 `InstructionsLoader` 读取全局与可信项目指令。
+
+## 工具模式 system 段
+
+`src/context/tool-modes.ts` 保存六段英文指南，由 `createToolLoadout()` 在 `before_agent_start` 注册为具名 section provider。
+
+| system 段 | 选择方式 | 指南内容 |
+| --- | --- | --- |
+| `builtin_tool_mode` | 按 `SessionToolSettings.current.toolMode` 选择一段 | `direct` 直接调用；`codemode` 可直接或通过脚本调用，批量和结果过滤优先脚本；`codemode-only` 只通过脚本调用内置工具 |
+| `mcp_tool_modes` | 按 MCP controller 当前启用服务器的有效 exposure 和单工具覆盖，依次组合 `direct`、`codemode`、`deferred` | 直接调用、脚本内发现与调用、按需搜索后加载声明；没有公开模式时省略整个段 |
+
+两个段位于 SDK 默认段之后，依次为内置工具指南、MCP 指南。MCP 的 `hidden` 不生成使用指南，停用服务器也不贡献模式。这里列举启用配置所使用的访问方式，不复制服务器、工具目录或连接状态；具体可调用的工具以当前声明和发现结果为准。指南使用 controller 的 SDK 配置，避免 `/mcp exposure` 修改磁盘与管理界面后提前使用待应用的 exposure。
+
+Pi 1.2.0 的宿主补丁增加 `BuildSystemPromptOptions.sectionProviders`。provider 在每次 system 构建时求值，输出与静态 `sections` 一起交给 SDK 原有 section diff 与历史持久化。首次 run、工具继续及同一 run 自动 compact 后均使用当前有效策略；文本不变时不追加重复模式更新。不改写既有 system 前缀，也不访问 SDK 私有字段。
+
+`/tool-mode` 和 MCP exposure 先保存默认配置。新会话尚未请求 LLM 时可反复选择，首次 `before_agent_start` 统一读取最新配置并应用到工具注册、MCP exposure 和模式指南。向 provider 发起首次请求前，宿主持久记录 `arkcode-tool-request-state`，此后每个新 run 沿用分支当前策略，直到成功 compact 才一起应用待切换模式。请求被中断或失败也保留已请求状态；恢复和 fork 继承分支中的状态，不能通过中断首轮或重启提前切换。有历史但缺少请求状态的旧会话按已请求处理。此状态和工具策略快照都不进入模型上下文。
+
+compact 失败不应用已请求会话的待切换模式。未请求的新会话即使空 compact 失败，仍可在首次请求时应用选择。MCP 停用仍立即阻止调用，启用和目录变化沿用现有运行时机制。Skills 仍在每个新 run 开始时刷新目录文本；自动目录为空时省略 skills 段，不添加空目录占位提示。此前有目录而现在变空时，通过 SDK section 删除更新清除旧段。明确选择的 Skill 正文仍随用户消息加载。
 
 ## 动态环境字段
 
@@ -43,7 +67,7 @@ ArkCode 不加载项目 prompt templates、主题或扩展。用于 compact 文�
 | `cwd` | 会话工作目录 | 创建会话时传入，切换工作区时重新安装机制 |
 | `platform` | Node 平台标识，例如 `win32` | `process.platform` |
 | `os` | OS 类型与版本 | 安装机制时读取 `os.type()` 和 `os.release()` |
-| `shell` | Bash 工具实际使用的 shell | 当前 `ManagedShell.executable`；Windows 默认 `powershell.exe` |
+| `shell` | bash 工具实际使用的 shell | 当前 `ManagedShell.executable`；Windows 默认 `powershell.exe` |
 | `current_date` | 当前时区中的日期 | 每次请求准备时读取时钟，格式为 `YYYY-MM-DD` |
 | `timezone` | 宿主时区 | 每次请求准备时读取 Intl 的时区，缺省回退为 UTC |
 | `git_branch` | 当前 Git 分支或无仓库状态 | 每次请求准备时调用 `getBranch()` |
@@ -55,7 +79,7 @@ ArkCode 不加载项目 prompt templates、主题或扩展。用于 compact 文�
 
 ## AGENTS.md 的读取与替换
 
-每个会话持有一个 `InstructionsLoader`，在每次对话请求准备时重新发现和读取。只识别 `AGENTS.md`，不读取 `AGENTS.override.md` 或备用文件名。workspace 使用会话 cwd，Bash 中临时 `cd` 不会改变它。
+每个会话持有一个 `InstructionsLoader`，在每次对话请求准备时重新发现和读取。只识别 `AGENTS.md`，不读取 `AGENTS.override.md` 或备用文件名。workspace 使用会话 cwd，bash 中临时 `cd` 不会改变它。
 
 加载顺序如下：
 
@@ -168,7 +192,7 @@ Pi 的消息转换器将该 custom 消息转换为供应商请求中的 `user` r
 
 因此，compact 后即使宿主知道先前快照，也不会假定模型仍拥有完整环境和项目指令。完整锚点被压缩掉时补回 full；锚点仍保留且值未变时不重复追加。compact 摘要中的旧环境信息不会建立基线。失败的 compact 不会仅因尝试过压缩而清空基线。
 
-另外，`compactionTracking` 在摘要生成前补充大写 Read/Write/Edit 的文件操作记录，使六工具改名后仍能保留读取和修改的文件列表。
+当前小写 `read`/`write`/`edit` 的文件操作由 SDK 原生跟踪，包括 CodeMode 嵌套调用。`compactionTracking` 保留对旧大写 `Read`/`Write`/`Edit` 历史的补充跟踪，避免旧会话 compact 时丢失文件列表；不注册旧名称作为可执行工具。
 
 ## 权限与 prompt cache
 
