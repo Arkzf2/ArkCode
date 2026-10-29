@@ -215,6 +215,5 @@ export function createWebSearchExtension(options: {
     pi.on("session_start", (_event, ctx) => update(ctx.model));
     pi.on("model_select", (_event, ctx) => update(ctx.model));
     pi.on("before_agent_start", (_event, ctx) => update(ctx.model));
-    pi.on("session_compact", (_event, ctx) => update(ctx.model));
   };
 }

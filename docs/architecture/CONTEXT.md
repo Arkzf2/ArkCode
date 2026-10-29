@@ -1,6 +1,6 @@
 # ArkCode 静态与动态上下文机制
 
-本文记录当前实现，更新于 2026-10-20。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。
+本文记录当前实现，更新于 2026-10-29。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。compact 由 ArkCode 重建检查点并替换模型可见历史。
 
 ## 请求由哪些部分组成
 
@@ -19,9 +19,9 @@
 
 Skills 只发现用户及可信项目 `.agents/skills`，默认不将正文加入上下文。宿主复用 Pi 的解析、目录格式与消息接口，使用 read 按需读取，或在用户明确选择时加载正文。启停后的目录变化会改写下一个 run 的 skills 段，因此该变化可能影响 system prompt 缓存；它没有复用 AGENTS.md 的追加式差量机制。历史正文不会因禁用而删除，当前目录明确取代此前目录。发现层级、读取限制与会话行为见 [Skills 机制](SKILLS.md)。
 
-ArkCode 不加载项目 prompt templates、主题或扩展。用于 compact 文件操作跟踪、Skills 和其他能力的内置扩展由宿主显式注册。
+ArkCode 不加载项目 prompt templates、主题或扩展。Skills、工具装配和 MCP 等内置扩展由宿主显式注册。原生 compact 文件跟踪扩展已移除，历史中的文件操作证据由摘要交接。
 
-工具策略以 `arkcode-tool-settings` custom entry 保存，不参与模型上下文。resume／fork 读取当前分支的快照。基础工具模式和 MCP exposure 在成功 compact 后一起更新，失败或取消保留旧策略。`arkcode-tool-catalog` 保存可用工具名称，发生停用时追加隐藏的 user-role 通知；执行资格仍由 SDK 路由及宿主执行前检查强制控制。
+初始工具策略以 `arkcode-tool-settings` custom entry 保存，后续 compact 将策略写入同一份 ArkCode 检查点，不参与模型上下文。resume／fork 读取当前分支检查点。基础工具模式和 MCP exposure 在 compact 提交时一起更新，提交前失败或取消恢复旧策略；提交后激活异常阻止请求直到恢复。`arkcode-tool-catalog` 保存可用工具名称，发生停用时追加隐藏的 user-role 通知；执行资格仍由 SDK 路由及宿主执行前检查强制控制。
 
 新增工具声明复用 Pi 的兼容能力：支持时使用追加声明，否则发送当前顶层工具列表。Pi 当前 Responses／Chat Completions 增量路径遇到移除或同名重定义会回退完整列表；具备相应能力的 Anthropic 模型有原生变更块。当前内置 DeepSeek Flash 使用 Chat Completions，未开启工具增量能力。不能由协议名称推断缓存稳定性，compact 也可能改变可复用的前缀。
 
@@ -183,7 +183,7 @@ Pi 的消息转换器将该 custom 消息转换为供应商请求中的 `user` r
 | 恢复会话 | 重新采集当前信息，对比有效历史中的基线；相同则不重复注入 |
 | fork | 使用分支保留的有效消息确定基线，首次请求重新采集当前信息；不重放工具 |
 | 切换工作区 | 创建对应 AgentSession，使用新的 cwd、shell、信任状态和当前信息 |
-| 手动或自动 compact | 下一次对话请求检查 compact 后实际保留的消息，决定完整或差量注入 |
+| 手动或自动 compact | 检查点直接重建完整上下文锚点，下一次请求只对比并追加真正变化的差量 |
 | 权限模式切换 | 只更新执行时的审批策略，不添加权限 prompt，不改变六工具声明 |
 
 `contextUpdate()` 只相信模型当前有效历史中的 `arkcode-context` 消息及通过 schema 验证的元数据。它从完整 `full` 消息建立基线，然后接受其后的 `diff` 快照；如果只剩差量而没有完整锚点，必须重新注入完整内容。
@@ -192,7 +192,7 @@ Pi 的消息转换器将该 custom 消息转换为供应商请求中的 `user` r
 
 因此，compact 后即使宿主知道先前快照，也不会假定模型仍拥有完整环境和项目指令。完整锚点被压缩掉时补回 full；锚点仍保留且值未变时不重复追加。compact 摘要中的旧环境信息不会建立基线。失败的 compact 不会仅因尝试过压缩而清空基线。
 
-当前小写 `read`/`write`/`edit` 的文件操作由 SDK 原生跟踪，包括 CodeMode 嵌套调用。`compactionTracking` 保留对旧大写 `Read`/`Write`/`Edit` 历史的补充跟踪，避免旧会话 compact 时丢失文件列表；不注册旧名称作为可执行工具。
+ArkCode 的 `src/compaction/` 负责压缩。最近最多 20k 估算 token 的真实用户文本与当前完整上下文分别保存，摘要使用 Codex 原版交接前缀，不保留近期原始 assistant/tool 尾部。历史 Skill 正文不恢复为独立上下文；原始 Skill 选择文本和当前目录保留，模型需要时通过 read 读取。尚未交付的新输入沿用正常的 Skill 展开。原始 JSONL 保留完整消息，但首版不向 agent 提供历史检索功能。完整规范见源码仓库的 [压缩设计](../implementation/COMPACTION_DESIGN.md)。
 
 ## 权限与 prompt cache
 
@@ -214,7 +214,8 @@ compact 会重组有效历史，因此完整对话前缀不再保持。新工作
 | `src/context/prompt.ts` | 静态行为文本 |
 | `src/config/settings.ts` | 配置校验、项目指令预算与静态资源加载 |
 | `src/context/instructions.ts` | 全局、Git 祖先及 workspace 递归规则发现、字节预算、错误恢复 |
-| `src/context/dynamic.ts` | 快照 schema、完整/差量渲染、隐藏持久消息、请求注入和 compact 文件跟踪 |
+| `src/context/dynamic.ts` | 快照 schema、完整/差量渲染、隐藏持久消息、请求注入和检查点完整基线采集 |
+| `src/compaction/` | 用户原文来源、摘要、预算、裁剪、检查点提交和恢复 |
 | `src/app/host.ts` | 会话安装、隐藏历史过滤、执行恢复限制 |
 | `src/tools/index.ts`、`src/permissions/approval.ts` | 六工具声明及执行时审批 |
 | `test/context.test.ts` | 跨日、差量、完整锚点丢失与取消行为 |

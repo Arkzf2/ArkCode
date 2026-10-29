@@ -44,23 +44,24 @@ export function createToolLoadout(options: {
         .filter((name) => !TOOL_NAMES.includes(name) && name !== "codemode" && name !== "tool_search");
       activate();
     });
+    const apply = async (next: typeof settings.current, force = false) => {
+      const changedMcp = force || JSON.stringify(next.mcp) !== JSON.stringify(settings.current.mcp);
+      const changed = force || JSON.stringify(next) !== JSON.stringify(settings.current);
+      settings.current = next;
+      restored = [];
+      if (changed) {
+        options.resetApprovals();
+        register();
+        if (changedMcp) await mcp.applyExposure();
+        activate();
+      }
+      settings.clearFailure();
+    };
+    settings.installApply(apply);
     const applyPending = async () => {
-      const previous = settings.current;
-      try {
-        const next = settings.defaults();
-        const changedMcp = JSON.stringify(next.mcp) !== JSON.stringify(settings.current.mcp);
-        const changed = JSON.stringify(next) !== JSON.stringify(settings.current);
-        settings.current = next;
-        restored = [];
-        if (changed) {
-          options.resetApprovals();
-          register();
-          if (changedMcp) await mcp.applyExposure();
-          activate();
-        }
-        settings.persist();
-        settings.clearFailure();
-      } catch (error) { settings.current = previous; settings.block(error); throw error; }
+      const staged = await settings.stage();
+      try { settings.persist(); }
+      catch (error) { await staged.rollback(); throw error; }
     };
     pi.on("before_agent_start", async (event) => {
       settings.ready();
@@ -70,6 +71,5 @@ export function createToolLoadout(options: {
       event.systemPromptOptions.sectionProviders.mcp_tool_modes = () => mcpToolModesPrompt(mcp.exposures());
     });
     pi.on("before_provider_request", () => { settings.markRequested(); });
-    pi.on("session_compact", applyPending);
   };
 }

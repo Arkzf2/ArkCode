@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test, { type TestContext } from "node:test";
 import { z } from "zod";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { parseCli } from "../src/app/args.js";
 import { ArkHost } from "../src/app/host.js";
 import { loadConfig } from "../src/config/settings.js";
@@ -19,6 +19,9 @@ import { ApprovalBroker } from "../src/permissions/approval.js";
 import { CONTEXT_MESSAGE } from "../src/context/dynamic.js";
 import { TOOL_NAMES } from "../src/tools/index.js";
 import { TOOL_REQUEST_STATE_ENTRY, TOOL_SETTINGS_ENTRY } from "../src/session/tool-settings.js";
+import { parseCheckpoint } from "../src/compaction/checkpoint.js";
+import { renderUser, textTokens, TOOL_PRUNING_MARKER } from "../src/compaction/policy.js";
+import { SUMMARY_PREFIX } from "../src/compaction/prompts.js";
 import { echoMcpTool, httpMcpFixture } from "./mcp-fixture.js";
 import { inspectSession, SessionLease, writeRunMarker } from "../src/session/storage.js";
 import type { ApprovalDecision, ApprovalRequest, Choice, ChoiceOptions, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/app/types.js";
@@ -140,7 +143,7 @@ function toolPrompt(request: ModelRequest | undefined, section: "builtin_tool_mo
   return [...text.matchAll(new RegExp(`<${section}>\\n([\\s\\S]*?)\\n</${section}>`, "g"))].at(-1)?.[1] ?? "";
 }
 type ToolReply = { kind: "tool"; name: string; arguments: object };
-type Reply = { kind: "text"; text: string; thinking?: string } | ToolReply | { kind: "tools"; calls: ToolReply[] };
+type Reply = { kind: "text"; text: string; thinking?: string; finish?: "stop" | "length" } | ToolReply | { kind: "tools"; calls: ToolReply[] } | { kind: "error"; status: number; message: string };
 
 test("global and recursive workspace rules reach the model as hidden scoped user context", async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
@@ -407,6 +410,11 @@ async function until(predicate: () => boolean, timeout = 8000): Promise<void> {
 }
 
 function stream(response: ServerResponse, reply: Reply, index: number): void {
+  if (reply.kind === "error") {
+    response.writeHead(reply.status, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: { message: reply.message, type: "invalid_request_error", code: reply.status === 400 ? "context_length_exceeded" : "fixture_error" } }));
+    return;
+  }
   response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
   const chunk = (delta: object, finish: string | null = null) => response.write(`data: ${JSON.stringify({
     id: `chat-${index}`, object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta, finish_reason: finish }],
@@ -421,7 +429,7 @@ function stream(response: ServerResponse, reply: Reply, index: number): void {
     const midpoint = Math.floor(reply.text.length / 2);
     chunk({ content: reply.text.slice(0, midpoint) });
     chunk({ content: reply.text.slice(midpoint) });
-    chunk({}, "stop");
+    chunk({}, reply.finish ?? "stop");
   } else {
     for (const [callIndex, call] of (reply.kind === "tools" ? reply.calls : [reply]).entries()) {
       const args = JSON.stringify(call.arguments);
@@ -808,14 +816,14 @@ test("automatic compact applies pending modes and prompts before the next reques
     }
     if (index === 1) return { kind: "tool", name: "read", arguments: { path: "large.txt", offset: 2001, limit: 2000 } };
     return { kind: "text", text: "Summary or completed answer." };
-  }, false, 24000);
+  }, false, 78000);
   home = f.home;
   await writeFile(join(home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
   await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
   const { host, ui } = await f.start();
   await host.submit("Read enough to trigger compact.");
   assert.equal(host.outcome, "completed", JSON.stringify(ui.messages.filter((message) => message.kind === "error")));
-  const after = f.requests.findLast((request) => request.messages.some((message) => JSON.stringify(message.content).includes("<summary>")));
+  const after = f.requests.findLast((request) => request.messages.some((message) => JSON.stringify(message.content).includes(SUMMARY_PREFIX)));
   assert.ok(after);
   assert.ok(!after.tools?.some((tool) => TOOL_NAMES.includes(tool.function.name)));
   assert.ok(after.tools?.some((tool) => tool.function.name === "codemode"));
@@ -848,7 +856,7 @@ test("cancelled compact preserves established built-in and MCP modes", async (t)
   });
   const mcp = await httpMcpFixture(t);
   await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
-  const { host } = await f.start();
+  const { host, ui } = await f.start();
   await host.submit("Create compactable history.");
   await host.submit("/tool-mode codemode-only");
   await host.submit("/mcp exposure fixture direct");
@@ -856,13 +864,14 @@ test("cancelled compact preserves established built-in and MCP modes", async (t)
   await until(() => f.requests.length === 2);
   await host.interrupt(); release(); await compact;
   await host.submit("Keep the established policy after cancellation.");
+  assert.equal(host.outcome, "completed", JSON.stringify(ui.messages.filter((message) => message.kind === "error")));
   assert.deepEqual(f.requests.at(-1)?.tools, f.requests[0]?.tools);
   assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
   assert.match(toolPrompt(f.requests.at(-1), "mcp_tool_modes"), /codemode: Access these MCP tools/);
   assert.doesNotMatch(toolPrompt(f.requests.at(-1), "mcp_tool_modes"), /direct: MCP tools/);
 });
 
-test("a tool-policy failure after compact prevents the next model request", async (t) => {
+test("tool-policy changes during compact reject the checkpoint and preserve prior history", async (t) => {
   let home = "";
   const f = await fixture(t, async (_request, index) => {
     if (index === 1) await writeFile(join(home, "settings.json"), JSON.stringify({ toolMode: "invalid" }));
@@ -876,9 +885,12 @@ test("a tool-policy failure after compact prevents the next model request", asyn
   assert.equal(host.outcome, "failed");
   const requests = f.requests.length;
   await host.submit("Do not send an inconsistent tool policy.");
-  assert.equal(host.outcome, "failed");
-  assert.equal(f.requests.length, requests);
-  assert.ok(ui.messages.some((message) => message.kind === "error" && message.text.includes("Tool configuration could not be applied")));
+  assert.equal(host.outcome, "completed");
+  assert.equal(f.requests.length, requests + 1);
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
+  assert.ok(ui.messages.some((message) => message.kind === "error" && message.text.includes("Cannot load ArkCode settings")));
+  const entries = SessionManager.open((await f.sessions())[0] ?? "").getBranch();
+  assert.ok(!entries.some((entry) => entry.type === "compaction"));
 });
 
 test("tool-mode submenu shows current and pending without adding messages or model context", async (t) => {
@@ -2321,7 +2333,7 @@ test("mode changes during asynchronous command inspection cannot authorize a sta
   assert.equal(ui.approvals.length, 0);
 });
 
-test("manual compact preserves file tracking and refreshes hidden context when its anchor is removed", { timeout: 30000 }, async (t) => {
+test("manual compact checkpoints the handoff and refreshes instructions from its preserved baseline", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => {
     if (index === 0) return { kind: "tool", name: "write", arguments: { path: "tracked.txt", content: "saved" } };
     if (index === 1) return { kind: "text", text: "Earlier detailed evidence. ".repeat(5000) };
@@ -2337,13 +2349,16 @@ test("manual compact preserves file tracking and refreshes hidden context when i
   const entries = SessionManager.open(paths[0] ?? "").getBranch();
   const compact = entries.findLast((entry) => entry.type === "compaction");
   assert.ok(compact?.type === "compaction");
-  assert.match(compact.summary, /<modified-files>\ntracked.txt/);
+  assert.equal(compact.summary, "Summary or completed answer.");
+  const checkpoint = parseCheckpoint(compact.details); assert.ok(checkpoint);
+  assert.deepEqual(checkpoint.retainedUsers.map(renderUser), ["Create the tracked file", "Keep a recent turn"]);
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /tracked.txt/);
   await writeFile(join(f.cwd, "AGENTS.md"), "Instructions after compact.");
   await host.submit("Continue after compact");
   const request = f.requests.at(-1); assert.ok(request);
   const context = request.messages.at(-1);
   assert.equal(context?.role, "user");
-  assert.match(JSON.stringify(context?.content), /<cwd>/);
+  assert.match(JSON.stringify(request.messages), /<cwd>/);
   assert.match(JSON.stringify(context?.content), /Instructions after compact/);
   assert.equal(ui.messages.some((message) => message.text.includes("<environment_context>")), false);
 });
@@ -2351,7 +2366,7 @@ test("manual compact preserves file tracking and refreshes hidden context when i
 test("automatic compact during tool continuation reinjects current context before the next conversational request", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => index < 2
     ? { kind: "tool", name: "read", arguments: { path: "large.txt", offset: index * 2000 + 1, limit: 2000 } }
-    : { kind: "text", text: "Compacted evidence or completed answer." }, false, 24000);
+    : { kind: "text", text: "Compacted evidence or completed answer." }, false, 78000);
   await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
   await writeFile(join(f.cwd, "AGENTS.md"), "Current automatic compact instructions.");
   const { host, ui } = await f.start();
@@ -2361,9 +2376,410 @@ test("automatic compact during tool continuation reinjects current context befor
   const entries = SessionManager.open(paths[0] ?? "").getBranch();
   const compact = entries.findLast((entry) => entry.type === "compaction");
   assert.ok(compact?.type === "compaction");
-  const after = f.requests.findLast((request) => request.messages.some((message) => JSON.stringify(message.content).includes("<summary>")));
+  const after = f.requests.findLast((request) => request.messages.some((message) => JSON.stringify(message.content).includes(SUMMARY_PREFIX)));
   assert.ok(after);
   assert.equal(after.messages.at(-1)?.role, "user");
-  assert.match(JSON.stringify(after.messages.at(-1)?.content), /<environment_context>|Current automatic compact instructions/);
+  assert.match(JSON.stringify(after.messages), /<environment_context>|Current automatic compact instructions/);
   assert.equal(ui.messages.some((message) => message.text.includes("<environment_context>")), false);
+});
+
+function isCompactRequest(request: ModelRequest): boolean {
+  return JSON.stringify(request.messages.at(-1)?.content).includes("Create a context checkpoint for an LLM continuing the same task.");
+}
+
+test("ArkCode compact retains 20k of raw user text without restoring historical Skill bodies", { timeout: 30000 }, async (t) => {
+  let readSkill = false;
+  let skillPath = "";
+  const f = await fixture(t, (request) => {
+    if (isCompactRequest(request)) return { kind: "text", text: "Continue the user's task; the inspected evidence is complete." };
+    if (readSkill) { readSkill = false; return { kind: "tool", name: "read", arguments: { path: skillPath } }; }
+    return { kind: "text", text: "MODEL OUTPUT OMITTED AFTER COMPACT ".repeat(2500) };
+  });
+  const directory = join(f.cwd, ".agents", "skills", "review"); await mkdir(directory, { recursive: true });
+  skillPath = join(directory, "SKILL.md");
+  await writeFile(skillPath, "---\nname: review\ndescription: Inspect changes.\n---\nFULL ACTIVATED SKILL BODY.\n");
+  const { host } = await f.start();
+  const input = "@skill:review FIRST USER TEXT " + "用户😀".repeat(10000) + " LAST USER TEXT";
+  await host.submit(input);
+  await host.submit("/compact");
+  assert.equal(host.outcome, "completed");
+  const manager = SessionManager.open((await f.sessions())[0] ?? "");
+  const entry = manager.getBranch().findLast((entry) => entry.type === "compaction"); assert.ok(entry?.type === "compaction");
+  const checkpoint = parseCheckpoint(entry.details); assert.ok(checkpoint);
+  const retained = checkpoint.retainedUsers.map(renderUser).join("\n");
+  assert.ok(textTokens(retained) <= 20000);
+  assert.match(retained, /^@skill:review FIRST USER TEXT /); assert.match(retained, / LAST USER TEXT$/);
+  assert.doesNotMatch(retained, /FULL ACTIVATED SKILL BODY|environment_context|MODEL OUTPUT/);
+  assert.doesNotMatch(JSON.stringify(checkpoint.replacementMessages), /FULL ACTIVATED SKILL BODY|arkcode-active-skills|<skill-loaded name=/);
+  assert.match(JSON.stringify(f.requests.find(isCompactRequest)?.messages), /FULL ACTIVATED SKILL BODY/);
+  assert.match(await readFile(manager.getSessionFile() ?? "", "utf8"), /FULL ACTIVATED SKILL BODY/);
+  assert.ok(!checkpoint.replacementMessages.some((message) => ["assistant", "toolResult"].includes(message.role)));
+  assert.match(JSON.stringify(checkpoint.replacementMessages.at(-1)), /Another language model started/);
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  await resumed.host.submit("Continue the existing task.");
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)?.messages), /MODEL OUTPUT OMITTED AFTER COMPACT/);
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)?.messages), /FULL ACTIVATED SKILL BODY|<skill-loaded name=/);
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /@skill:review/);
+  assert.match(toolPrompt(f.requests.at(-1), "skills"), /review|Inspect changes/);
+  const requests = f.requests.length;
+  readSkill = true;
+  await resumed.host.submit("Read the review Skill if it is needed to continue.");
+  assert.doesNotMatch(JSON.stringify(f.requests[requests]?.messages), /FULL ACTIVATED SKILL BODY/);
+  assert.ok(resumed.ui.tools.some((tool) => tool.name === "read" && tool.state === "done" && tool.text.includes("FULL ACTIVATED SKILL BODY")));
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /FULL ACTIVATED SKILL BODY/);
+});
+
+test("compact refresh removes a historical Skill snapshot from an otherwise unchanged checkpoint", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => ({ kind: "text", text: isCompactRequest(request) ? "Continue the verified task." : "Prior inspected output. ".repeat(3000) }));
+  const { host } = await f.start();
+  await host.submit("Create history."); await host.submit("/compact"); await host.exit();
+  const file = (await f.sessions())[0] ?? "";
+  const manager = SessionManager.open(file);
+  const entry = manager.getBranch().findLast((entry) => entry.type === "compaction"); assert.ok(entry?.type === "compaction");
+  const checkpoint = parseCheckpoint(entry.details); assert.ok(checkpoint);
+  checkpoint.id = "legacy-skills-checkpoint";
+  checkpoint.cutoff = manager.getLeafId();
+  checkpoint.replacementMessages.splice(checkpoint.replacementMessages.length - 1, 0, {
+    role: "custom", customType: "arkcode-active-skills", content: "HISTORICAL SKILL SNAPSHOT BODY", display: false, timestamp: Date.now(),
+  });
+  manager.appendCompaction(checkpoint.summary, null, checkpoint.tokensBefore, { arkcode: checkpoint }, true);
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  const requests = f.requests.length;
+  await resumed.host.submit("/compact");
+  assert.equal(resumed.host.outcome, "completed"); assert.equal(f.requests.length, requests);
+  const refreshed = SessionManager.open(file).getBranch().findLast((entry) => entry.type === "compaction"); assert.ok(refreshed?.type === "compaction");
+  const updated = parseCheckpoint(refreshed.details); assert.ok(updated);
+  assert.equal(updated.kind, "refresh"); assert.notEqual(updated.id, checkpoint.id);
+  assert.deepEqual(updated.retainedUsers, checkpoint.retainedUsers);
+  assert.doesNotMatch(JSON.stringify(updated.replacementMessages), /HISTORICAL SKILL SNAPSHOT BODY|arkcode-active-skills/);
+  assert.match(await readFile(file, "utf8"), /HISTORICAL SKILL SNAPSHOT BODY/);
+  await resumed.host.submit("/compact");
+  assert.equal(SessionManager.open(file).getBranch().findLast((entry) => entry.type === "compaction")?.id, refreshed.id);
+  await resumed.host.submit("Continue after refresh.");
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)?.messages), /HISTORICAL SKILL SNAPSHOT BODY/);
+});
+
+test("pre-query compact preserves a newly selected Skill only in the pending input", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request, index) => ({ kind: "text", text: isCompactRequest(request) ? "Prior task progress and verified next actions." : index === 0 ? "EARLIER EVIDENCE ".repeat(21000) : "Continued." }));
+  const directory = join(f.cwd, ".agents", "skills", "review"); await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "SKILL.md"), "---\nname: review\ndescription: Inspect changes.\n---\nNEW PENDING SKILL BODY.\n");
+  const { host } = await f.start();
+  await host.submit("The earlier task.");
+  await host.submit("@skill:review inspect the pending task.");
+  assert.equal(host.outcome, "completed");
+  const summary = f.requests.find(isCompactRequest); assert.ok(summary);
+  assert.doesNotMatch(JSON.stringify(summary.messages), /NEW PENDING SKILL BODY|inspect the pending task/);
+  const normal = JSON.stringify(f.requests.at(-1)?.messages);
+  assert.equal(normal.split("NEW PENDING SKILL BODY").length - 1, 1);
+  assert.equal(normal.split("@skill:review inspect the pending task.").length - 1, 1);
+  const entry = SessionManager.open((await f.sessions())[0] ?? "").getBranch().findLast((entry) => entry.type === "compaction"); assert.ok(entry?.type === "compaction");
+  const checkpoint = parseCheckpoint(entry.details); assert.ok(checkpoint);
+  assert.doesNotMatch(JSON.stringify(checkpoint.replacementMessages), /NEW PENDING SKILL BODY|arkcode-active-skills/);
+});
+
+test("pre-query automatic compact preserves the pending query once and excludes it from the summary", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request, index) => ({ kind: "text", text: isCompactRequest(request) ? "Prior task progress and verified next actions." : index === 0 ? "EARLIER EVIDENCE ".repeat(21000) : "Continued." }));
+  const { host } = await f.start();
+  await host.submit("The earlier task.");
+  await host.submit("PENDING QUERY MUST APPEAR EXACTLY ONCE");
+  assert.equal(host.outcome, "completed");
+  const summaryRequest = f.requests.find(isCompactRequest); assert.ok(summaryRequest);
+  assert.doesNotMatch(JSON.stringify(summaryRequest.messages), /PENDING QUERY MUST APPEAR EXACTLY ONCE/);
+  const normal = f.requests.at(-1); assert.ok(normal);
+  assert.equal(JSON.stringify(normal.messages).split("PENDING QUERY MUST APPEAR EXACTLY ONCE").length - 1, 1);
+  const manager = SessionManager.open((await f.sessions())[0] ?? "");
+  const entry = manager.getBranch().findLast((entry) => entry.type === "compaction"); assert.ok(entry?.type === "compaction");
+  const checkpoint = parseCheckpoint(entry.details); assert.ok(checkpoint);
+  assert.deepEqual(checkpoint.retainedUsers.map(renderUser), ["The earlier task."]);
+  assert.equal(checkpoint.pendingEntryIds.length, 1);
+  assert.equal(JSON.stringify(manager.buildSessionProjection().messages).split("PENDING QUERY MUST APPEAR EXACTLY ONCE").length - 1, 1);
+});
+
+test("compact retries overflow with pruned tool text and preserves the full durable result", { timeout: 30000 }, async (t) => {
+  let summaries = 0;
+  const f = await fixture(t, (request, index) => {
+    if (isCompactRequest(request)) {
+      summaries++;
+      return summaries === 1 ? { kind: "error", status: 400, message: "maximum context length exceeded" } : { kind: "text", text: "Tool output was pruned; middle evidence is unavailable. Continue from the verified result." };
+    }
+    return index === 0 ? { kind: "tool", name: "read", arguments: { path: "pruning.txt", limit: 2000 } } : { kind: "text", text: "Verified inspected output. ".repeat(3000) };
+  });
+  await writeFile(join(f.cwd, "pruning.txt"), "BEGIN\n" + "MIDDLE ORIGINAL TOOL EVIDENCE\n".repeat(1500) + "END\n");
+  const { host } = await f.start();
+  await host.submit("Inspect pruning.txt."); await host.submit("/compact");
+  assert.equal(host.outcome, "completed");
+  const requests = f.requests.filter(isCompactRequest); assert.equal(requests.length, 2);
+  assert.doesNotMatch(JSON.stringify(requests[0]?.messages), /tool result middle pruned/);
+  assert.match(JSON.stringify(requests[1]?.messages), /tool result middle pruned/);
+  const source = await readFile((await f.sessions())[0] ?? "", "utf8");
+  const manager = SessionManager.open((await f.sessions())[0] ?? "");
+  const original = manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult");
+  assert.ok(original?.type === "message" && original.message.role === "toolResult");
+  assert.match(JSON.stringify(original.message.content), /MIDDLE ORIGINAL TOOL EVIDENCE/);
+  assert.doesNotMatch(JSON.stringify(original.message.content), /tool result middle pruned/);
+  assert.match(source, /prunedResults":1/);
+  assert.equal(TOOL_PRUNING_MARKER.includes("tool result middle pruned"), true);
+});
+
+test("compact network retries are bounded without nested provider retries and the old conversation can continue", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => isCompactRequest(request) ? { kind: "error", status: 503, message: "503 temporarily unavailable" } : { kind: "text", text: "Original verified evidence. ".repeat(3000) });
+  const { host, ui } = await f.start();
+  await host.submit("Create history."); await host.submit("/compact");
+  assert.equal(host.outcome, "failed");
+  assert.equal(f.requests.filter(isCompactRequest).length, 3);
+  const manager = SessionManager.open((await f.sessions())[0] ?? "");
+  assert.ok(!manager.getEntries().some((entry) => entry.type === "compaction"));
+  await host.submit("Continue using the existing context.");
+  assert.equal(host.outcome, "completed", JSON.stringify(ui.messages.filter((message) => message.kind === "error")));
+});
+
+test("empty and truncated summaries are retried once and never installed", { timeout: 30000 }, async (t) => {
+  let attempts = 0;
+  const f = await fixture(t, (request) => isCompactRequest(request)
+    ? ++attempts === 1 ? { kind: "text", text: "" } : { kind: "text", text: "Incomplete summary", finish: "length" }
+    : { kind: "text", text: "Complete original evidence. ".repeat(3000) });
+  const { host } = await f.start();
+  await host.submit("Create history."); await host.submit("/tool-mode direct"); await host.submit("/compact");
+  assert.equal(host.outcome, "failed"); assert.equal(attempts, 2);
+  assert.ok(!SessionManager.open((await f.sessions())[0] ?? "").getEntries().some((entry) => entry.type === "compaction"));
+  await host.submit("Continue with the previous tools.");
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
+});
+
+test("an unchanged checkpoint is a no-op and pending tool configuration can refresh without another summary", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => ({ kind: "text", text: isCompactRequest(request) ? "Continue the verified task." : "Prior inspected output. ".repeat(3000) }));
+  const { host } = await f.start();
+  await host.submit("Create history."); await host.submit("/compact");
+  const requests = f.requests.length;
+  await host.submit("/compact"); assert.equal(f.requests.length, requests);
+  await host.submit("/tool-mode direct"); await host.submit("/compact");
+  assert.equal(host.outcome, "completed"); assert.equal(f.requests.length, requests);
+  const entry = SessionManager.open((await f.sessions())[0] ?? "").getBranch().findLast((entry) => entry.type === "compaction");
+  assert.ok(entry?.type === "compaction");
+  assert.equal(parseCheckpoint(entry.details)?.kind, "refresh");
+  assert.equal(parseCheckpoint(entry.details)?.toolSettings.toolMode, "direct");
+  await host.submit("Continue after refresh.");
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: direct\./);
+});
+
+test("actual overflow recovery compacts once and pauses if the retried request also overflows", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request, index) => isCompactRequest(request)
+    ? { kind: "text", text: "Verified earlier work and remaining actions." }
+    : index === 0 ? { kind: "text", text: "Original execution evidence. ".repeat(4000) } : { kind: "error", status: 400, message: "maximum context length exceeded" });
+  const { host, ui } = await f.start();
+  await host.submit("Initial task."); await host.submit("Continue the task.");
+  assert.equal(host.outcome, "failed");
+  assert.equal(f.requests.filter(isCompactRequest).length, 1);
+  assert.equal(f.requests.length, 4);
+  assert.ok(ui.messages.some((message) => /overflow persists.*paused/.test(message.text)));
+  assert.ok(SessionManager.open((await f.sessions())[0] ?? "").getEntries().some((entry) => entry.type === "compaction"));
+  await host.submit("A new query cannot bypass the unresolved overflow.");
+  assert.equal(f.requests.length, 4);
+});
+
+test("queries queued during manual compact run once in submission order after the checkpoint", { timeout: 30000 }, async (t) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, async (request) => {
+    if (isCompactRequest(request)) { await gate; return { kind: "text", text: "Verified earlier progress. Continue the pending task." }; }
+    return { kind: "text", text: "Verified history. ".repeat(2500) };
+  });
+  const { host } = await f.start();
+  await host.submit("Earlier query.");
+  const compact = host.submit("/compact");
+  await until(() => f.requests.some(isCompactRequest));
+  await host.submit("FIRST QUEUED QUERY", "steer");
+  await host.submit("SECOND QUEUED QUERY", "follow-up");
+  release(); await compact;
+  assert.equal(host.outcome, "completed");
+  assert.equal(f.requests.length, 3);
+  const sent = JSON.stringify(f.requests.at(-1)?.messages);
+  for (const query of ["FIRST QUEUED QUERY", "SECOND QUEUED QUERY"]) assert.equal(sent.split(query).length - 1, 1);
+  assert.ok(sent.indexOf("FIRST QUEUED QUERY") < sent.indexOf("SECOND QUEUED QUERY"));
+  assert.doesNotMatch(JSON.stringify(f.requests.find(isCompactRequest)?.messages), /QUEUED QUERY/);
+  const manager = SessionManager.open((await f.sessions())[0] ?? "");
+  assert.equal(manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "arkcode-input"
+    && JSON.stringify(entry.data).includes('"kind":"input"')).length, 3);
+});
+
+test("cancelling manual compact withdraws queued input and does not resurrect it on resume", { timeout: 30000 }, async (t) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, async (request) => {
+    if (isCompactRequest(request)) await gate;
+    return { kind: "text", text: "Verified history. ".repeat(2500) };
+  });
+  const { host, ui } = await f.start();
+  await host.submit("Earlier query.");
+  const compact = host.submit("/compact");
+  await until(() => f.requests.some(isCompactRequest));
+  await host.submit("WITHDRAWN QUEUED QUERY", "follow-up");
+  await host.interrupt(); release(); await compact;
+  assert.match(ui.draft(), /WITHDRAWN QUEUED QUERY/);
+  assert.equal(f.requests.length, 2);
+  await host.exit();
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  assert.equal(f.requests.length, 2);
+  await resumed.host.submit("Continue explicitly.");
+  assert.doesNotMatch(JSON.stringify(f.requests.at(-1)?.messages), /WITHDRAWN QUEUED QUERY/);
+});
+
+test("automatic compact failure warns and continues when the original request still fits", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => isCompactRequest(request)
+    ? { kind: "error", status: 400, message: "Summary generation rejected by fixture" }
+    : { kind: "text", text: "Evidence before failed compact. ".repeat(4500) }, false, 78000);
+  const { host, ui } = await f.start();
+  await host.submit("Earlier task."); await host.submit("Continue within the hard limit.");
+  assert.equal(host.outcome, "completed");
+  assert.equal(f.requests.filter(isCompactRequest).length, 1);
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /Continue within the hard limit/);
+  assert.ok(ui.messages.some((message) => /Automatic compact failed.*Continuing/.test(message.text)));
+  assert.ok(!SessionManager.open((await f.sessions())[0] ?? "").getBranch().some((entry) => entry.type === "compaction"));
+});
+
+test("a budget pause preserves pending input and resumes in the same session after selecting a larger model", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Resumed safely." }), false, 40000);
+  const { host, ui } = await f.start();
+  const id = ui.statuses.at(-1)?.sessionId;
+  await host.submit("PENDING ORIGINAL TASK");
+  assert.equal(host.outcome, "failed"); assert.equal(f.requests.length, 0);
+  assert.ok(ui.messages.some((message) => /50k input reserve/.test(message.text)));
+  await host.submit("/model fixture/alternate"); await host.submit("Continue the pending task.");
+  assert.equal(host.outcome, "completed");
+  assert.equal(ui.statuses.at(-1)?.sessionId, id);
+  assert.equal(f.requests.at(-1)?.model, "alternate");
+  assert.equal(JSON.stringify(f.requests.at(-1)?.messages).split("PENDING ORIGINAL TASK").length - 1, 1);
+});
+
+test("actual overflow recovery retries the request without rerunning completed tools", { timeout: 30000 }, async (t) => {
+  let normals = 0;
+  const f = await fixture(t, (request) => {
+    if (isCompactRequest(request)) return { kind: "text", text: "The file was written successfully. Continue without repeating the write." };
+    normals++;
+    if (normals === 1) return { kind: "tool", name: "write", arguments: { path: "once.txt", content: "Verified file evidence. ".repeat(1000) } };
+    if (normals === 2) return { kind: "error", status: 400, message: "maximum context length exceeded" };
+    return { kind: "text", text: "Recovered without repeating the write." };
+  });
+  const { host, ui } = await f.start();
+  await host.submit("Write once, then continue.");
+  assert.equal(host.outcome, "completed");
+  assert.equal(normals, 3); assert.equal(f.requests.filter(isCompactRequest).length, 1);
+  assert.equal(ui.tools.filter((tool) => tool.name === "write" && tool.state === "done").length, 1);
+  assert.equal(await readFile(join(f.cwd, "once.txt"), "utf8"), "Verified file evidence. ".repeat(1000));
+});
+
+test("committed checkpoint activation failure blocks requests until explicit recovery", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => ({ kind: "text", text: isCompactRequest(request) ? "Verified work and next steps." : "Original execution evidence. ".repeat(3000) }));
+  const { host, ui } = await f.start();
+  await host.submit("Original task."); await host.submit("/tool-mode direct");
+  const activate = AgentSession.prototype.activateHostCheckpoint;
+  let failed = false;
+  t.mock.method(AgentSession.prototype, "activateHostCheckpoint", function(this: AgentSession) {
+    if (!failed) { failed = true; throw new Error("Injected activation failure"); }
+    return activate.call(this);
+  });
+  await host.submit("/compact"); assert.equal(host.outcome, "failed");
+  const manager = SessionManager.open((await f.sessions())[0] ?? "");
+  assert.equal(manager.getBranch().filter((entry) => entry.type === "compaction").length, 1);
+  const count = f.requests.length;
+  await host.submit("Pending during recovery."); assert.equal(f.requests.length, count);
+  assert.ok(ui.messages.some((message) => /must be recovered/.test(message.text)));
+  await host.submit("/compact");
+  assert.equal(host.outcome, "completed"); assert.equal(f.requests.length, count);
+  await host.submit("Continue after recovery.");
+  assert.equal(host.outcome, "completed");
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: direct\./);
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /Verified work and next steps/);
+});
+
+test("unknown ArkCode checkpoint versions are rejected before a resumed request", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => ({ kind: "text", text: isCompactRequest(request) ? "Verified work." : "Original execution evidence. ".repeat(3000) }));
+  const { host } = await f.start();
+  await host.submit("Original task."); await host.submit("/compact"); await host.exit();
+  const file = (await f.sessions())[0]; assert.ok(file);
+  const original = await readFile(file, "utf8");
+  const altered = original.replace('"arkcode":{"version":1,', '"arkcode":{"version":99,');
+  assert.notEqual(altered, original); await writeFile(file, altered);
+  const before = f.requests.length;
+  await assert.rejects(f.start(new RecordingUI(), ["resume", "--last"]));
+  assert.equal(f.requests.length, before);
+});
+
+test("failed MCP preparation rejects the checkpoint and restores the previous callable tools", { timeout: 30000 }, async (t) => {
+  let failuresRemaining = 0;
+  const mcp = await httpMcpFixture(t, { initialize: async () => {
+    if (failuresRemaining > 0) { failuresRemaining--; throw new Error("Injected MCP initialization failure"); }
+  } });
+  const f = await fixture(t, (request) => ({ kind: "text", text: isCompactRequest(request) ? "Verified work." : "Original execution evidence. ".repeat(3000) }));
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  const { host } = await f.start();
+  await host.submit("Original task."); await host.submit("/tool-mode direct"); await host.submit("/mcp exposure fixture direct");
+  failuresRemaining = 3;
+  await host.submit("/compact"); assert.equal(host.outcome, "failed");
+  assert.ok(!SessionManager.open((await f.sessions())[0] ?? "").getBranch().some((entry) => entry.type === "compaction"));
+  await host.submit("Continue with the established policy.");
+  assert.equal(host.outcome, "completed");
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
+  assert.match(toolPrompt(f.requests.at(-1), "mcp_tool_modes"), /codemode: Access these MCP tools/);
+});
+
+test("automatic compact waits for every tool result in a parallel batch and does not rerun tools", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request, index) => {
+    if (isCompactRequest(request)) {
+      assert.equal(request.messages.filter((message) => message.role === "tool").length, 2);
+      return { kind: "text", text: "Both files were read. Continue from the verified evidence." };
+    }
+    return index === 0 ? { kind: "tools", calls: ["first.txt", "second.txt"].map((path) => ({ kind: "tool", name: "read", arguments: { path } })) }
+      : { kind: "text", text: "Both reads are complete." };
+  }, false, 78000);
+  for (const file of ["first.txt", "second.txt"]) await writeFile(join(f.cwd, file), ("Parallel batch evidence. ".repeat(2) + "\n").repeat(950));
+  const { host, ui } = await f.start();
+  await host.submit("Read both files and finish.");
+  assert.equal(host.outcome, "completed");
+  assert.equal(f.requests.length, 3); assert.equal(f.requests.filter(isCompactRequest).length, 1);
+  assert.equal(ui.tools.filter((tool) => tool.name === "read" && tool.state === "done").length, 2);
+});
+
+test("an unchanged checkpoint cannot bypass the hard limit for an oversized pending query", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => ({ kind: "text", text: isCompactRequest(request) ? "Verified earlier progress." : "Original execution evidence. ".repeat(3000) }));
+  const { host, ui } = await f.start();
+  await host.submit("Original task."); await host.submit("/compact");
+  const count = f.requests.length;
+  await host.submit("OVERSIZED PENDING QUERY " + "x".repeat(520000));
+  assert.equal(host.outcome, "failed"); assert.equal(f.requests.length, count);
+  assert.ok(ui.messages.some((message) => /task is paused.*no longer fits/.test(message.text)));
+  await host.submit("/compact"); assert.equal(host.outcome, "failed"); assert.equal(f.requests.length, count);
+  const manager = SessionManager.open((await f.sessions())[0] ?? "");
+  assert.equal(manager.getBranch().filter((entry) => entry.type === "compaction").length, 1);
+  assert.match(JSON.stringify(manager.buildSessionProjection().messages), /OVERSIZED PENDING QUERY/);
+});
+
+test("local shell progress after a checkpoint is summarized before a tool-policy refresh", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => ({ kind: "text", text: isCompactRequest(request) ? "Verified work and shell progress." : "Original execution evidence. ".repeat(3000) }));
+  const { host } = await f.start();
+  await host.submit("Original task."); await host.submit("/compact");
+  await host.submit('!node -e "process.stdout.write(\'SHELL_PROGRESS_AFTER_CHECKPOINT\')"');
+  await host.submit("/tool-mode direct"); await host.submit("/compact");
+  assert.equal(host.outcome, "completed");
+  const summaries = f.requests.filter(isCompactRequest);
+  assert.equal(summaries.length, 2);
+  assert.match(JSON.stringify(summaries.at(-1)?.messages), /SHELL_PROGRESS_AFTER_CHECKPOINT/);
+  const entry = SessionManager.open((await f.sessions())[0] ?? "").getBranch().findLast((entry) => entry.type === "compaction");
+  assert.ok(entry?.type === "compaction"); assert.equal(parseCheckpoint(entry.details)?.kind, "summary");
+});
+
+test("a checkpoint write failure preserves the original history and the effective tool policy", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => ({ kind: "text", text: isCompactRequest(request) ? "Verified handoff." : "ORIGINAL HISTORY EVIDENCE ".repeat(3000) }));
+  const { host } = await f.start();
+  await host.submit("Original task."); await host.submit("/tool-mode direct");
+  t.mock.method(SessionManager.prototype, "appendCompaction", () => { throw new Error("Injected checkpoint write failure"); });
+  await host.submit("/compact"); assert.equal(host.outcome, "failed");
+  assert.ok(!SessionManager.open((await f.sessions())[0] ?? "").getBranch().some((entry) => entry.type === "compaction"));
+  await host.submit("Continue the original task.");
+  assert.equal(host.outcome, "completed");
+  assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
+  assert.match(JSON.stringify(f.requests.at(-1)?.messages), /ORIGINAL HISTORY EVIDENCE/);
 });

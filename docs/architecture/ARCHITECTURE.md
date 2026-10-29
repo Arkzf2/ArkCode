@@ -1,13 +1,14 @@
 # ArkCode 开发结构
 
-Pi 管理模型请求、agent 循环、历史格式、压缩、MCP 协议和 CodeMode。ArkCode 管理工作区信任、权限、受管进程、会话所有权和终端交互。
+Pi 管理模型请求、agent 循环、历史格式、MCP 协议和 CodeMode。ArkCode 管理压缩策略与检查点、工作区信任、权限、受管进程、会话所有权和终端交互。
 
 | 路径 | 职责 |
 | --- | --- |
 | `src/cli.ts` | CLI 启动入口，构建后仍为 `dist/cli.js` |
 | `src/app/` | 参数、宿主编排和 UI/权限事件类型 |
 | `src/config/` | 用户设置、模型连接及 SDK 资源装配 |
-| `src/context/` | 静态提示、项目指令、动态上下文、工具停用通知、文件提及与压缩跟踪 |
+| `src/context/` | 静态提示、项目指令、动态上下文、工具停用通知与文件提及 |
+| `src/compaction/` | 真实输入来源、20k 用户文本保留、请求预算、摘要重试、检查点提交与恢复 |
 | `src/integrations/mcp/` | 配置边界和官方 MCP 扩展的宿主适配 |
 | `src/integrations/skills.ts` | `.agents/skills` 发现、Pi 解析、启停持久化、正文快照与参考文件读取 |
 | `src/permissions/` | 三种权限策略、审批状态和 shell 风险分析 |
@@ -33,7 +34,9 @@ edit/write 继续由 Pi SDK 的模块级文件队列排序，宿主不另建版�
 
 增加基础工具时，在 `src/tools/index.ts` 定义能力并加入 `TOOL_NAMES`；该集合同时控制白名单和非 MCP 模式范围。审批放在实际执行边界，直接与 CodeMode 调用共用；不能仅通过 UI 或模型提示控制权限。审批 UI 排队展示请求，取消使整代等待请求失效。六个基础工具使用 Pi 默认并行调度，write/edit 复用 SDK 同文件修改队列；MCP 保留 SDK 的执行策略。
 
-`SessionToolSettings` 从当前分支读取模式、MCP exposure 快照与首次模型请求状态，新会话使用最新配置；旧会话缺少快照时沿用原有 hybrid 行为。`createToolLoadout()` 保留官方 CodeMode `on`，按基础工具 exposure 实现局部 direct/hybrid/only，并限制官方 `tool_search` 不加载基础工具。尚未请求 LLM 时，首次 run 准备阶段重新应用最新选择；首次请求后，成功 `session_compact` 才应用最新策略、更新注册与 MCP exposure，再保存快照。恢复时若发现 compact 后缺少策略记录，会完成该边界的策略初始化。
+`SessionToolSettings` 从当前分支读取模式、MCP exposure 快照与首次模型请求状态，新会话使用最新配置；旧会话缺少快照时沿用原有 hybrid 行为。`createToolLoadout()` 保留官方 CodeMode `on`，按基础工具 exposure 实现局部 direct/hybrid/only，并限制官方 `tool_search` 不加载基础工具。尚未请求 LLM 时，首次 run 准备阶段重新应用最新选择。首次请求后，工具策略由 ArkCode compact 暂存并与完整替换历史一起提交，提交前失败恢复旧策略，提交后激活异常阻止请求直到恢复。resume/fork 优先读取当前分支的 ArkCode 检查点策略；仅 legacy 检查点保留原先的初始化兼容路径。
+
+`CompactionController` 在每次模型请求前检查完整预算，手动、阈值及实际 overflow 共用同一路径。当前有效历史与已交付用户原文用于摘要，尚未交付的新 query 单独保存。检查点持久化完整模型投影、来源片段、上下文基线和工具策略。原 JSONL 历史保留；用于摘要重试的大工具结果裁剪只修改临时副本。压缩失败而旧请求仍可容纳时警告继续，否则暂停并允许原会话恢复。历史检索与近期 assistant/tool 原文尾部不在首版范围。
 
 MCP 的 `McpManager` 仅将 ArkCode 配置和权限接到 `createMcpExtension()`。它不创建 MCP client，不维护连接池，也不转换工具结果。SDK controller 负责状态、等待启动、按名称重载、取消和关闭。项目配置需经过工作区信任检查，自动批准规则只能来自用户配置。授权绑定配置、工具元数据和实际连接身份；等待授权期间发生变化时拒绝旧调用。
 

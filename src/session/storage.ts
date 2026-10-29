@@ -3,6 +3,7 @@ import { mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFi
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
+import { parseCheckpoint } from "../compaction/checkpoint.js";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import { displayUserText } from "../context/mentions.js";
 
@@ -190,6 +191,7 @@ export async function inspectSession(path: string, expectedCwd?: string): Promis
     catch (error) { throw new Error(`Invalid session line ${index + 1}. ${error instanceof Error ? error.message : String(error)}`); }
     if (ids.has(entry.id) || (entry.parentId !== null && !ids.has(entry.parentId))) throw new Error(`Invalid session tree at line ${index + 1}.`);
     ids.add(entry.id);
+    if (entry.type === "compaction") parseCheckpoint(entry.details);
     entries.set(entry.id, entry);
     if (entry.type === "session_info") name = entry.name;
     if (entry.type === "message") {

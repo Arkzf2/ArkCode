@@ -53,6 +53,18 @@
     "dist/core/system-prompt.d.ts": {
       "original": "4304c6b9a20f0ee613c64cc67f96adde1357c2af525200418780238111b40966",
       "patched": "ba1bcb03523edadc4e3864107f72186abb63574d775a7254cfda812fe769a4a9"
+    },
+    "dist/core/agent-session.js": {
+      "original": "a5c9ff22e42215405804dc0c850e98aff424a1262829161155132a3da020b693",
+      "patched": "b8d1ef564e18d8ce3506cc8e2fa9acfdcdd471096a75cdf6cc1b93faad37c019"
+    },
+    "dist/core/agent-session.d.ts": {
+      "original": "ad1bf10352120fd57ec8b08be09e13378c82430813d6fc13195536df44b2ee9b",
+      "patched": "7ba70a28d820197c2858abc119a5d064fe0236459b35e113b7ff39bd9f8e3bef"
+    },
+    "dist/core/session-manager.js": {
+      "original": "046b6a1109ac3f0ed893bb85bf0648709362fa926a5da75761216cf2fcf9d926",
+      "patched": "c493a41729f95b685ab6397104eac5e114b899fce147b9d5d59c43282026a7ea"
     }
   }
 }

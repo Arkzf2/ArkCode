@@ -26,7 +26,9 @@ import { createTools, TOOL_NAMES, READ_TOOL_NAMES } from "../tools/index.js";
 import { cleanOutput } from "../tools/output.js";
 import { ToolOutputFiles } from "../tools/output-files.js";
 import { workspacePath } from "../tools/workspace.js";
-import { compactionTracking, installDynamicContext } from "../context/dynamic.js";
+import { installDynamicContext } from "../context/dynamic.js";
+import { CompactionController } from "../compaction/controller.js";
+import { InputJournal } from "../compaction/inputs.js";
 import { installToolAvailability } from "../context/tool-availability.js";
 import { parsePermission, permissionLabels } from "../permissions/policy.js";
 import { getBranch } from "../ui/review.js";
@@ -72,6 +74,7 @@ export class SessionRuntime {
   private mcpPanelOpen = false;
   private manager: SessionManager | null = null;
   private toolSettings: SessionToolSettings | null = null;
+  private compaction: CompactionController | null = null;
   private lease: SessionLease | null = null;
   private shell: ManagedShell;
   private state: RunState = { kind: "idle", outcome: null };
@@ -224,7 +227,7 @@ export class SessionRuntime {
     }
     const toolSettings = new SessionToolSettings(manager, { home: this.home, cwd, trusted });
     const mcp = new McpManager({ home: this.home, cwd, trusted, settings: toolSettings,
-      canConnect: () => !this.closing && !this.lease?.viewer && !this.executionUnconfirmed && !this.storageFailed && this.state.kind !== "stopping",
+      canConnect: () => !this.closing && !this.lease?.viewer && !this.executionUnconfirmed && !this.storageFailed,
       authorize: (request) => this.authorizeTool(request), warning: (message) => { if (!this.mcpPanelOpen) this.ui.message("error", cleanOutput(message)); },
     });
     const outputFiles = new ToolOutputFiles();
@@ -232,8 +235,7 @@ export class SessionRuntime {
     const extensionLoader = new DefaultResourceLoader({
       cwd, agentDir: this.home, settingsManager: SettingsManager.inMemory({}, { projectTrusted: false }),
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      extensionFactories: [{ name: "arkcode-file-tracking", hidden: true, factory: compactionTracking },
-        { name: "arkcode-tool-output", hidden: true, factory: (pi) => {
+      extensionFactories: [{ name: "arkcode-tool-output", hidden: true, factory: (pi) => {
           pi.on("tool_result", async (event) => { await outputFiles.capture(event.toolName, event.details); });
         } },
         { name: "arkcode-tool-loadout", hidden: true, factory: createToolLoadout({ settings: toolSettings, mcp,
@@ -253,23 +255,27 @@ export class SessionRuntime {
       thinkingLevel: initial ? this.options.thinking : undefined,
       sessionManager: manager,
       settingsManager: SettingsManager.inMemory({ defaultProvider: this.config.provider, defaultModel: this.config.model,
-        defaultThinkingLevel: this.config.thinking, retry: { enabled: true, maxRetries: 2 }, compaction: { enabled: true },
+        defaultThinkingLevel: this.config.thinking, retry: { enabled: true, maxRetries: 2 }, compaction: { enabled: false },
         cacheWarming: "off",
       }),
       resourceLoader: createResources(extensionLoader.getExtensions(), () => skills.resources),
       tools: [...TOOL_NAMES, "WebSearch", "codemode", "tool_search", "mcp__*"],
     });
-    installDynamicContext(session, { cwd, home: this.home, shell: shell.executable, trusted, projectDocMaxBytes: this.config.projectDocMaxBytes,
+    const dynamicContext = installDynamicContext(session, { cwd, home: this.home, shell: shell.executable, trusted, projectDocMaxBytes: this.config.projectDocMaxBytes,
       onWarning: (message) => this.ui.message("info", cleanOutput(message)),
       executionBlocked: () => this.executionUnconfirmed || this.storageFailed || Boolean(this.lease?.viewer),
     });
     installToolAvailability(session, () => toolSettings.ready());
+    const compaction = new CompactionController(session, { settings: toolSettings, captureContext: dynamicContext.capture,
+      warning: (message) => this.ui.message("info", cleanOutput(message)),
+    });
     let marker;
     try { marker = await readRunMarker(this.home, session.sessionId); }
     catch (error) { session.dispose(); throw error; }
     if (this.closing) { session.dispose(); return; }
     this.manager = manager;
     this.toolSettings = toolSettings;
+    this.compaction = compaction;
     this.session = session;
     this.mcp = mcp;
     this.skills = skills;
@@ -288,6 +294,7 @@ export class SessionRuntime {
     }
     await session.bindExtensions({ mode: "print" });
     await this.waitForMcp(mcp);
+    if (!lease?.viewer && !this.executionUnconfirmed) for (const raw of compaction.restorePending()) this.ui.message("user", cleanOutput(raw));
     this.refreshStatus();
   }
   private async waitForMcp(mcp: McpManager): Promise<void> {
@@ -392,7 +399,15 @@ export class SessionRuntime {
       case "auto_retry_start": this.ui.message("info", `Retry ${event.attempt}/${event.maxAttempts}. ${cleanOutput(event.errorMessage)}`); break;
       case "auto_retry_end": if (!event.success && event.finalError) { this.failure = true; this.ui.message("error", cleanOutput(event.finalError)); } else if (event.success) this.failure = false; break;
       case "compaction_start": this.ui.message("info", "Compacting conversation..."); break;
-      case "compaction_end": this.ui.message(event.errorMessage ? "error" : "info", event.errorMessage ? cleanOutput(event.errorMessage) : "Conversation compacted. Original history retained."); break;
+      case "compaction_end": {
+        if (event.reason === "overflow" && event.result && event.willRetry) this.failure = false;
+        const details = event.result?.details;
+        const unchanged = details && typeof details === "object" && "outcome" in details && details.outcome === "unchanged";
+        this.ui.message(event.errorMessage ? "error" : "info", event.errorMessage ? cleanOutput(event.errorMessage)
+          : event.aborted ? "Compaction cancelled. Original context retained."
+            : unchanged ? "No new history or configuration to compact." : "Conversation compacted. Original history retained.");
+        break;
+      }
       case "agent_settled": this.interrupted ||= event.aborted; break;
     }
     this.refreshStatus();
@@ -400,6 +415,7 @@ export class SessionRuntime {
 
   async submit(text: string, mode: InputMode = "prompt"): Promise<void> {
     if (this.closing || this.initializing) return;
+    const rawText = text;
     text = text.trim();
     if (!text) return;
     try {
@@ -417,17 +433,18 @@ export class SessionRuntime {
         }
         const prepared = await prepareMentions(text, this.cwd, session.model.input.includes("image"));
         const expanded = await this.skills?.prepare(prepared.text) ?? prepared.text;
+        this.compaction?.inputs.capture({ rawText, preparedText: expanded, images: prepared.images, delivery: mode === "follow-up" ? "follow-up" : "steering" });
         if (mode === "follow-up") await session.followUp(expanded, prepared.images); else await session.steer(expanded, prepared.images);
         this.refreshStatus(); return;
       }
-      await this.run(text);
+      await this.run(text, rawText);
     } catch (error) {
       if (!text.startsWith("/")) this.ui.message("user", text);
       this.ui.message("error", cleanOutput(error instanceof Error ? error.message : String(error)));
       this.ui.setDraft(text);
     }
   }
-  private async run(text: string): Promise<void> {
+  private async run(text: string, rawText = text, delivery: "prompt" | "task-command" = "prompt", continuation = false): Promise<void> {
     const session = this.session;
     if (!session) throw new Error("No session.");
     const runId = randomUUID();
@@ -439,7 +456,12 @@ export class SessionRuntime {
       try {
         if (!this.executionUnconfirmed) await writeRunMarker(this.home, session.sessionId, { status: "active", runId, startedAt, pid: process.pid, cwd: this.cwd });
         if (this.interrupted) return;
-        if (text.startsWith("!")) await this.userShell(text.slice(1).trim(), runId);
+        if (session.agent.hasQueuedMessages()) {
+          session.clearQueue();
+        }
+        for (const raw of this.compaction?.restorePending() ?? []) this.ui.message("user", cleanOutput(raw));
+        if (continuation) await session.continueHostInput();
+        else if (text.startsWith("!")) await this.userShell(text.slice(1).trim(), runId);
         else {
           let prompt;
           try { prompt = await prepareMentions(text, this.cwd, session.model?.input.includes("image") ?? false); }
@@ -447,6 +469,7 @@ export class SessionRuntime {
           if (this.interrupted) return;
           const expanded = await this.skills?.prepare(prompt.text) ?? prompt.text;
           if (this.interrupted) return;
+          this.compaction?.inputs.capture({ rawText, preparedText: expanded, images: prompt.images, delivery });
           await session.prompt(expanded, { images: prompt.images });
         }
         await session.waitForIdle();
@@ -461,7 +484,7 @@ export class SessionRuntime {
         if (!this.interrupted) { this.failure = true; this.ui.message("error", cleanOutput(error instanceof Error ? error.message : String(error))); }
       } finally {
         this.broker.cancel();
-        await this.shell.stopAll();
+        if (!this.compaction?.executionPaused) await this.shell.stopAll();
         const outcome = this.interrupted ? "interrupted" : this.failure ? "failed" : "completed";
         try {
           if (session.sessionFile && existsSync(session.sessionFile)) await inspectSession(session.sessionFile, this.cwd);
@@ -495,17 +518,20 @@ export class SessionRuntime {
   async interrupt(): Promise<void> {
     if (this.state.kind === "idle") { this.broker.cancel(); return; }
     this.interrupted = true;
+    const connecting = this.mcp?.cancelConnecting();
     this.operationAbort?.abort();
     this.state = { kind: "stopping", id: this.state.id, startedAt: this.state.startedAt };
     this.broker.cancel();
     const queue = this.session?.clearQueue();
     const returned = [...(queue?.steering ?? []), ...(queue?.followUp ?? []), ...this.localQueue];
+    this.compaction?.inputs.withdraw([...(queue?.steering ?? []), ...(queue?.followUp ?? [])]);
     this.localQueue = [];
     if (returned.length) this.ui.setDraft([this.ui.draft(), ...returned.map(displayUserText)].filter(Boolean).join("\n\n"));
     this.queued = [];
     this.refreshStatus();
-    await Promise.all([this.session?.abort(), this.shell.stopAll(), this.mcp?.cancelConnecting()]);
+    await Promise.all([this.session?.abort(), this.shell.stopAll(), connecting]);
     await this.active;
+    this.compaction?.inputs.withdrawUnbound();
   }
   async exit(): Promise<void> {
     if (this.closing) return;
@@ -574,6 +600,7 @@ export class SessionRuntime {
     if (this.state.kind !== "idle") {
       const queue = session.clearQueue();
       const text = queue.followUp.pop() ?? queue.steering.pop();
+      if (text) this.compaction?.inputs.withdraw([text]);
       for (const item of queue.steering) await session.steer(item);
       for (const item of queue.followUp) await session.followUp(item);
       if (text) this.ui.setDraft(displayUserText(text));
@@ -586,6 +613,7 @@ export class SessionRuntime {
     if (!source) return;
     const branch = SessionManager.open(source, this.sessionDir(), this.cwd);
     branch.createBranchedSession(prompt.parentId);
+    new InputJournal(branch).withdrawUnbound();
     await this.navigate.open(branch, text);
   }
 
@@ -672,14 +700,18 @@ export class SessionRuntime {
         this.ui.message("info", `Permissions: ${permissionLabels[permission]}.`); break;
       }
       case "rename": { const title = argument || await this.ui.input("Session name", session.sessionName ?? ""); if (title) session.setSessionName(title); break; }
-      case "compact": await this.runOperation(async () => {
-        await session.compact(argument || undefined);
-        this.toolSettings?.ready();
-      }); break;
+      case "compact": {
+        await this.runOperation(async (signal) => {
+          await session.runHostCompaction("manual", argument || undefined, signal);
+          this.toolSettings?.ready();
+        });
+        if (!this.interrupted && session.agent.hasQueuedMessages()) await this.run("", "", "prompt", true);
+        break;
+      }
       case "copy": if (!this.lastAnswer) throw new Error("No completed answer to copy."); if (!await this.ui.copy(this.lastAnswer)) throw new Error("Clipboard is unavailable."); this.ui.message("info", "Answer copied."); break;
       case "init": {
         if (existsSync(join(this.cwd, "AGENTS.md"))) throw new Error("AGENTS.md already exists. It was not overwritten.");
-        await this.run("Inspect this repository and create a concise AGENTS.md with the actual build, test and style conventions. Do not invent commands. Do not modify other files."); break;
+        await this.run("Inspect this repository and create a concise AGENTS.md with the actual build, test and style conventions. Do not invent commands. Do not modify other files.", "/init", "task-command"); break;
       }
       case "connect": await this.connect(); break;
       case "exit": await this.exit(); break;

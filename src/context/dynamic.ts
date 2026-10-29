@@ -1,6 +1,6 @@
 import { release, type as osType } from "node:os";
 import { z } from "zod";
-import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { InstructionsLoader, instructionSchema } from "./instructions.js";
 import { getBranch } from "../ui/review.js";
 
@@ -56,14 +56,12 @@ export function installDynamicContext(session: AgentSession, options: {
   cwd: string; home: string; shell: string; trusted: boolean; projectDocMaxBytes: number; executionBlocked: () => boolean;
   onWarning?: (message: string) => void;
   now?: () => Date; timezone?: () => string;
-}): void {
+}): { capture: (signal?: AbortSignal) => Promise<CustomMessage> } {
   const prior = session.agent.prepareRequest;
   const os = `${osType()} ${release()}`;
   const instructions = new InstructionsLoader({ ...options, onWarning: options.onWarning ?? (() => {}) });
-  session.agent.prepareRequest = async (request, signal) => {
+  const capture = async (signal?: AbortSignal): Promise<CustomMessage> => {
     signal?.throwIfAborted();
-    const prepared = await prior?.(request, signal);
-    const context = prepared?.context ?? request.context;
     const timezone = options.timezone?.() ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
     const snapshot: ContextSnapshot = {
       environment: {
@@ -74,6 +72,15 @@ export function installDynamicContext(session: AgentSession, options: {
       agents: await instructions.load(signal),
     };
     signal?.throwIfAborted();
+    return { role: "custom", customType: CONTEXT_MESSAGE, content: renderFull(snapshot), display: false, timestamp: Date.now(),
+      details: { version: 2, kind: "full", snapshot } };
+  };
+  session.agent.prepareRequest = async (request, signal) => {
+    signal?.throwIfAborted();
+    const prepared = await prior?.(request, signal);
+    const context = prepared?.context ?? request.context;
+    const full = await capture(signal);
+    const snapshot = disclosureSchema.parse(full.details).snapshot;
     const message = contextUpdate(context.messages, snapshot);
     if (!message) return prepared ?? undefined;
     // Append to both durable history and the live request. No UI lifecycle event is emitted.
@@ -84,21 +91,5 @@ export function installDynamicContext(session: AgentSession, options: {
     session.agent.state.messages = messages;
     return { ...prepared, context: { ...context, messages } };
   };
+  return { capture };
 }
-
-export const compactionTracking: ExtensionFactory = (pi) => {
-  pi.on("session_before_compact", (event) => {
-    const { fileOps, messagesToSummarize, turnPrefixMessages } = event.preparation;
-    for (const message of [...messagesToSummarize, ...turnPrefixMessages]) {
-      const calls = message.role === "toolResult" ? message.nestedCalls?.calls ?? []
-        : message.role === "assistant" ? message.content.filter((block) => block.type === "toolCall") : [];
-      for (const block of calls) {
-        const path = z.object({ path: z.string() }).safeParse(block.arguments);
-        if (!path.success) continue;
-        if (block.name === "Read") fileOps.read.add(path.data.path);
-        else if (block.name === "Write") fileOps.written.add(path.data.path);
-        else if (block.name === "Edit") fileOps.edited.add(path.data.path);
-      }
-    }
-  });
-};

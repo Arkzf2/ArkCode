@@ -38,7 +38,8 @@ const pending = Object.entries(manifest.files).filter(([path, checksums]) => {
     throw new Error(`Pi SDK file changed unexpectedly: ${path}. Refusing to overwrite it.`);
   return true;
 });
-if (pending.length === 0) process.exit(0);
+const updateManifest = process.argv.includes('--update-manifest');
+if (pending.length === 0 && !updateManifest) process.exit(0);
 // Recover the exact upstream files before computing changes, including after a partial installation.
 for (const [path] of Object.entries(manifest.files)) {
   const target = join(packageRoot, path);
@@ -67,6 +68,23 @@ patch('dist/core/system-prompt.d.ts', (text) => {
     '    sections?: Record<string, string>;\n    /** Recomputed at each prompt build, including continuations after automatic compaction. */\n    sectionProviders?: Record<string, () => string>;');
   return replace(text, '    sections: Record<string, string>;',
     '    sections: Record<string, string>;\n    sectionProviders: Record<string, () => string>;');
+});
+
+patch('dist/core/agent-session.js', (text) => {
+  text = replace(text, 'contentText, getCurrentSystemMessage, retryDelayMs', 'contentText, getCurrentSystemMessage, toToolDeclaration, retryDelayMs');
+  text = replace(text, '        else {\n            // Normalize images after before_agent_start', '        else if (trigger.messageType !== "continuation") {\n            // Normalize images after before_agent_start');
+  text = replace(text, '    async compact(customInstructions) {', asset('compaction-host.js') + '\n    async compact(customInstructions) {\n        if (this._hostCompaction) {\n            if (this.isStreaming) throw new Error("Wait until the current run finishes.");\n            return await this.runHostCompaction("manual", customInstructions);\n        }');
+  return replace(text, '    async _checkCompaction(assistantMessage, skipAbortedCheck = true, toolResults = []) {',
+    '    async _checkCompaction(assistantMessage, skipAbortedCheck = true, toolResults = []) {\n        if (this._hostCompaction) return await this._recoverHostOverflow(assistantMessage, skipAbortedCheck);');
+});
+patch('dist/core/agent-session.d.ts', (text) => replace(text, '    compact(customInstructions?: string): Promise<CompactionResult>;',
+  asset('compaction-host.d.ts') + '\n    compact(customInstructions?: string): Promise<CompactionResult>;'));
+
+patch('dist/core/session-manager.js', (text) => {
+  text = replace(text, '    if (entry.type === "compaction") {\n        const summary = createCompactionSummaryMessage',
+    '    if (entry.type === "compaction") {\n        if (entry.details?.arkcode !== undefined) {\n            const checkpoint = entry.details.arkcode;\n            if (checkpoint?.version !== 1 || !Array.isArray(checkpoint.replacementMessages) || !Array.isArray(checkpoint.pendingEntryIds))\n                throw new Error("Invalid or unsupported ArkCode checkpoint version.");\n            return checkpoint.replacementMessages;\n        }\n        const summary = createCompactionSummaryMessage');
+  return replace(text, '    const contextEntries = [compaction];',
+    '    const contextEntries = [compaction];\n    if (compaction.details?.arkcode !== undefined) {\n        const checkpoint = compaction.details.arkcode;\n        if (checkpoint?.version !== 1 || !Array.isArray(checkpoint.pendingEntryIds))\n            throw new Error("Invalid or unsupported ArkCode checkpoint version.");\n        const pending = new Set(checkpoint.pendingEntryIds);\n        contextEntries.push(...path.slice(0, compactionIdx).filter((entry) => pending.has(entry.id)));\n        contextEntries.push(...path.slice(compactionIdx + 1));\n        return contextEntries;\n    }');
 });
 
 patch('dist/core/tools/grep.js', (text) => replace(text,
@@ -129,7 +147,17 @@ patch('dist/extensions/mcp/runtime.d.ts', (text) => {
 });
 
 // Validate every output before writing any file. Hashes deliberately cover normalized line endings.
+if (updateManifest) {
+  for (const [path, { text }] of replacements) {
+    const checksum = manifest.files[path];
+    const next = hash(text);
+    if (checksum.patched !== next && checksum.patched !== checksum.original)
+      checksum.previousPatched = [...new Set([...(checksum.previousPatched ?? []), checksum.patched])];
+    checksum.patched = next;
+  }
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+}
 for (const [path, { text }] of replacements) {
   if (hash(text) !== manifest.files[path].patched) throw new Error(`Pi SDK patch output checksum mismatch: ${path}`);
 }
-for (const [path] of pending) writeFileSync(join(packageRoot, path), replacements.get(path).text);
+for (const [path] of updateManifest ? Object.entries(manifest.files) : pending) writeFileSync(join(packageRoot, path), replacements.get(path).text);

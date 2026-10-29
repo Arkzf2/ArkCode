@@ -41,6 +41,10 @@ export interface McpEntry {
 }
 export interface McpConfiguration { entries: McpEntry[]; diagnostics: string[] }
 
+export function mcpConfigurationErrors(config: Pick<McpConfiguration, "diagnostics">): string[] {
+  return config.diagnostics.filter((message) => !message.startsWith("Project MCP configuration skipped in untrusted workspace:"));
+}
+
 function readDocument(path: string): z.infer<typeof documentSchema> {
   if (statSync(path).size > 1024 * 1024) throw new Error("MCP configuration exceeds 1 MiB.");
   return documentSchema.parse(JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, "")));

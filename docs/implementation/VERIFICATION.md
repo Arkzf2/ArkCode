@@ -2,6 +2,28 @@
 
 Date: 2026-10-09. Platform: Windows. Node: 24.18.0. Pi SDK: 1.1.0.
 
+## Skill bodies after compaction, 2026-10-29
+
+Compaction no longer restores historical loaded Skill bodies as an `arkcode-active-skills` message. Authored Skill selections remain in retained user text, and the current Skill catalog remains available through the normal system section. The model can read an enabled Skill when needed. Newly submitted, undelivered inputs retain their normal submission-time Skill expansion. A subsequent successful compact refreshes older checkpoints containing the removed Skill block without generating another summary or rewriting the original JSONL.
+
+The real-SDK regressions check that historical bodies disappear from replacement context and resumed provider requests, while original JSONL and the user's Skill selection remain. An actual read tool call reloads the Skill after compaction. Separate cases verify removal from an otherwise unchanged older checkpoint and preservation of a newly selected Skill in pending input during pre-query compaction.
+
+Type checking, the production build, compiled CLI version/help and `git diff --check` passed. All 17 compaction-policy and Skill unit tests passed. Of the 35 selected runtime cases, 34 passed on the initial run; the retention test initially matched the generic `<skill-loaded>` explanation in the system catalog. Its assertion was narrowed to actual named Skill blocks, and the complete retention/resume/read case then passed on rerun. No application code changed after that runtime run. Logs are `.audit/runtime/compact-skills-check.log`, `compact-skills-unit.log`, `compact-skills-runtime.log`, `compact-skills-retention.log`, `compact-skills-build.log` and `compact-skills-cli-help.log` under the same ignored directory.
+
+## Host compaction, 2026-10-28
+
+Pi SDK 1.2.0. ArkCode owns compaction policy through a versioned SDK patch. Before each model request, including tool-loop continuations, the host measures the complete request and applies the 90% / 50k remaining-input policy after reserving output capacity. Checkpoints retain up to 20k estimated tokens of authored user text, rebuild current system/tool declarations and environment, restore explicit Skill bodies separately, and append the handoff with the original Codex summary prefix. Recent raw assistant/tool turns are summarized rather than retained as a tail. The implementation and boundaries are recorded in [Compaction design](COMPACTION_DESIGN.md) and [Compaction prompt](COMPACT_PROMPT.md).
+
+The separate Skill-body restoration in this dated run is superseded by the 2026-10-29 change above.
+
+Final `npm run check`, `npm test` and `npm run build` passed. The complete regression run passed all 284 tests with zero failures, skips or cancellations. The compiled CLI returned version `0.1.0` and its help output successfully, and `git diff --check` passed.
+
+Policy tests cover UTF-8 token estimates, Unicode-safe retained ranges, repeated compaction without resurrecting omitted text, media exclusion, multi-block tool-result pruning, exact pruning boundaries, idempotence and closed tool-call batches. Real Pi sessions against loopback model and MCP fixtures cover pre-query and tool-loop triggers, full parallel tool batches without replay, bounded summary/network retries, invalid or truncated summaries, policy refresh, queued input delivery and cancellation, original JSONL preservation, resume/fork projection, unknown checkpoint rejection, and storage/activation failure injection. They also verify warning-and-continue when the original request still fits, hard-capacity pauses, recovery by changing the model, one compact-and-retry after a provider overflow, and rejection of attempts to bypass an overflow pause with another query. Failed MCP preparation restores the previous tool policy and cannot commit an incomplete checkpoint.
+
+The replacement context, retained input provenance, pending/delivered input IDs and tool policy are stored in one compaction entry, followed by a file synchronization before activation. This durability step is specific to the compaction checkpoint; ordinary Pi history appends do not gain a general transaction or synchronization guarantee. Commit or activation uncertainty blocks further model requests until recovery from the saved session state.
+
+Validation uses local protocol fixtures, the installed SDK, real shell processes, persisted JSONL and the TUI renderer. It does not establish remote-model summary quality, prompt-cache hit rates or provider-accurate image token counts. Text counting currently uses the documented UTF-8 estimate; images retain the SDK's 1200-token heuristic. Model-specific tokenizers, independent input-capacity adapters, automatic small-window policy adjustment and conversation-history retrieval remain outside this implementation. The local validation logs are `.audit/runtime/compact-check-final.log`, `.audit/runtime/compact-tests-final.log`, `.audit/runtime/compact-build-final.log` and `.audit/runtime/compact-cli-help.log`; they remain ignored by Git.
+
 ## Skills, 2026-10-17
 
 Pi SDK 1.2.0. SkillsManager discovers only user `~/.agents/skills` and trusted Git-root-to-cwd `.agents/skills` sources. The host supplies explicit manifest paths to the public Pi loader with defaults disabled, persists disabled paths in ArkCode's `skills.json`, and refreshes the SDK skills prompt section at the start of a run. Explicit `/skill:name` and `@skill:name` selections use public frontmatter utilities, an activation sentence and `<skill-loaded>` message blocks; the host expands them before queueing to preserve submission-time bodies and support multiple selections.

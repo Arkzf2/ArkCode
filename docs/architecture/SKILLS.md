@@ -29,6 +29,8 @@ ArkCode 使用 Pi SDK 1.2.0 的 `Skill` 类型、`loadSkills()`、`formatSkillsF
 
 已登记且启用的 Skill 根目录内文件可由 read 只读访问，包括用户目录和 cwd 外的祖先项目 Skill。读取前重新验证根目录与 manifest 的真实路径，资源链接不得越出已登记根目录，`.git`、`.arkcode` 与 `.env*` 文件不开放。write/edit 和其他工具继续遵循原有工作区与审批检查。Skills 不授予 shell、MCP 或额外工具权限；这不是操作系统沙箱。
 
+compact 不将历史加载过的 Skill 正文恢复到新检查点。保留的用户原文仍包含其明确输入的 Skill 选择，当前目录仍可供模型选择和按需 read；历史原文不会在重建时重新触发展开。尚未交付的排队输入仍保留提交时的正文快照。旧检查点中的独立 Skill 正文块在下一次成功 compact 时移除，原始 JSONL 不变。
+
 ## 会话中的变化
 
 | 操作 | 行为 |

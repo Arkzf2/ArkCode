@@ -5,7 +5,7 @@ import { createMcpExtension, type McpHostController, type McpServerEntry, type M
 import type { ApprovalRequest } from "../../app/types.js";
 import type { SessionToolSettings } from "../../session/tool-settings.js";
 import { cleanOutput } from "../../tools/output.js";
-import { loadMcpConfig, matchesMcpTool, mcpTarget, mcpToolEnabled, mcpWorkingDirectory, resolveMcpEnvironment, updateMcpConfig, type McpEntry, type McpServerConfig } from "./config.js";
+import { loadMcpConfig, mcpConfigurationErrors, matchesMcpTool, mcpTarget, mcpToolEnabled, mcpWorkingDirectory, resolveMcpEnvironment, updateMcpConfig, type McpEntry, type McpServerConfig } from "./config.js";
 
 type HostOptions = {
   home: string; cwd: string; trusted: boolean;
@@ -133,7 +133,10 @@ export class McpManager {
   }
   async applyExposure(): Promise<void> {
     const current = this.control().snapshot().servers;
-    const loaded = loadMcpConfig(this.options).entries;
+    const config = loadMcpConfig(this.options);
+    const errors = mcpConfigurationErrors(config);
+    if (errors.length) throw new Error(`MCP configuration cannot be applied: ${errors.join("; ")}`);
+    const loaded = config.entries;
     for (const name of new Set([...current.map(({ entry }) => entry.name), ...loaded.map((entry) => entry.name)])) {
       const server = current.find(({ entry }) => entry.name === name);
       const saved = loaded.find((entry) => entry.name === name);
@@ -142,6 +145,16 @@ export class McpManager {
         || JSON.stringify([server.entry.config.exposure, server.entry.config.toolExposure]) !== JSON.stringify([desired?.exposure, desired?.toolExposure])) {
         await this.control().reload(name);
       }
+    }
+    await this.control().waitReady();
+    const snapshot = this.control().snapshot();
+    const failed = mcpConfigurationErrors({ diagnostics: snapshot.errors });
+    if (failed.length) throw new Error(`MCP configuration cannot be applied: ${failed.join("; ")}`);
+    for (const server of snapshot.servers) {
+      if (server.entry.config.enabled === false || server.state === "connected") continue;
+      const desired = server.entry.config;
+      if (desired.exposure === "hidden" && !Object.values(desired.toolExposure ?? {}).some((exposure) => exposure !== "hidden")) continue;
+      throw new Error(`MCP ${server.entry.name} is not ready for the checkpoint: ${server.state}${server.error ? ` (${this.redact(server.entry, server.error)})` : ""}`);
     }
   }
   async login(name: string, prompt: Parameters<McpHostController["login"]>[1]): Promise<void> {
