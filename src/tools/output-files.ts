@@ -11,7 +11,7 @@ export class ToolOutputFiles {
   private readonly files = new Map<string, { path: string; dev: number; ino: number; size: number; mtimeMs: number }>();
 
   async capture(tool: string, details: unknown): Promise<void> {
-    if (tool !== "bash" && !tool.startsWith("mcp__")) return;
+    if (tool !== "bash" && tool !== "codemode" && !tool.startsWith("mcp__")) return;
     const result = outputDetails.safeParse(details);
     if (!result.success || !isAbsolute(result.data.fullOutputPath)) return;
     const path = await realpath(result.data.fullOutputPath);

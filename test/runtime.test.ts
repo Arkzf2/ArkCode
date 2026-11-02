@@ -698,19 +698,21 @@ test("CodeMode queues across sessions, cancels a waiting run and reuses worker s
   assert.ok(next.ui.tools.some((tool) => tool.name === "codemode" && tool.state === "done" && tool.text.includes("Worker released.")));
 });
 
-for (const source of ["MCP", "bash"]) {
+for (const source of ["MCP", "bash", "CodeMode"]) {
   test(`${source} truncated output can be read without granting writes or access to other external files`, async (t) => {
     let outputPath = "";
     let privatePath = "";
     const longOutput = "prefix evidence line\n".repeat(2500) + "middle evidence marker\n" + "suffix evidence line\n".repeat(2500);
     const f = await fixture(t, (request, index) => {
       if (index === 0) return source === "MCP" ? { kind: "tool", name: "mcp__fixture__echo", arguments: { text: "large" } }
-        : { kind: "tool", name: "bash", arguments: { command: `node -e "process.stdout.write('prefix evidence line\\n'.repeat(2500)+'middle evidence marker\\n'+'suffix evidence line\\n'.repeat(2500))"` } };
+        : source === "CodeMode" ? { kind: "tool", name: "codemode", arguments: { code: `text(${JSON.stringify(longOutput)});` } }
+          : { kind: "tool", name: "bash", arguments: { command: `node -e "process.stdout.write('prefix evidence line\\n'.repeat(2500)+'middle evidence marker\\n'+'suffix evidence line\\n'.repeat(2500))"` } };
       if (index === 1) {
         const output = request.messages.findLast((message) => message.role === "tool")?.content;
         assert.equal(typeof output, "string");
-        const match = /Full output: (.*?)(?: \(read it with offset\/limit\)|\])/.exec(String(output));
+        const match = /Full output: (.*?)(?: \(read (?:it )?with offset\/limit\)|\])/.exec(String(output));
         assert.ok(match?.[1]); outputPath = match[1];
+        if (source === "CodeMode") assert.doesNotMatch(String(output), /middle evidence marker/);
         return { kind: "tool", name: "read", arguments: { path: outputPath, offset: 2501, limit: 1 } };
       }
       if (index === 2) return { kind: "tool", name: "write", arguments: { path: outputPath, content: "forbidden replacement" } };
@@ -733,6 +735,32 @@ for (const source of ["MCP", "bash"]) {
     assert.doesNotMatch(JSON.stringify(f.requests), /outside-private-evidence/);
   });
 }
+
+test("CodeMode-only reads registered large output in a later script with pagination", async (t) => {
+  let outputPath = "";
+  const f = await fixture(t, (request, index) => {
+    if (index === 0) return { kind: "tool", name: "codemode", arguments: {
+      code: 'text("start\\n".repeat(10000) + "middle evidence marker\\n" + "end\\n".repeat(10000));',
+    } };
+    if (index === 1) {
+      const output = String(request.messages.findLast((message) => message.role === "tool")?.content);
+      const match = /Full output: (.*?) \(read with offset\/limit\)/.exec(output);
+      assert.ok(match?.[1]); outputPath = match[1];
+      assert.doesNotMatch(output, /middle evidence marker/);
+      return { kind: "tool", name: "codemode", arguments: {
+        code: `text(await tools.read(${JSON.stringify({ path: outputPath, offset: 10001, limit: 1 })}));`,
+      } };
+    }
+    return { kind: "text", text: "Done." };
+  });
+  await writeFile(join(f.home, "settings.json"), JSON.stringify({ ...loadConfig(f.home), toolMode: "codemode-only" }));
+  const { host, ui } = await f.start();
+  t.after(async () => { if (outputPath) await rm(outputPath, { force: true }); });
+  await host.submit("Read a page from CodeMode output.");
+  assert.equal(host.outcome, "completed");
+  assert.ok(ui.tools.some((tool) => tool.name === "read" && tool.state === "done" && tool.text.includes("middle evidence marker")));
+  assert.ok(f.requests.every((request) => !request.tools?.some((tool) => tool.function.name === "read")));
+});
 
 test("/mcp exposure persists without changing declarations until successful compact", async (t) => {
   const f = await fixture(t, (_request, index) => ({ kind: "text", text: index === 0 ? "Earlier inspected evidence. ".repeat(5000) : "Done." }));
