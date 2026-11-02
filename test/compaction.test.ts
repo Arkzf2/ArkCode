@@ -16,11 +16,16 @@ const user = (value: string, inputId = "input"): RetainedUser => ({ inputId, ent
 const tool = (value: string): Extract<Message, { role: "toolResult" }> => ({ role: "toolResult", toolCallId: "call", toolName: "Read", timestamp: 1, isError: true,
   content: [{ type: "text", text: value }], details: { evidence: "unchanged" } });
 
-test("compact thresholds reserve normal output before applying 90 percent and 50k", () => {
+test("compact thresholds reserve output before applying 90 percent and the context window reserve tier", () => {
   assert.deepEqual(requestBudget(model), { window: 204096, output: 4096, input: 200000, threshold: 150000, measurement: "estimate" });
   assert.equal(requestBudget({ ...model, contextWindow: 1004096 }).threshold, 900000);
-  assert.equal(requestBudget({ ...model, contextWindow: 132096 }).threshold, 78000);
-  assert.throws(() => requestBudget({ ...model, contextWindow: 24000 }), /50k/);
+  assert.equal(requestBudget({ ...model, contextWindow: 132096 }).threshold, 103000);
+  assert.equal(requestBudget({ ...model, contextWindow: 128000 }).threshold, 98904);
+  assert.equal(requestBudget({ ...model, contextWindow: 199999 }).threshold, 170903);
+  assert.equal(requestBudget({ ...model, contextWindow: 200000 }).threshold, 145904);
+  assert.equal(requestBudget({ ...model, contextWindow: 200000, maxTokens: 100000 }).threshold, 50000);
+  assert.throws(() => requestBudget({ ...model, contextWindow: 24000 }), /25k/);
+  assert.throws(() => requestBudget({ ...model, contextWindow: 200000, maxTokens: 150000 }), /50k/);
   assert.throws(() => requestBudget({ ...model, maxTokens: Number.NaN }), /context window/);
 });
 

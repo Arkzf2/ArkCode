@@ -1101,7 +1101,7 @@ test("automatic compact applies pending modes and prompts before the next reques
     }
     if (index === 1) return { kind: "tool", name: "read", arguments: { path: "large.txt", offset: 2001, limit: 2000 } };
     return { kind: "text", text: "Summary or completed answer." };
-  }, false, 78000);
+  }, false, 53000);
   home = f.home;
   await writeFile(join(home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
   await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
@@ -2651,7 +2651,7 @@ test("manual compact checkpoints the handoff and refreshes instructions from its
 test("automatic compact during tool continuation reinjects current context before the next conversational request", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => index < 2
     ? { kind: "tool", name: "read", arguments: { path: "large.txt", offset: index * 2000 + 1, limit: 2000 } }
-    : { kind: "text", text: "Compacted evidence or completed answer." }, false, 78000);
+    : { kind: "text", text: "Compacted evidence or completed answer." }, false, 53000);
   await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
   await writeFile(join(f.cwd, "AGENTS.md"), "Current automatic compact instructions.");
   const { host, ui } = await f.start();
@@ -2746,7 +2746,7 @@ test("compact refresh removes a historical Skill snapshot from an otherwise unch
 });
 
 test("pre-query compact preserves a newly selected Skill only in the pending input", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, (request, index) => ({ kind: "text", text: isCompactRequest(request) ? "Prior task progress and verified next actions." : index === 0 ? "EARLIER EVIDENCE ".repeat(21000) : "Continued." }));
+  const f = await fixture(t, (request, index) => ({ kind: "text", text: isCompactRequest(request) ? "Prior task progress and verified next actions." : index === 0 ? "EARLIER EVIDENCE ".repeat(21000) : "Continued." }), false, 103000);
   const directory = join(f.cwd, ".agents", "skills", "review"); await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "SKILL.md"), "---\nname: review\ndescription: Inspect changes.\n---\nNEW PENDING SKILL BODY.\n");
   const { host } = await f.start();
@@ -2764,7 +2764,7 @@ test("pre-query compact preserves a newly selected Skill only in the pending inp
 });
 
 test("pre-query automatic compact preserves the pending query once and excludes it from the summary", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, (request, index) => ({ kind: "text", text: isCompactRequest(request) ? "Prior task progress and verified next actions." : index === 0 ? "EARLIER EVIDENCE ".repeat(21000) : "Continued." }));
+  const f = await fixture(t, (request, index) => ({ kind: "text", text: isCompactRequest(request) ? "Prior task progress and verified next actions." : index === 0 ? "EARLIER EVIDENCE ".repeat(21000) : "Continued." }), false, 103000);
   const { host } = await f.start();
   await host.submit("The earlier task.");
   await host.submit("PENDING QUERY MUST APPEAR EXACTLY ONCE");
@@ -2915,7 +2915,7 @@ test("cancelling manual compact withdraws queued input and does not resurrect it
 test("automatic compact failure warns and continues when the original request still fits", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (request) => isCompactRequest(request)
     ? { kind: "error", status: 400, message: "Summary generation rejected by fixture" }
-    : { kind: "text", text: "Evidence before failed compact. ".repeat(4500) }, false, 78000);
+    : { kind: "text", text: "Evidence before failed compact. ".repeat(4500) }, false, 53000);
   const { host, ui } = await f.start();
   await host.submit("Earlier task."); await host.submit("Continue within the hard limit.");
   assert.equal(host.outcome, "completed");
@@ -2926,12 +2926,12 @@ test("automatic compact failure warns and continues when the original request st
 });
 
 test("a budget pause preserves pending input and resumes in the same session after selecting a larger model", { timeout: 30000 }, async (t) => {
-  const f = await fixture(t, () => ({ kind: "text", text: "Resumed safely." }), false, 40000);
+  const f = await fixture(t, () => ({ kind: "text", text: "Resumed safely." }), false, 28000);
   const { host, ui } = await f.start();
   const id = ui.statuses.at(-1)?.sessionId;
   await host.submit("PENDING ORIGINAL TASK");
   assert.equal(host.outcome, "failed"); assert.equal(f.requests.length, 0);
-  assert.ok(ui.messages.some((message) => /50k input reserve/.test(message.text)));
+  assert.ok(ui.messages.some((message) => /25k input reserve/.test(message.text)));
   await host.submit("/model fixture/alternate"); await host.submit("Continue the pending task.");
   assert.equal(host.outcome, "completed");
   assert.equal(ui.statuses.at(-1)?.sessionId, id);
@@ -3019,7 +3019,7 @@ test("automatic compact waits for every tool result in a parallel batch and does
     }
     return index === 0 ? { kind: "tools", calls: ["first.txt", "second.txt"].map((path) => ({ kind: "tool", name: "read", arguments: { path } })) }
       : { kind: "text", text: "Both reads are complete." };
-  }, false, 78000);
+  }, false, 53000);
   for (const file of ["first.txt", "second.txt"]) await writeFile(join(f.cwd, file), ("Parallel batch evidence. ".repeat(2) + "\n").repeat(950));
   const { host, ui } = await f.start();
   await host.submit("Read both files and finish.");
