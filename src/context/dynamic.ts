@@ -56,7 +56,7 @@ export function installDynamicContext(session: AgentSession, options: {
   cwd: string; home: string; shell: () => string; trusted: boolean; projectDocMaxBytes: number; executionBlocked: () => boolean;
   onWarning?: (message: string) => void;
   now?: () => Date; timezone?: () => string;
-}): { capture: (signal?: AbortSignal) => Promise<CustomMessage> } {
+}): { capture: (signal?: AbortSignal) => Promise<CustomMessage>; invalidate: () => void } {
   const prior = session.agent.prepareRequest;
   const os = `${osType()} ${release()}`;
   const instructions = new InstructionsLoader({ ...options, onWarning: options.onWarning ?? (() => {}) });
@@ -91,5 +91,8 @@ export function installDynamicContext(session: AgentSession, options: {
     session.agent.state.messages = messages;
     return { ...prepared, context: { ...context, messages } };
   };
-  return { capture };
+  return {
+    capture: (signal) => { instructions.invalidate(); return capture(signal); },
+    invalidate: () => instructions.invalidate(),
+  };
 }

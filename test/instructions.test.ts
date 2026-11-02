@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { promises as fs } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -182,6 +184,7 @@ test("global read failures retain the last successful value, warn once and recov
   await writeFile(join(f.cwd, "AGENTS.md"), "Project.");
   await loader.load();
   const release = await makeUnreadable(t, join(f.home, "AGENTS.md"));
+  loader.invalidate();
   try {
     assert.deepEqual((await loader.load()).map((file) => file.content), ["Global.", "Project."]);
     assert.match(f.warnings[0] ?? "", /retaining the last successful value/);
@@ -203,11 +206,77 @@ test("project read failures omit the entire project set while retaining global r
   const loader = f.loader();
   await loader.load();
   const release = await makeUnreadable(t, path);
+  loader.invalidate();
   try {
     assert.deepEqual((await loader.load()).map((file) => file.content), ["Global."]);
     assert.match(f.warnings[0] ?? "", /project instructions are omitted/);
   } finally { await release(); }
   assert.deepEqual((await loader.load()).map((file) => file.content), ["Global.", "Workspace.", "Child."]);
+});
+
+test("unchanged instructions reuse discovery and file contents, while explicit refresh rereads both", async (t) => {
+  const f = await fixture(t);
+  await mkdir(join(f.cwd, "empty"));
+  await writeFile(join(f.home, "AGENTS.md"), "Global.");
+  await writeFile(join(f.cwd, "AGENTS.md"), "Project A.");
+  const open = t.mock.method(fs, "open");
+  const readdir = t.mock.method(fs, "readdir");
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const loader = f.loader();
+  const first = await loader.load();
+  const opens = open.mock.callCount(), scans = readdir.mock.callCount();
+  assert.equal(opens, 2);
+  assert.ok(scans >= 2);
+  assert.deepEqual(await loader.load(), first);
+  assert.equal(open.mock.callCount(), opens);
+  assert.equal(readdir.mock.callCount(), scans);
+  await writeFile(join(f.cwd, "AGENTS.md"), "Project B.");
+  assert.deepEqual((await loader.load()).map((file) => file.content), ["Global.", "Project B."]);
+  assert.equal(open.mock.callCount(), opens + 1);
+  assert.equal(readdir.mock.callCount(), scans);
+  loader.invalidate();
+  assert.deepEqual((await loader.load()).map((file) => file.content), ["Global.", "Project B."]);
+  assert.equal(open.mock.callCount(), opens + 3);
+  assert.ok(readdir.mock.callCount() > scans);
+});
+
+test("cached discovery detects new rules in empty directories and follows moved and deleted directories", async (t) => {
+  const f = await fixture(t);
+  const first = join(f.cwd, "first");
+  const moved = join(f.cwd, "moved");
+  await mkdir(first);
+  const loader = f.loader();
+  assert.deepEqual(await loader.load(), []);
+  await writeFile(join(first, "AGENTS.md"), "New rule.");
+  assert.deepEqual((await loader.load()).map((file) => file.path), [join(first, "AGENTS.md")]);
+  await rename(first, moved);
+  assert.deepEqual(await loader.load(), [{ kind: "project", path: join(moved, "AGENTS.md"), scope: moved, content: "New rule." }]);
+  await rm(moved, { recursive: true });
+  assert.deepEqual(await loader.load(), []);
+  await mkdir(join(f.cwd, "brand-new", "deep"), { recursive: true });
+  await writeFile(join(f.cwd, "brand-new", "deep", "AGENTS.md"), "Deeper rule.");
+  assert.deepEqual((await loader.load()).map((file) => file.content), ["Deeper rule."]);
+});
+
+test("discovery resumes after a previously full instruction budget becomes available", async (t) => {
+  const f = await fixture(t);
+  await writeFile(join(f.cwd, "AGENTS.md"), "root rule.");
+  await mkdir(join(f.cwd, "child"));
+  await writeFile(join(f.cwd, "child", "AGENTS.md"), "child");
+  const loader = f.loader(true, 10);
+  assert.deepEqual((await loader.load()).map((file) => file.content), ["root rule."]);
+  await writeFile(join(f.cwd, "AGENTS.md"), "root");
+  assert.deepEqual((await loader.load()).map((file) => file.content), ["root", "child"]);
+});
+
+test("new Git markers invalidate cached ancestor discovery", async (t) => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, "repo", "AGENTS.md"), "Repository rule.");
+  const loader = f.loader();
+  assert.deepEqual(await loader.load(), []);
+  await mkdir(join(f.root, "repo", ".git"));
+  assert.deepEqual((await loader.load()).map((file) => file.content), ["Repository rule."]);
 });
 
 test("settings validate and persist the project instruction byte budget", async (t) => {
