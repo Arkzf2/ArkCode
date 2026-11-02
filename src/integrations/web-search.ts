@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import { z } from "zod";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -6,6 +6,7 @@ import type { ExtensionFactory, ModelRuntime } from "@earendil-works/pi-coding-a
 import type { ApprovalRequest } from "../app/types.js";
 import type { SessionToolSettings } from "../session/tool-settings.js";
 import { builtinExposure } from "../tools/mode.js";
+import { searchFee, type WebSearchProtocol as Protocol, type WebSearchUsage } from "./web-search-usage.js";
 
 const recordSchema = z.record(z.string(), z.unknown());
 const sourceSchema = z.object({ url: z.url().refine((url) => /^https?:\/\//i.test(url)), title: z.string().optional() });
@@ -13,13 +14,11 @@ const modelCapabilitySchema = z.object({ capabilities: z.object({ server_tools: 
   web_search: z.object({ supported: z.boolean() }),
 }) }) });
 const parameters = Type.Object({ query: Type.String({ minLength: 1, maxLength: 4000, description: "A web search question or research query." }) });
-type Protocol = "openai-responses" | "anthropic-messages";
 type Capability = { state: "verified" | "unsupported"; reason: string };
 export interface SearchSource { url: string; title: string }
-export interface WebSearchResult {
-  provider: string; model: string; protocol: Protocol; query: string;
-  text: string; sources: SearchSource[]; searches: number;
-  usage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number };
+export interface WebSearchResult extends WebSearchUsage {
+  protocol: Protocol; query: string;
+  text: string; sources: SearchSource[];
 }
 
 function protocolFor(model: Model<Api>): Protocol | undefined {
@@ -38,9 +37,16 @@ class SearchEvidence {
   readonly completed = new Set<string>();
   private readonly openaiCalls = new Set<string>();
   private error = "";
+  private reportedSearches: number | undefined;
+
+  get searches(): number { return this.reportedSearches ?? this.completed.size; }
+  get searchCountSource(): WebSearchUsage["searchCountSource"] { return this.reportedSearches === undefined ? "events" : "provider"; }
 
   observe(value: unknown): void {
     const event = object(value);
+    const usage = object(event.type === "message_start" ? object(event.message).usage : event.usage);
+    const count = object(usage.server_tool_use).web_search_requests;
+    if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) this.reportedSearches = Math.max(this.reportedSearches ?? 0, count);
     if (event.type === "response.output_item.done") this.openaiItem(event.item);
     if (event.type === "response.completed") {
       const response = object(event.response);
@@ -137,7 +143,9 @@ export class WebSearchService {
     } catch (error) { if (signal.aborted) throw error; }
   }
 
-  async search(model: Model<Api>, query: string, options: { signal?: AbortSignal; refresh?: boolean; progress?: (text: string) => void } = {}): Promise<WebSearchResult> {
+  async search(model: Model<Api>, query: string, options: {
+    signal?: AbortSignal; refresh?: boolean; progress?: (text: string) => void; onUsage?: (receipt: WebSearchUsage) => void;
+  } = {}): Promise<WebSearchResult> {
     const protocol = protocolFor(model);
     if (!protocol) throw new Error("Web Search requires OpenAI Responses or Anthropic Messages.");
     const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(90000)]);
@@ -147,6 +155,8 @@ export class WebSearchService {
     await this.checkMetadata(model, key, signal);
     const known = this.capabilities.get(key);
     if (known?.state === "unsupported") throw new Error(known.reason);
+    const auth = await this.runtime.getAuth(model, { signal });
+    const baseUrl = auth?.auth.baseUrl ?? model.baseUrl;
     const evidence = new SearchEvidence();
     options.progress?.(`Searching with ${model.provider}/${model.id}...`);
     const stream = this.runtime.streamSimple(model, {
@@ -165,6 +175,10 @@ export class WebSearchService {
     });
     for await (const _event of stream) { signal.throwIfAborted(); }
     const answer = await stream.result();
+    const receipt: WebSearchUsage = { requestId: randomUUID(), provider: model.provider, model: model.id, usage: answer.usage,
+      searches: evidence.searches, searchCountSource: evidence.searchCountSource, fee: searchFee(protocol, baseUrl, evidence.searches),
+    };
+    options.onUsage?.(receipt);
     signal.throwIfAborted();
     if (answer.stopReason === "error" || answer.stopReason === "aborted") {
       const message = answer.errorMessage ?? "Web Search request failed.";
@@ -176,15 +190,14 @@ export class WebSearchService {
     evidence.assertCompleted();
     const text = answer.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
     this.capabilities.set(key, { state: "verified", reason: "The endpoint returned a completed server-side search." });
-    return { provider: model.provider, model: model.id, protocol, query, text, sources: [...evidence.sources.values()], searches: evidence.completed.size,
-      usage: { input: answer.usage.input, output: answer.usage.output, cacheRead: answer.usage.cacheRead, cacheWrite: answer.usage.cacheWrite, totalTokens: answer.usage.totalTokens },
-    };
+    return { ...receipt, protocol, query, text, sources: [...evidence.sources.values()] };
   }
 }
 
 export function createWebSearchExtension(options: {
   service: WebSearchService; settings: SessionToolSettings; enabled: () => boolean; cwd: string;
   authorize: (request: ApprovalRequest) => Promise<boolean>;
+  recordUsage: (receipt: WebSearchUsage) => void;
 }): ExtensionFactory {
   return (pi) => {
     const update = async (model: Model<Api> | undefined) => {
@@ -199,10 +212,19 @@ export function createWebSearchExtension(options: {
           if (!model) throw new Error("Select a model before searching.");
           if (!await options.authorize({ id, tool: "WebSearch", cwd: options.cwd, description: `WebSearch\nQuery: ${query}\nProvider: ${model.provider}/${model.id}` })) throw new Error("Tool execution denied.");
           signal?.throwIfAborted();
-          const result = await options.service.search(model, query, { signal,
-            progress: (text) => onUpdate?.({ content: [{ type: "text", text }], details: undefined }),
-          });
-          return { content: [{ type: "text", text: searchResultText(result) }], details: result };
+          let receipt: WebSearchUsage | undefined;
+          try {
+            const result = await options.service.search(model, query, { signal,
+              progress: (text) => onUpdate?.({ content: [{ type: "text", text }], details: undefined }),
+              onUsage: (value) => { receipt = value; options.recordUsage(value); },
+            });
+            return { content: [{ type: "text", text: searchResultText(result) }], details: result, usage: result.usage };
+          } catch (error) {
+            if (!receipt) throw error;
+            return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+              details: receipt, usage: receipt.usage, isError: true,
+            };
+          }
         },
       });
       const active = pi.getActiveTools().filter((name) => name !== "WebSearch");

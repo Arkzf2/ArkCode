@@ -2,6 +2,16 @@
 
 Date: 2026-10-09. Platform: Windows. Node: 24.18.0. Pi SDK: 1.1.0.
 
+## Harness reliability and search usage, 2026-11-03
+
+Pi SDK 1.5.0. Explicit `length` stops retain partial output and allow at most two continuation attempts. Exhausted attempts and provider errors persist a failed run and return a failing CLI exit code; user cancellation stops continuation. Completed tool results remain in history. CodeMode's SDK-generated full-output files are registered for exact-file, read-only access through the existing paginated Read tool.
+
+Compaction reserves 25,000 extra input tokens below a 200,000-token context window and 50,000 at or above it, after deducting output capacity. Instruction discovery and file contents are cached separately. Metadata checks detect changed files, additions, deletions, moves and new Git boundaries; explicit invalidation and compact capture rebuild the baseline. Real filesystem instrumentation verifies that unchanged request preparation neither enumerates directories nor opens instruction files again.
+
+Native WebSearch retains provider model usage through direct and CodeMode calls, failed searches that return usage, manual checks and session resume. Search counts and estimated search fees are recorded separately from tokens and SDK model costs, with request deduplication. Official OpenAI and Anthropic endpoints use the documented $0.01 per-search estimate checked on this date; custom endpoints report unknown search fees. Helper usage does not inflate the main model's context measurement. A connection that ends before usage arrives cannot provide complete accounting; discarded compact-summary attempts remain outside this change.
+
+Type checking, the production build, compiled CLI version/help and `git diff --check` passed. The complete regression rerun passed all 338 tests with zero failures, cancellations or skips. The first run passed 337 tests and failed the existing Git Bash test's `ls` policy-inspection assertion; both its isolated rerun and the subsequent full run passed without code changes to that parser. Validation uses real Pi sessions, local OpenAI/Anthropic protocol fixtures, persisted history and actual shell processes on Windows; no paid remote provider calls were made. Logs are stored in the ignored `.audit/runtime/harness-five/` directory, including `final-tests.log`, `final-shell-recheck.log` and `final-tests-rerun.log`.
+
 ## Pi SDK 1.5.0, 2026-11-02
 
 The four direct Pi packages and their Pi dependencies are pinned to 1.5.0. The versioned host patch retains all 14 files, adapts the two changed AgentSession anchors, and verifies the published files and patched output with new SHA-256 digests. The application source requires no migration. The install fixture reads its version from the patch manifest.

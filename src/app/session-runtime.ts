@@ -14,6 +14,7 @@ import { McpManager } from "../integrations/mcp/manager.js";
 import { SkillsManager } from "../integrations/skills.js";
 import { browseSkills } from "../ui/skills.js";
 import { WebSearchService, createWebSearchExtension, searchResultText } from "../integrations/web-search.js";
+import { recordWebSearchUsage, webSearchStats } from "../integrations/web-search-usage.js";
 import { browseMcp } from "../ui/mcp.js";
 import { browseToolMode } from "../ui/tool-mode.js";
 import { toolModeSchema, type ToolMode } from "../tools/mode.js";
@@ -246,6 +247,7 @@ export class SessionRuntime {
         }) },
         { name: "arkcode-web-search", hidden: true, factory: createWebSearchExtension({ service: webSearch, settings: toolSettings,
           enabled: () => loadConfig(this.home).webSearch, cwd, authorize: (request) => this.authorizeTool(request),
+          recordUsage: (receipt) => recordWebSearchUsage(manager, receipt),
         }) },
         { name: "arkcode-mcp", hidden: true, factory: mcp.extension },
         { name: "arkcode-skills", hidden: true, factory: skills.extension }],
@@ -648,7 +650,7 @@ export class SessionRuntime {
     if (this.state.kind !== "idle" && idleCommands.has(name)) throw new Error("Wait until the current run finishes.");
     switch (name) {
       case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Left opens sessions from the empty composer. Switching sessions leaves other runs active. Drag to select and copy transcript text. Ctrl+C copies a selection, otherwise interrupts or exits when idle. Esc clears a selection or interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
-      case "status": this.ui.message("info", `Permissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
+      case "status": this.ui.message("info", `Permissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify({ ...session.getSessionStats(), webSearch: webSearchStats(session.sessionManager.getEntries()) })}`); break;
       case "mcp": await this.manageMcp(args); break;
       case "skills": await this.manageSkills(args); break;
       case "web-search": {
@@ -665,7 +667,9 @@ export class SessionRuntime {
           if (!loadConfig(this.home).webSearch) throw new Error("Enable Web Search with /web-search on first.");
           if (this.executionUnconfirmed || this.storageFailed) throw new Error("Execution is blocked. Resolve the session recovery or storage error before testing Web Search.");
           await this.runOperation(async (signal) => {
-            const result = await service.search(model, "Search for the OpenAI official homepage and return its title and URL.", { refresh: true, signal });
+            const result = await service.search(model, "Search for the OpenAI official homepage and return its title and URL.", { refresh: true, signal,
+              onUsage: (receipt) => recordWebSearchUsage(session.sessionManager, receipt, true),
+            });
             this.ui.message("info", `Web Search verified for ${model.provider}/${model.id}.\n${searchResultText(result)}`);
           });
         } else throw new Error("Usage: /web-search [status|check|on|off]. Check performs a real provider search.");

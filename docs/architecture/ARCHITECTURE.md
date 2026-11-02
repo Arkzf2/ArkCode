@@ -11,6 +11,7 @@ Pi 管理模型请求、agent 循环、历史格式、MCP 协议和 CodeMode。A
 | `src/compaction/` | 真实输入来源、20k 用户文本保留、请求预算、摘要重试、检查点提交与恢复 |
 | `src/integrations/mcp/` | 配置边界和官方 MCP 扩展的宿主适配 |
 | `src/integrations/skills.ts` | `.agents/skills` 发现、Pi 解析、启停持久化、正文快照与参考文件读取 |
+| `src/integrations/web-search.ts`、`web-search-usage.ts` | 原生搜索、辅助模型 usage、搜索次数与额外费用统计 |
 | `src/permissions/` | 三种权限策略、审批状态和 shell 风险分析 |
 | `src/session/` | session writer 锁、会话检查、运行标记与分支工具策略快照 |
 | `src/tools/index.ts` | 六个 SDK 工具定义的宿主适配 |
@@ -44,7 +45,13 @@ exposure 修改只保存配置；重载时合并当前会话的 exposure 快照�
 
 CodeMode 通过 SDK 的嵌套工具管线调用这些工具。它不会绕过白名单，也没有独立访问操作系统的接口。MCP resources 未接入逐服务审批，因此明确禁用；模型子调用同样禁用。
 
-SDK 截断 MCP/bash 输出时会保存临时文件。宿主只从这些工具的结果元数据登记文件，记录真实路径与文件身份，允许本会话的 read 读取；write/edit 和其他工作区外文件仍被拒绝。文件被替换后授权失效，授权不随历史恢复。普通文件保留 2 MiB 上限，已登记的大结果文件允许读取最多 64 MiB；更大的结果应在 CodeMode 中先过滤。
+SDK 截断 MCP/bash/CodeMode 输出时会保存临时文件。宿主只从这些工具的 `fullOutputPath` 结果元数据登记文件，记录真实路径与文件身份，允许本会话的 read 按 offset/limit 读取；write/edit 和其他工作区外文件仍被拒绝。文件被替换后授权失效，授权不随历史恢复。普通文件保留 2 MiB 上限，已登记的大结果文件允许读取最多 64 MiB；更大的结果应在 CodeMode 中先过滤。
+
+普通回答明确返回 `length` 时保留原始停止原因和已有输出，宿主在原有工具结果之上最多续写两次，不重放工具。续写仍耗尽时运行和持久标记均为 failed，CLI 返回 1。用户取消时立即停止续写，余额不足和网络错误沿用已有错误及重试路径。空回答和短回答本身不作为截断依据。
+
+原生 WebSearch 的完整 provider usage 通过工具顶层 `usage` 纳入 Pi 累计统计；嵌套调用由 SDK 汇总到外层 CodeMode 结果，不额外写入相同的模型 usage。已收到 usage 的搜索失败也保留消耗，手动 `/web-search check` 则单独写入一次 usage 条目。主模型上下文只接收摘要和链接。
+
+搜索次数及费用以 `arkcode-web-search-usage` 自定义条目保存，在 `/status` 的 `Usage.webSearch` 中显示，恢复和 compact 后仍可统计。Anthropic 优先采用 `server_tool_use.web_search_requests`，没有 provider 次数时按已完成的搜索 ID 去重。官方 HTTPS API 端点按 [OpenAI](https://developers.openai.com/api/docs/pricing#tools) 和 [Anthropic](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool#usage-and-pricing) 于 2026-11-03 核对的 $0.01/次单独估算；代理及自定义端点标为未知。`cost` 保持 SDK 的模型费用口径，额外搜索费用使用 `estimatedSearchFeesUSD` 和 `unknownFeeRequests` 单列，不换算为 tokens，也不把未知费用当成免费。连接中断且 provider 尚未返回 usage 时无法补算实际用量；废弃 compact 摘要尝试的补记仍未纳入。
 
 `npm install` 会安装 SDK 补丁，`npm run check`、`npm test`、`npm run build` 会再次核对补丁。构建清理旧输出再编译，避免移动模块后发布遗留文件。发布包保留安装补丁和必要说明，不能使用忽略安装脚本的方式部署未经补丁的 SDK。
 
