@@ -1,6 +1,6 @@
 # ArkCode 静态与动态上下文机制
 
-本文记录当前实现，更新于 2026-10-29。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。compact 由 ArkCode 重建检查点并替换模型可见历史。
+本文记录当前实现，更新于 2026-11-02。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。compact 由 ArkCode 重建检查点并替换模型可见历史。
 
 ## 请求由哪些部分组成
 
@@ -9,6 +9,7 @@
 | 静态行为准则 | ArkCode 身份、个性、自主推进、写作、编码、用户协作、工具使用和回复格式 | `SYSTEM_PROMPT`，由 Pi 构建 system prompt | 创建或替换 AgentSession 时使用当前代码中的版本 |
 | Pi 工作目录段 | 当前会话的 cwd | SDK 添加的 system prompt `cwd` 段 | 创建或替换会话时确定 |
 | 工具模式指南 | 内置工具当前模式和 MCP 启用的暴露方式 | `builtin_tool_mode` 与 `mcp_tool_modes` system 段 | 首次请求前及成功 compact 后应用最新配置；其余请求沿用有效策略 |
+| Shell 指南 | 当前 bash 工具的解释器、命令语法和路径写法 | `shell_environment` system 段，从执行器实时读取 | 每次请求准备时读取，包括同一 run 的工具后续请求 |
 | 工具声明 | 基础工具、CodeMode／搜索入口与 MCP 的名称、描述及参数 schema | 由 Pi 按实际协议序列化 | 模式在新会话／成功 compact 更新；MCP 发现与目录变化按运行时处理；权限切换不改变声明 |
 | 对话历史 | 用户输入、模型回答、工具调用及结果、compact 摘要 | Pi 会话历史的有效投影 | 随对话追加，compact 可改变模型可见的历史 |
 | 动态上下文 | 环境信息、全局 AGENTS.md 及可信项目 AGENTS.md | 内部隐藏 custom 消息，发送前转换为 user role | 每次对话模型请求准备时检查，仅有变化时追加 |
@@ -67,11 +68,15 @@ compact 失败不应用已请求会话的待切换模式。未请求的新会话
 | `cwd` | 会话工作目录 | 创建会话时传入，切换工作区时重新安装机制 |
 | `platform` | Node 平台标识，例如 `win32` | `process.platform` |
 | `os` | OS 类型与版本 | 安装机制时读取 `os.type()` 和 `os.release()` |
-| `shell` | bash 工具实际使用的 shell | 当前 `ManagedShell.executable`；Windows 默认 `powershell.exe` |
+| `shell` | bash 工具实际使用的 shell | 每次请求准备时通过回调读取当前 `ManagedShell.executable`；Windows 自动发现 Git Bash，找不到时回退 PowerShell |
 | `current_date` | 当前时区中的日期 | 每次请求准备时读取时钟，格式为 `YYYY-MM-DD` |
 | `timezone` | 宿主时区 | 每次请求准备时读取 Intl 的时区，缺省回退为 UTC |
 | `git_branch` | 当前 Git 分支或无仓库状态 | 每次请求准备时调用 `getBranch()` |
 | `execution` | 宿主执行可用性 | `available` 或 `inspection-only` |
+
+`shell_environment` 系统提示词段使用同一个 `ManagedShell` 的配置，提供实际可执行文件、对应的 Bash/POSIX 或 PowerShell 语法，以及 Windows 路径写法。工具定义也依据该配置选择 Pi 的 Bash 或 PowerShell 工具，不再仅依据 OS。该段在 direct、codemode 和 codemode-only 中都存在；恢复或压缩后的请求重新使用当前配置，旧会话中的 shell 信息不决定当前命令语法。
+
+`ManagedShell` 在创建时冻结 shell 配置，常规运行不提供切换入口，执行失败也不会自动回退到另一个解释器。提示词与动态环境仍通过回调读取同一个执行器，避免保留启动时的快照。工具装配在 `before_agent_start` 和 `turn_end` 检查 shell 是否变化；若发生意外变化，重新注册工具描述并清除旧审批缓存。下一个模型请求即使用新 shell 的指南、环境及工具定义，包括无需新用户输入的工具继续请求。已发送或正在生成的模型请求无法追溯修改。
 
 `execution` 来自执行未确认、历史存储失败和 viewer 状态，表示宿主恢复或执行限制。它不表示 Always Ask、Ask When Needed 或 Never Ask，也不提供完整工具权限矩阵。真正的限制由执行入口强制检查；viewer 和存储失败通常会在发送模型请求前被阻止。
 

@@ -3,7 +3,7 @@ import test from "node:test";
 import { ManagedShell } from "../src/tools/shell.js";
 
 test("Windows shell preserves Chinese in receipts, updates and streamed tool output", { skip: process.platform !== "win32" }, async (t) => {
-  const shell = new ManagedShell(process.cwd());
+  const shell = new ManagedShell(process.cwd(), "powershell.exe");
   t.after(() => shell.stopAll());
   const chunks: Buffer[] = [];
   const updates: string[] = [];
@@ -19,7 +19,7 @@ test("Windows shell preserves Chinese in receipts, updates and streamed tool out
 });
 
 test("Windows shell preserves UTF-8 stderr and Chinese piped to native commands", { skip: process.platform !== "win32" }, async (t) => {
-  const shell = new ManagedShell(process.cwd());
+  const shell = new ManagedShell(process.cwd(), "powershell.exe");
   t.after(() => shell.stopAll());
   const stderr = await shell.execute('[Console]::Error.WriteLine("错误：中文输出 😀")');
   assert.equal(stderr.output, "错误：中文输出 😀\r\n");

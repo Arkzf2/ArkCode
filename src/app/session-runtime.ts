@@ -238,8 +238,8 @@ export class SessionRuntime {
       extensionFactories: [{ name: "arkcode-tool-output", hidden: true, factory: (pi) => {
           pi.on("tool_result", async (event) => { await outputFiles.capture(event.toolName, event.details); });
         } },
-        { name: "arkcode-tool-loadout", hidden: true, factory: createToolLoadout({ settings: toolSettings, mcp,
-          tools: createTools({ cwd, shell, outputFiles, skills, authorize: (request) => this.authorizeTool(request) }),
+        { name: "arkcode-tool-loadout", hidden: true, factory: createToolLoadout({ settings: toolSettings, mcp, shellInstructions: () => shell.instructions,
+          tools: () => createTools({ cwd, shell, outputFiles, skills, authorize: (request) => this.authorizeTool(request) }),
           resetApprovals: () => this.broker.reset(),
         }) },
         { name: "arkcode-web-search", hidden: true, factory: createWebSearchExtension({ service: webSearch, settings: toolSettings,
@@ -261,7 +261,7 @@ export class SessionRuntime {
       resourceLoader: createResources(extensionLoader.getExtensions(), () => skills.resources),
       tools: [...TOOL_NAMES, "WebSearch", "codemode", "tool_search", "mcp__*"],
     });
-    const dynamicContext = installDynamicContext(session, { cwd, home: this.home, shell: shell.executable, trusted, projectDocMaxBytes: this.config.projectDocMaxBytes,
+    const dynamicContext = installDynamicContext(session, { cwd, home: this.home, shell: () => shell.executable, trusted, projectDocMaxBytes: this.config.projectDocMaxBytes,
       onWarning: (message) => this.ui.message("info", cleanOutput(message)),
       executionBlocked: () => this.executionUnconfirmed || this.storageFailed || Boolean(this.lease?.viewer),
     });

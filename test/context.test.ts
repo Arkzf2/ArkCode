@@ -32,7 +32,8 @@ test("request preparation appends hidden deltas, refreshes across midnight and r
   });
   t.after(() => session.dispose());
   let now = new Date("2026-10-13T15:59:00Z");
-  installDynamicContext(session, { cwd, home: join(cwd, "home"), projectDocMaxBytes: 32 * 1024, shell: "powershell.exe", trusted: true, executionBlocked: () => false,
+  let shell = "powershell.exe";
+  installDynamicContext(session, { cwd, home: join(cwd, "home"), projectDocMaxBytes: 32 * 1024, shell: () => shell, trusted: true, executionBlocked: () => false,
     now: () => now, timezone: () => "Asia/Shanghai",
   });
   const events: string[] = [];
@@ -71,9 +72,14 @@ test("request preparation appends hidden deltas, refreshes across midnight and r
   assert.deepEqual(await prepare(), first);
   assert.deepEqual(events, []);
 
+  shell = "E:/Program Files/Git/bin/bash.exe";
+  const switched = await prepare();
+  assert.match(lastText(switched), /<shell>E:\/Program Files\/Git\/bin\/bash\.exe<\/shell>/);
+  assert.doesNotMatch(lastText(switched), /powershell\.exe|project_instructions/);
+  assert.deepEqual(await prepare(), switched);
   now = new Date("2026-10-13T16:01:00Z");
   const midnight = await prepare();
-  assert.deepEqual(midnight.slice(0, first.length), first);
+  assert.deepEqual(midnight.slice(0, switched.length), switched);
   assert.match(lastText(midnight), /<current_date>2026-10-14<\/current_date>/);
   assert.doesNotMatch(lastText(midnight), /<cwd>|project_instructions/);
   await writeFile(join(cwd, "AGENTS.md"), "Use project convention B.");

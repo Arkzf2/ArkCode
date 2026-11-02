@@ -1,6 +1,7 @@
 import { spawn, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cleanOutput } from "./output.js";
+import { resolveShell, shellInstructions, type ShellConfiguration } from "./shell-config.js";
 
 const MAX_OUTPUT_BYTES = 128 * 1024;
 
@@ -24,13 +25,18 @@ interface RunningShell {
 }
 
 export class ManagedShell {
-  readonly executable: string;
+  private readonly selected: ShellConfiguration;
   private readonly receipts: ShellReceipt[] = [];
   private readonly running = new Map<string, RunningShell>();
 
   constructor(readonly cwd: string, executable?: string) {
-    this.executable = executable ?? (process.platform === "win32" ? "powershell.exe" : "/bin/sh");
+    this.selected = Object.freeze(resolveShell({ executable }));
   }
+
+  get configuration(): ShellConfiguration { return this.selected; }
+  get executable(): string { return this.configuration.executable; }
+  get kind(): ShellConfiguration["kind"] { return this.configuration.kind; }
+  get instructions(): string { return shellInstructions(this.configuration); }
 
   list(): ShellReceipt[] {
     return this.receipts.map((receipt) => ({ ...receipt }));
@@ -45,7 +51,7 @@ export class ManagedShell {
   async execute(command: string, signal?: AbortSignal, onUpdate?: (receipt: ShellReceipt) => void, onData?: (data: Buffer) => void): Promise<ShellReceipt> {
     signal?.throwIfAborted();
     const windows = process.platform === "win32";
-    const args = windows
+    const args = this.kind === "powershell"
       ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);\n${command}\n$arkcodeCommandSucceeded = $?; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; if (-not $arkcodeCommandSucceeded) { exit 1 }`]
       : ["-c", command];
     const child = spawn(this.executable, args, {

@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp, mkdir, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { deflateSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,8 @@ import { loadConfig } from "../src/config/settings.js";
 import { ApprovalBroker } from "../src/permissions/approval.js";
 import { CONTEXT_MESSAGE } from "../src/context/dynamic.js";
 import { TOOL_NAMES } from "../src/tools/index.js";
+import { resolveShell } from "../src/tools/shell-config.js";
+import { ManagedShell } from "../src/tools/shell.js";
 import { TOOL_REQUEST_STATE_ENTRY, TOOL_SETTINGS_ENTRY } from "../src/session/tool-settings.js";
 import { parseCheckpoint } from "../src/compaction/checkpoint.js";
 import { renderUser, textTokens, TOOL_PRUNING_MARKER } from "../src/compaction/policy.js";
@@ -136,8 +138,10 @@ test("Skill queues return only authored text when edited or interrupted", { time
   await assert.rejects(readFile(join(f.cwd, "cancelled.txt")), { code: "ENOENT" });
 });
 type ModelRequest = z.infer<typeof requestSchema>;
+const defaultShell = resolveShell();
+const usesPowerShell = defaultShell.kind === "powershell";
 
-function toolPrompt(request: ModelRequest | undefined, section: "builtin_tool_mode" | "mcp_tool_modes" | "skills"): string {
+function toolPrompt(request: ModelRequest | undefined, section: "builtin_tool_mode" | "mcp_tool_modes" | "skills" | "shell_environment"): string {
   assert.ok(request);
   const text = request.messages.map((message) => typeof message.content === "string" ? message.content : "").join("\n");
   return [...text.matchAll(new RegExp(`<${section}>\\n([\\s\\S]*?)\\n</${section}>`, "g"))].at(-1)?.[1] ?? "";
@@ -601,6 +605,103 @@ test("/mcp exposure persists without changing declarations until successful comp
 });
 
 for (const mode of ["direct", "codemode", "codemode-only"]) {
+  test(`selected shell instructions reach the actual LLM request in ${mode} mode`, async (t) => {
+    const command = usesPowerShell ? "[Console]::Write('中文 shell verified')" : "printf '%s' '中文 shell verified'";
+    const f = await fixture(t, (_request, index) => index > 0 ? { kind: "text", text: "Done." }
+      : mode === "codemode-only" ? { kind: "tool", name: "codemode", arguments: { code: `text(await tools.bash(${JSON.stringify({ command })}));` } }
+      : { kind: "tool", name: "bash", arguments: { command } });
+    await writeFile(join(f.home, "settings.json"), JSON.stringify({ ...loadConfig(f.home), toolMode: mode }));
+    const { host } = await f.start();
+    await host.submit("Verify the current shell.");
+    const prompt = toolPrompt(f.requests[0], "shell_environment");
+    assert.ok(prompt.includes(JSON.stringify(defaultShell.executable)), prompt);
+    assert.match(prompt, usesPowerShell ? /Use PowerShell syntax/ : /Use POSIX shell syntax/);
+    const declared = f.requests[0]?.tools?.find((tool) => tool.function.name === "bash");
+    if (mode !== "codemode-only") {
+      assert.ok(declared);
+      assert.match(String(declared.function.description), usesPowerShell ? /Execute a PowerShell command/ : /Execute a bash command/i);
+    }
+    assert.ok(f.requests.at(-1)?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("中文 shell verified")));
+    const environment = JSON.stringify(f.requests[0]?.messages.filter((message) => message.role === "user"));
+    assert.ok(environment.includes(JSON.stringify(defaultShell.executable).slice(1, -1)), environment);
+  });
+}
+
+for (const mode of ["direct", "codemode", "codemode-only"]) {
+  test(`unexpected shell changes refresh the next continuation prompt in ${mode} mode`, { skip: process.platform !== "win32" || defaultShell.kind !== "posix", timeout: 30000 }, async (t) => {
+    let current = defaultShell;
+    const powershell = resolveShell({ executable: "powershell.exe" });
+    t.mock.getter(ManagedShell.prototype, "configuration", () => current);
+    const execute = ManagedShell.prototype.execute;
+    let completed = 0;
+    t.mock.method(ManagedShell.prototype, "execute", async function (this: ManagedShell, ...args: Parameters<ManagedShell["execute"]>) {
+      const result = await execute.apply(this, args);
+      completed++;
+      current = completed === 1 ? powershell : defaultShell;
+      return result;
+    });
+    const f = await fixture(t, (request, index) => {
+      const prompt = toolPrompt(request, "shell_environment");
+      assert.ok(prompt.includes(JSON.stringify(current.executable)), prompt);
+      assert.match(prompt, current.kind === "powershell" ? /Use PowerShell syntax/ : /Use POSIX shell syntax/);
+      if (mode !== "codemode-only") {
+        const description = request.tools?.find((tool) => tool.function.name === "bash")?.function.description;
+        assert.match(String(description), current.kind === "powershell" ? /Execute a PowerShell command/ : /Execute a bash command/i);
+      }
+      const userContext = JSON.stringify(request.messages.filter((message) => message.role === "user"));
+      const latestShell = [...userContext.matchAll(/<shell>(.*?)<\/shell>/g)].at(-1)?.[1];
+      assert.equal(latestShell, JSON.stringify(current.executable).slice(1, -1));
+      if (index === 3) return { kind: "text", text: "Verified every continuation." };
+      const command = current.kind === "powershell" ? `[Console]::Write('verified ${index}')` : `printf 'verified ${index}'`;
+      return mode === "codemode-only"
+        ? { kind: "tool", name: "codemode", arguments: { code: `text(await tools.bash(${JSON.stringify({ command })}));` } }
+        : { kind: "tool", name: "bash", arguments: { command } };
+    });
+    await writeFile(join(f.home, "settings.json"), JSON.stringify({ ...loadConfig(f.home), toolMode: mode }));
+    const { host } = await f.start();
+    await host.submit("Check the shell after every command.");
+    assert.equal(completed, 3);
+    assert.equal(f.requests.length, 4);
+    for (let index = 0; index < 3; index++) {
+      assert.ok(f.requests[index + 1]?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes(`verified ${index}`)));
+    }
+  });
+}
+
+test("resuming with no Git Bash switches the actual CLI prompt and execution to PowerShell", { skip: process.platform !== "win32", timeout: 45000 }, async (t) => {
+  const f = await fixture(t, (_request, index) => index === 1
+    ? { kind: "tool", name: "bash", arguments: { command: "[Console]::Write('中文 fallback verified')" } }
+    : { kind: "text", text: "Saved answer." });
+  const { host } = await f.start();
+  await host.submit("Save a session using the detected shell.");
+  await host.exit();
+  const hidden = new Set(["path", "programfiles", "programfiles(x86)", "localappdata"]);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !hidden.has(key.toLowerCase())));
+  const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+  env.Path = [dirname(process.execPath), join(systemRoot, "System32"), join(systemRoot, "System32", "WindowsPowerShell", "v1.0")].join(";");
+  const fallback = resolveShell({ env });
+  assert.equal(fallback.kind, "powershell");
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const result = await promisify(execFile)(process.execPath, ["--import", "tsx", cli, "--cwd", f.cwd, "--home", f.home,
+    "--model", "fixture/test", "--print", "--full-access", "resume", "--last", "Verify the fallback shell."],
+  { env, timeout: 35000, windowsHide: true });
+  assert.match(result.stdout, /Saved answer/);
+  const request = f.requests[1];
+  const prompt = toolPrompt(request, "shell_environment");
+  assert.match(prompt, /executes PowerShell.*\nUse PowerShell syntax/);
+  assert.ok(prompt.includes(JSON.stringify(fallback.executable)), prompt);
+  assert.match(String(request?.tools?.find((tool) => tool.function.name === "bash")?.function.description), /Execute a PowerShell command/);
+  assert.ok(f.requests[2]?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("中文 fallback verified")));
+  const context = JSON.stringify(request?.messages.filter((message) => message.role === "user"));
+  assert.ok(context.includes(JSON.stringify(fallback.executable).slice(1, -1)), context);
+  const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+  await resumed.host.submit("Use the detected shell again.");
+  const restored = toolPrompt(f.requests[3], "shell_environment");
+  assert.ok(restored.includes(JSON.stringify(defaultShell.executable)), restored);
+  assert.match(restored, usesPowerShell ? /Use PowerShell syntax/ : /Use POSIX shell syntax/);
+});
+
+for (const mode of ["direct", "codemode", "codemode-only"]) {
   test(`tool mode ${mode} scopes declarations and script calls to built-in tools`, async (t) => {
     const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tool", name: "codemode", arguments: {
       code: `text(typeof tools.read); text(await tools.mcp__fixture__echo({text:"allowed"}));`,
@@ -925,8 +1026,8 @@ test("direct built-in shell calls execute concurrently through the real SDK sche
     const peer = index === 0 ? "two" : "one";
     const script = `const fs=require("node:fs");fs.writeFileSync("${name}.ready","");const timeout=setTimeout(()=>process.exit(3),5000);const check=setInterval(()=>{if(fs.existsSync("${peer}.ready")){clearInterval(check);clearTimeout(timeout);console.log("overlapped")}},20)`;
     scripts.push({ path: `${name}.cjs`, code: script });
-    const quote = (value: string) => `'${value.replaceAll("'", process.platform === "win32" ? "''" : "'\\''")}'`;
-    return { kind: "tool", name: "bash", arguments: { command: `${process.platform === "win32" ? "& " : ""}${quote(process.execPath)} ${quote(`${name}.cjs`)}` } };
+    const quote = (value: string) => `'${value.replaceAll("\\", "/").replaceAll("'", usesPowerShell ? "''" : "'\\''")}'`;
+    return { kind: "tool", name: "bash", arguments: { command: `${usesPowerShell ? "& " : ""}${quote(process.execPath)} ${quote(`${name}.cjs`)}` } };
   });
   const f = await fixture(t, (_request, index) => index === 0 ? { kind: "tools", calls } : { kind: "text", text: "Done." });
   for (const script of scripts) await writeFile(join(f.cwd, script.path), script.code);
@@ -1704,7 +1805,7 @@ test("removed commands are rejected without running the agent, while @ reference
 });
 
 test("a streamed agent turn reads, writes, edits and executes the native shell", { timeout: 30000 }, async (t) => {
-  const shell = process.platform === "win32" ? "[Console]::Write('shell verified')" : "printf 'shell verified'";
+  const shell = usesPowerShell ? "[Console]::Write('shell verified')" : "printf 'shell verified'";
   const replies: Reply[] = [
     { kind: "tool", name: "read", arguments: { path: "input.txt" } },
     { kind: "tool", name: "write", arguments: { path: "result.txt", content: "before\n" } },
@@ -2043,7 +2144,7 @@ test("a user shell queued during a turn runs afterward and persists its result",
     }
   }
   const { host, ui } = await f.start(new OrderedUI());
-  const command = process.platform === "win32"
+  const command = usesPowerShell
     ? "Set-Content -NoNewline -Path queued.txt -Value 'queued shell output'; [Console]::Write('queued shell output')"
     : "printf 'queued shell output' > queued.txt; printf 'queued shell output'";
   const run = host.submit("Hold the original turn");
@@ -2077,7 +2178,7 @@ test("interrupt restores queued local commands without executing them", { timeou
   const { host } = await f.start(ui, ["--permissions", "always-ask"]);
   const run = host.submit("Wait for approval");
   await until(() => ui.statuses.at(-1)?.state.kind === "awaiting-approval");
-  const command = process.platform === "win32" ? "Set-Content -Path queued.txt -Value 'must not execute'" : "printf 'must not execute' > queued.txt";
+  const command = usesPowerShell ? "Set-Content -Path queued.txt -Value 'must not execute'" : "printf 'must not execute' > queued.txt";
   await host.submit(`!${command}`);
   ui.setDraft("Existing draft");
   await host.interrupt(); await run;

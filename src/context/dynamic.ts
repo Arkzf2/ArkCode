@@ -53,7 +53,7 @@ export function contextUpdate(messages: AgentSession["messages"], snapshot: Cont
 }
 
 export function installDynamicContext(session: AgentSession, options: {
-  cwd: string; home: string; shell: string; trusted: boolean; projectDocMaxBytes: number; executionBlocked: () => boolean;
+  cwd: string; home: string; shell: () => string; trusted: boolean; projectDocMaxBytes: number; executionBlocked: () => boolean;
   onWarning?: (message: string) => void;
   now?: () => Date; timezone?: () => string;
 }): { capture: (signal?: AbortSignal) => Promise<CustomMessage> } {
@@ -65,7 +65,7 @@ export function installDynamicContext(session: AgentSession, options: {
     const timezone = options.timezone?.() ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
     const snapshot: ContextSnapshot = {
       environment: {
-        cwd: options.cwd, platform: process.platform, os, shell: options.shell,
+        cwd: options.cwd, platform: process.platform, os, shell: options.shell(),
         current_date: new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(options.now?.() ?? new Date()),
         timezone, git_branch: await getBranch(options.cwd), execution: options.executionBlocked() ? "inspection-only" : "available",
       },

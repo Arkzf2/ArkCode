@@ -243,7 +243,7 @@ test("Grep applies the same file size limit with and without context", async () 
 
 test("SDK shell tool returns Chinese output intact in model content and session details", { skip: process.platform !== "win32" }, async (t) => {
   const files = await fixture();
-  const shell = new ManagedShell(files.cwd);
+  const shell = new ManagedShell(files.cwd, "powershell.exe");
   t.after(async () => { await shell.stopAll(); await files.cleanup(); });
   const tool = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((entry) => entry.name === "bash");
   assert.ok(tool);

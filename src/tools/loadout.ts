@@ -7,10 +7,11 @@ import { builtinExposure } from "./mode.js";
 import { builtinToolModePrompt, mcpToolModesPrompt } from "../context/tool-modes.js";
 
 export function createToolLoadout(options: {
-  settings: SessionToolSettings; tools: ToolDefinition[]; mcp: McpManager; resetApprovals: () => void;
+  settings: SessionToolSettings; tools: () => ToolDefinition[]; mcp: McpManager; shellInstructions: () => string; resetApprovals: () => void;
 }): ExtensionFactory {
   return (pi) => {
-    const { settings, tools, mcp } = options;
+    const { settings, mcp } = options;
+    let currentShell = options.shellInstructions();
     let restored: string[] = [];
     const discoveryTools = () => [...mcp.discoveryTools(), ...(settings.current.toolMode !== "direct" ? ["codemode"] : [])];
     const discoveryApi: ExtensionAPI = { ...pi,
@@ -26,7 +27,7 @@ export function createToolLoadout(options: {
     createCodemodeExtension({ mode: "on", models: false })(discoveryApi);
     createToolSearchExtension()({ ...discoveryApi, getAllTools: () => pi.getAllTools().filter((tool) => ![...TOOL_NAMES, "WebSearch"].includes(tool.name)) });
     const register = () => {
-      for (const tool of tools) pi.registerTool({ ...tool, exposure: builtinExposure(settings.current.toolMode) });
+      for (const tool of options.tools()) pi.registerTool({ ...tool, exposure: builtinExposure(settings.current.toolMode) });
     };
     const activate = () => {
       const discovery = discoveryTools();
@@ -39,6 +40,15 @@ export function createToolLoadout(options: {
       pi.setActiveTools([...new Set([...active, ...discovery])]);
     };
     register();
+    const refreshShell = () => {
+      const current = options.shellInstructions();
+      if (current === currentShell) return;
+      options.resetApprovals();
+      register();
+      activate();
+      currentShell = current;
+    };
+    pi.on("turn_end", refreshShell);
     pi.on("session_start", (_event, ctx) => {
       restored = getCurrentTools(ctx.sessionManager.buildSessionProjection().messages).map((tool) => tool.name)
         .filter((name) => !TOOL_NAMES.includes(name) && name !== "codemode" && name !== "tool_search");
@@ -64,11 +74,13 @@ export function createToolLoadout(options: {
       catch (error) { await staged.rollback(); throw error; }
     };
     pi.on("before_agent_start", async (event) => {
+      refreshShell();
       settings.ready();
       if (settings.canApplyBeforeRequest) await applyPending();
       activate(); restored = [];
       event.systemPromptOptions.sectionProviders.builtin_tool_mode = () => builtinToolModePrompt(settings.current.toolMode);
       event.systemPromptOptions.sectionProviders.mcp_tool_modes = () => mcpToolModesPrompt(mcp.exposures());
+      event.systemPromptOptions.sectionProviders.shell_environment = options.shellInstructions;
     });
     pi.on("before_provider_request", () => { settings.markRequested(); });
   };

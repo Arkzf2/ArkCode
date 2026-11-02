@@ -118,7 +118,7 @@ export function createTools(options: {
       readFile: async (path) => (await readBuffer(cwd, path)).toString("utf8"),
     },
   }));
-  const createShell = process.platform === "win32" ? createPowerShellToolDefinition : createBashToolDefinition;
+  const createShell = shell.kind === "powershell" ? createPowerShellToolDefinition : createBashToolDefinition;
   const shellDefinition = createShell(cwd, { exposeSessionEnvironment: false });
   const bash = wrap("bash", {
     ...shellDefinition,

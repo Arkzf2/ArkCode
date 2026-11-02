@@ -4,7 +4,9 @@ ArkCode 是基于 Pi SDK 的终端编码 agent。模型调用、工具循环、�
 
 ## 启动
 
-需要 Node.js 22.19 或更新版本。Windows 使用 PowerShell，macOS 和 Linux 使用 `/bin/sh`。Git 用于显示当前分支。
+需要 Node.js 22.19 或更新版本。Windows 自动寻找 Git Bash，优先从 PATH 中的 Git 安装定位，也检查系统和用户的常见安装目录；找不到时回退 PowerShell，优先使用 PowerShell 7。macOS 和 Linux 使用 `/bin/sh`。Git 用于显示当前分支。
+
+每个会话在创建时固定 shell，执行失败不会自动更换解释器。如果实际配置发生意外变化，下一次模型请求会同步更新 shell 提示词、环境信息和工具描述，包括同一轮内的工具执行后续请求。已经发送的请求无法追溯修改。
 
 ```powershell
 npm install
@@ -67,7 +69,7 @@ arkcode --model local/my-model
 | Ask When Needed (`ask-when-needed`) | 普通 write/edit/bash 自动允许，高危命令询问；MCP 默认询问，用户级 `autoApproveTools` 中的工具可自动批准，服务标记为 destructive 的工具仍询问 |
 | Never Ask (`never-ask`) | 使用当前用户的 OS 权限执行，内建工具和 MCP 不等待调用审批；仍遵守服务器启用状态、工具过滤、viewer 和恢复保护 |
 
-六个内建工具 `read`、`write`、`edit`、`grep`、`glob`、`bash` 在三种权限模式中都可使用，暴露形式由 `/tool-mode` 决定。MCP 工具由已连接服务器的当前目录动态注册，名称为 `mcp__<server>__<tool>`，清洗或超长名称加 hash。权限切换不会改变工具 schema。原 `find` 改名为 `glob`，原 `ls` 工具删除；目录列表使用 bash。Windows 默认执行 PowerShell，因此 `bash` 是工具名，实际 shell 由环境上下文提供。Always Ask 也允许独立的 `Get-ChildItem`；重定向、管道、命令替换和串联命令不属于列表豁免。
+六个内建工具 `read`、`write`、`edit`、`grep`、`glob`、`bash` 在三种权限模式中都可使用，暴露形式由 `/tool-mode` 决定。MCP 工具由已连接服务器的当前目录动态注册，名称为 `mcp__<server>__<tool>`，清洗或超长名称加 hash。权限切换不会改变工具 schema。原 `find` 改名为 `glob`，原 `ls` 工具删除；目录列表使用 bash。`bash` 是固定工具名，Windows 优先运行 Git Bash，否则运行 PowerShell。工具描述、系统提示词和环境上下文同步提供实际 shell 及对应语法；恢复会话时以当前发现结果为准。Always Ask 对当前 shell 的独立目录列表提供豁免，Bash 使用 `ls`，PowerShell 使用 `Get-ChildItem` 或其 `ls` 别名；重定向、管道、命令替换和串联命令不属于列表豁免。
 
 未信任目录跳过项目 AGENTS.md，保留全局规则，默认 Always Ask；显式 CLI 权限仍生效。通过 `/permissions` 选择的模式会保存，下次启动自动恢复；`--permissions always-ask/ask-when-needed/never-ask` 可覆盖当次启动的模式。旧 `ask`、`full-access` 和 `--full-access` 仍映射到相应新模式；旧 `read-only` 配置及 `--read-only` 会报错，要求明确选择新模式。
 
@@ -151,7 +153,7 @@ MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目�
 
 脚本没有直接 Node、文件系统或网络能力，模型子调用也已关闭。每个嵌套调用经过与直接调用相同的审批和恢复保护；`Promise.all` 中需要审批的调用也会逐项展示审批。中断信号传入嵌套调用，会话历史保存嵌套调用的名称、参数和状态；恢复不重放操作，compact 继续跟踪其文件路径。
 
-read、write、edit、grep、glob、bash 复用 Pi SDK 工具定义，宿主仅保留路径保护、审批和进程管理适配。read 支持图片，文本采用 SDK 输出格式。edit 使用 `edits: [{oldText,newText}]`，SDK 仍接受旧的单段参数。grep 使用 rg 的正则及 gitignore 行为，排除元数据、凭据与依赖目录，跳过超过 2 MiB 的文件。glob 保留安全目录遍历，超过 10000 个文件明确报错并要求缩小路径。bash 在 Windows 实际运行 PowerShell，取消调用的工具退出码为 130，原始进程退出码保留在 receipt 中。
+read、write、edit、grep、glob、bash 复用 Pi SDK 工具定义，宿主仅保留路径保护、审批和进程管理适配。read 支持图片，文本采用 SDK 输出格式。edit 使用 `edits: [{oldText,newText}]`，SDK 仍接受旧的单段参数。grep 使用 rg 的正则及 gitignore 行为，排除元数据、凭据与依赖目录，跳过超过 2 MiB 的文件。glob 保留安全目录遍历，超过 10000 个文件明确报错并要求缩小路径。bash 按已选择的 shell 执行，Windows 优先 Git Bash，PowerShell 回退保留 UTF-8 编码设置。取消调用的工具退出码为 130，原始进程退出码保留在 receipt 中。
 
 安装、开发、检查及构建时会运行固定版本的 [SDK 接入补丁](docs/development/PI_SDK_PATCH.md)。补丁补充宿主生命周期、审批、凭据目录和搜索限制接口，校验 SDK 版本与文件 SHA-256，遇到不匹配立即失败。升级 Pi 时需要审查并删去上游已提供的补丁。源码分层与验证入口见 [架构说明](docs/architecture/ARCHITECTURE.md)，全部项目文档见 [文档目录](docs/README.md)。外部项目研究按主题保存在被 Git 忽略的 `research/`。
 
