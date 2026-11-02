@@ -630,7 +630,7 @@ export class SessionRuntime {
     const idleCommands = new Set(["compact", "init", "connect", "tool-mode", "web-search"]);
     if (this.state.kind !== "idle" && idleCommands.has(name)) throw new Error("Wait until the current run finishes.");
     switch (name) {
-      case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Left opens sessions from the empty composer. Switching sessions leaves other runs active. Ctrl+C interrupts or exits when idle. Esc interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
+      case "help": this.ui.message("info", `${slashCommands.map((command) => `/${command.name}`).join(" ")}\nEnter submits or steers. Tab queues a follow-up. Left opens sessions from the empty composer. Switching sessions leaves other runs active. Drag to select and copy transcript text. Ctrl+C copies a selection, otherwise interrupts or exits when idle. Esc clears a selection or interrupts. Ctrl+T shows tool details. Ctrl+O copies the last answer.`); break;
       case "status": this.ui.message("info", `Permissions: ${this.effectivePermission()}\nWorkspace: ${this.cwd}\nModel: ${session.model?.provider}/${session.model?.id}\nSession: ${session.sessionId}\nHistory: ${session.sessionFile ?? "Not written yet"}\nShell: ${this.shell.executable}\nUsage: ${JSON.stringify(session.getSessionStats())}`); break;
       case "mcp": await this.manageMcp(args); break;
       case "skills": await this.manageSkills(args); break;

@@ -48,6 +48,7 @@ import { permissionLabels } from "../permissions/policy.js";
 import { mentionPrefix, WorkspaceAutocompleteProvider } from "./autocomplete.js";
 import { diffStats, highlightCommand, renderDiff, toolColors } from "./tool-rendering.js";
 import { contextDetails, contextReadout } from "./context-usage.js";
+import { TranscriptSelection } from "./text-selection.js";
 import { ansi, fg, bold, accent, green, yellow, red, dim, faint, userText, neutral, reasoningText, directoryText, permissionText, branchText, italic } from "./colors.js";
 
 class SecretInput extends Input {
@@ -213,6 +214,8 @@ export class TerminalUI implements UserInterface {
   private expanded = false;
   private readonly toolHitRows = new Map<number, { id: string; end: number }>();
   private mouseDown: { id: string; row: number; column: number } | null = null;
+  private readonly selection = new TranscriptSelection();
+  private transcriptLines: string[] = [];
   private scrollOffset = 0;
   private transcriptRows = 0;
   private contextRows = 0;
@@ -529,6 +532,8 @@ export class TerminalUI implements UserInterface {
     this.transcriptRows = 0;
     this.toolHitRows.clear();
     this.mouseDown = null;
+    this.selection.reset();
+    this.transcriptLines = [];
     this.render();
   }
 
@@ -595,6 +600,7 @@ export class TerminalUI implements UserInterface {
   }
 
   private rebuild(): void {
+    this.selection.reset();
     this.tui.clear();
     if (this.browser) {
       this.tui.addChild(new RenderComponent((width) => this.browserLines(width)));
@@ -652,7 +658,8 @@ export class TerminalUI implements UserInterface {
       const end = lines.length - this.scrollOffset;
       const headerHeight = this.headerLines(width).length;
       for (const row of this.toolHitRows.keys()) if (row >= headerHeight + end) this.toolHitRows.delete(row);
-      return lines.slice(0, end);
+      this.transcriptLines = lines.slice(0, end);
+      return this.selection.render(this.transcriptLines, width);
     }));
     this.tui.addChild(new RenderComponent((width) => this.activity(width)));
     if (this.panel) this.tui.addChild(this.panel.component);
@@ -930,6 +937,15 @@ export class TerminalUI implements UserInterface {
       if (data.startsWith("\x1b[M")) return { consume: true };
     }
     if (isKeyRelease(data)) return { consume: true };
+    if (!this.panel && !this.browser && this.selection.active && matchesKey(data, "ctrl+c")) {
+      this.copySelection(this.selection.text());
+      return { consume: true };
+    }
+    if (this.selection.active || this.selection.dragging) {
+      this.selection.reset();
+      this.render();
+      if (matchesKey(data, "escape")) return { consume: true };
+    }
     if (!this.panel && !this.browser && (!this.currentStatus || this.currentStatus.initializing)) {
       if (matchesKey(data, "ctrl+c")) this.run(() => this.actions.exit());
       return { consume: true };
@@ -1009,7 +1025,7 @@ export class TerminalUI implements UserInterface {
     } else if (matchesKey(data, "ctrl+g")) {
       this.run(() => this.editExternally());
     } else if (data === "?" && !this.draft()) {
-      this.message("info", "Enter send / steer    Tab queue follow-up    Left sessions    Ctrl+C interrupt / exit\nClick +N lines to expand / Show less to collapse    Ctrl+T all details\nWheel / PgUp / PgDn scroll    End latest    Shift+drag select text\nClick context for token details    Ctrl+O copy    Ctrl+R history    Ctrl+G editor\nCtrl+L clear view    Shift+Enter newline    Esc cancel    /help commands");
+      this.message("info", "Enter send / steer    Tab queue follow-up    Left sessions    Ctrl+C copy selection / interrupt / exit\nClick +N lines to expand / Show less to collapse    Ctrl+T all details\nWheel / PgUp / PgDn scroll    End latest    Drag select and copy\nClick context for token details    Ctrl+O copy answer    Ctrl+R history    Ctrl+G editor\nCtrl+L clear view    Shift+Enter newline    Esc cancel    /help commands");
     } else return undefined;
     return { consume: true };
   }
@@ -1067,14 +1083,22 @@ export class TerminalUI implements UserInterface {
   }
 
   private mouseReporting(enabled: boolean): void {
-    this.terminal.write(enabled ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1000l\x1b[?1006l");
+    this.terminal.write(enabled ? "\x1b[?1000h\x1b[?1002h\x1b[?1006h" : "\x1b[?1002l\x1b[?1000l\x1b[?1006l");
     this.mouseDown = null;
+    this.selection.reset();
   }
 
   private scrollTranscript(delta: number): void {
     this.scrollOffset = Math.max(0, Math.min(Math.max(0, this.transcriptRows - 1), this.scrollOffset + delta));
     this.mouseDown = null;
+    this.selection.reset();
     this.render();
+  }
+
+  private copySelection(text: string): void {
+    if (text) this.run(async () => {
+      if (!await this.copy(text)) throw new Error("Could not copy selected text to the clipboard.");
+    });
   }
 
   private handleMouse(data: string): TuiInputListenerResult {
@@ -1093,16 +1117,39 @@ export class TerminalUI implements UserInterface {
       }
       return { consume: true };
     }
-    if (this.panel || (button & 35) !== 0) return { consume: true };
+    if (this.panel || (button & 3) !== 0) return { consume: true };
     const state = this.tui.captureRenderState();
-    if (state.previousWidth !== this.terminal.columns || state.previousHeight !== this.terminal.rows) return { consume: true };
+    if (state.previousWidth !== this.terminal.columns || state.previousHeight !== this.terminal.rows) {
+      this.selection.reset();
+      this.mouseDown = null;
+      return { consume: true };
+    }
     const row = state.previousViewportTop + screenRow;
+    const transcriptRow = row - this.headerLines(this.terminal.columns).length;
+    if ((button & 32) !== 0) {
+      if (this.selection.dragging) {
+        if (this.mouseDown?.row !== row || this.mouseDown.column !== column) this.mouseDown = null;
+        this.selection.move(transcriptRow, column);
+        this.render();
+      }
+      return { consume: true };
+    }
     const tool = this.toolHitRows.get(row);
     const contextStart = state.previousLines.length - this.contextRows;
     const isContext = row >= contextStart && row < state.previousLines.length;
     const id = tool && column >= 4 && column < tool.end ? tool.id : isContext && column >= 2 ? "context" : null;
-    if (match[4] === "M") this.mouseDown = id ? { id, row, column } : null;
+    if (match[4] === "M") {
+      this.mouseDown = id ? { id, row, column } : null;
+      this.selection.begin(this.transcriptLines, this.terminal.columns, transcriptRow, column);
+      this.render();
+    }
     else {
+      if (this.selection.dragging) {
+        const text = this.selection.release(transcriptRow, column);
+        this.copySelection(text);
+        this.render();
+        if (text) { this.mouseDown = null; return { consume: true }; }
+      }
       const press = this.mouseDown;
       this.mouseDown = null;
       if (id && press?.id === id && press.row === row && press.column === column) {

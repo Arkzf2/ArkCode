@@ -160,6 +160,46 @@ test("terminal cells distinguish messages, commands, flags, paths and gray outpu
   assert.equal(terminal.foreground("PASS is still output"), 0x91929a);
 });
 
+test("drag selects Chinese transcript cells and copies without interrupting the session", async (t) => {
+  const terminal = new ScreenTerminal();
+  let interrupted = 0;
+  let exited = 0;
+  const copied: string[] = [];
+  const ui = new TerminalUI({ ...actions, async interrupt() { interrupted++; }, async exit() { exited++; } }, terminal);
+  ui.copy = async (text) => { copied.push(text); return true; };
+  t.after(() => ui.stop());
+  ui.status({ ...idle, state: { kind: "running", id: "run", startedAt: Date.now() } });
+  ui.setDraft("Keep my draft");
+  ui.message("assistant", "今天中文输出 😀 end");
+  ui.start();
+  await terminal.flush();
+  assert.equal(terminal.screen.modes.mouseTrackingMode, "drag");
+  const { row, column } = terminal.find("今天");
+  terminal.press(`\x1b[<0;${column + 1};${row + 1}M`);
+  terminal.press(`\x1b[<32;${column + 16};${row + 1}M`);
+  await terminal.flush();
+  const cell = terminal.screen.buffer.active.getLine(terminal.screen.buffer.active.baseY + row)?.getCell(column);
+  assert.ok(cell?.isBgRGB(), "dragged cells must be highlighted");
+  assert.equal(copied.length, 0, "copy only on release");
+  terminal.press(`\x1b[<0;${column + 16};${row + 1}m`);
+  await terminal.flush();
+  assert.deepEqual(copied, ["今天中文输出 😀"]);
+  terminal.press("\x03");
+  await terminal.flush();
+  assert.deepEqual(copied, ["今天中文输出 😀", "今天中文输出 😀"]);
+  assert.equal(interrupted, 0);
+  assert.equal(exited, 0);
+  assert.equal(ui.draft(), "Keep my draft");
+  terminal.press("\x1b");
+  await terminal.flush();
+  terminal.press("\x03");
+  await terminal.flush();
+  assert.equal(interrupted, 1);
+  ui.stop();
+  await terminal.flush();
+  assert.equal(terminal.screen.modes.mouseTrackingMode, "none");
+});
+
 test("mouse expands and collapses one receipt while Ctrl+T controls all receipts", async (t) => {
   const terminal = new ScreenTerminal();
   const ui = new TerminalUI(actions, terminal);
@@ -216,6 +256,7 @@ test("receipt clicks track wrapping, resizes and the terminal viewport", async (
 test("mouse events do not leak into drafts or bypass approval", async (t) => {
   const terminal = new ScreenTerminal();
   const ui = new TerminalUI(actions, terminal);
+  ui.copy = async () => true;
   t.after(() => ui.stop());
   ui.status(idle);
   ui.setDraft("Retained");
@@ -237,6 +278,105 @@ test("mouse events do not leak into drafts or bypass approval", async (t) => {
   terminal.press("\x1b");
   assert.equal(await approval, "deny");
   assert.equal(ui.draft(), "Retained");
+});
+
+test("reverse multiline selection copies the visible transcript after scrolling", async (t) => {
+  const terminal = new ScreenTerminal(60, 26);
+  const copied: string[] = [];
+  const ui = new TerminalUI(actions, terminal);
+  ui.copy = async (text) => { copied.push(text); return true; };
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.message("assistant", Array.from({ length: 55 }, (_, index) => `History ${index}`).join("\n"));
+  ui.start();
+  await terminal.flush();
+  terminal.press("\x1b[5~");
+  await terminal.flush();
+  const startRow = terminal.lines().findIndex((line) => line.includes("History"));
+  const startLine = terminal.lines()[startRow] ?? "";
+  const nextLine = terminal.lines()[startRow + 1] ?? "";
+  assert.match(nextLine, /History/);
+  const column = startLine.indexOf("History");
+  terminal.press(`\x1b[<0;${nextLine.trimEnd().length + 1};${startRow + 2}M`);
+  terminal.press(`\x1b[<32;${column + 1};${startRow + 1}M`);
+  terminal.press(`\x1b[<0;${column + 1};${startRow + 1}m`);
+  await terminal.flush();
+  assert.deepEqual(copied, [`${startLine.slice(column).trimEnd()}\n${nextLine.trimEnd()}`]);
+  terminal.press("\x1b[F");
+  await terminal.flush();
+  assert.match(terminal.text(), /History 54/);
+});
+
+test("selection snapshots streamed output and is cleared on resize and session replacement", async (t) => {
+  const terminal = new ScreenTerminal();
+  const copied: string[] = [];
+  const ui = new TerminalUI(actions, terminal);
+  ui.copy = async (text) => { copied.push(text); return true; };
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.assistantDelta("Select this text");
+  ui.start();
+  await terminal.flush();
+  const { row, column } = terminal.find("Select");
+  terminal.press(`\x1b[<0;${column + 1};${row + 1}M`);
+  terminal.press(`\x1b[<32;${column + 7};${row + 1}M`);
+  ui.assistantDelta(" and more\nnew line");
+  await terminal.flush();
+  assert.doesNotMatch(terminal.text(), /and more/);
+  terminal.press(`\x1b[<0;${column + 7};${row + 1}m`);
+  await terminal.flush();
+  assert.deepEqual(copied, ["Select"]);
+  assert.match(terminal.text(), /and more/);
+  const point = terminal.find("Select");
+  terminal.press(`\x1b[<0;${point.column + 1};${point.row + 1}M`);
+  terminal.press(`\x1b[<32;${point.column + 7};${point.row + 1}M`);
+  terminal.resize(45, 26);
+  await terminal.flush();
+  terminal.press(`\x1b[<0;${point.column + 7};${point.row + 1}m`);
+  await terminal.flush();
+  assert.equal(copied.length, 1);
+  ui.clear();
+  ui.message("assistant", "A new session");
+  await terminal.flush();
+  assert.doesNotMatch(terminal.text(), /Select this/);
+  assert.match(terminal.text(), /A new session/);
+});
+
+test("dragging a receipt expansion label copies text without expanding the receipt", async (t) => {
+  const terminal = new ScreenTerminal();
+  const copied: string[] = [];
+  const ui = new TerminalUI(actions, terminal);
+  ui.copy = async (text) => { copied.push(text); return true; };
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.tool("tool", "bash", "one\ntwo\nthree\nhidden fourth", "done");
+  ui.start();
+  await terminal.flush();
+  const { row, column } = terminal.find("+1 lines");
+  terminal.press(`\x1b[<0;${column + 1};${row + 1}M`);
+  terminal.press(`\x1b[<32;${column + 9};${row + 1}M`);
+  terminal.press(`\x1b[<0;${column + 9};${row + 1}m`);
+  await terminal.flush();
+  assert.deepEqual(copied, ["+1 lines"]);
+  assert.doesNotMatch(terminal.text(), /hidden fourth/);
+});
+
+test("selection snaps to whole CJK cells and preserves combining characters and emoji", async (t) => {
+  const terminal = new ScreenTerminal();
+  const copied: string[] = [];
+  const ui = new TerminalUI(actions, terminal);
+  ui.copy = async (text) => { copied.push(text); return true; };
+  t.after(() => ui.stop());
+  ui.status(idle);
+  ui.message("assistant", "前缀 中文e\u0301😀 后缀");
+  ui.start();
+  await terminal.flush();
+  const { row, column } = terminal.find("前缀");
+  terminal.press(`\x1b[<0;${column + 7};${row + 1}M`);
+  terminal.press(`\x1b[<32;${column + 13};${row + 1}M`);
+  terminal.press(`\x1b[<0;${column + 13};${row + 1}m`);
+  await terminal.flush();
+  assert.deepEqual(copied, ["中文e\u0301😀"]);
 });
 
 test("wheel and page keys browse earlier output and End returns to the latest receipt", async (t) => {

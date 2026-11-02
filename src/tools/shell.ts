@@ -46,7 +46,7 @@ export class ManagedShell {
     signal?.throwIfAborted();
     const windows = process.platform === "win32";
     const args = windows
-      ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `${command}\n$arkcodeCommandSucceeded = $?; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; if (-not $arkcodeCommandSucceeded) { exit 1 }`]
+      ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);\n${command}\n$arkcodeCommandSucceeded = $?; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; if (-not $arkcodeCommandSucceeded) { exit 1 }`]
       : ["-c", command];
     const child = spawn(this.executable, args, {
       cwd: this.cwd, shell: false, windowsHide: true, detached: !windows, stdio: ["ignore", "pipe", "pipe"],

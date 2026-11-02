@@ -241,6 +241,21 @@ test("Grep applies the same file size limit with and without context", async () 
   } finally { await shell.stopAll(); await files.cleanup(); }
 });
 
+test("SDK shell tool returns Chinese output intact in model content and session details", { skip: process.platform !== "win32" }, async (t) => {
+  const files = await fixture();
+  const shell = new ManagedShell(files.cwd);
+  t.after(async () => { await shell.stopAll(); await files.cleanup(); });
+  const tool = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((entry) => entry.name === "bash");
+  assert.ok(tool);
+  const result = z.object({
+    content: z.array(z.object({ type: z.literal("text"), text: z.string() })),
+    details: z.object({ output: z.string(), exitCode: z.number() }),
+  }).parse(await executeTool(tool, "unicode", { command: '\'今天：中文输出 😀\'' }));
+  assert.equal(result.content[0]?.text.trim(), "今天：中文输出 😀");
+  assert.equal(result.details.output, "今天：中文输出 😀\r\n");
+  assert.equal(result.details.exitCode, 0);
+});
+
 test("SDK shell provides structured output beyond the bounded process receipt", { timeout: 15000 }, async () => {
   const files = await fixture();
   const shell = new ManagedShell(files.cwd);
