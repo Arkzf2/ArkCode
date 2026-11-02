@@ -1,13 +1,13 @@
 {
-  "version": "1.2.0",
+  "version": "1.5.0",
   "files": {
     "dist/core/tools/grep.js": {
-      "original": "641ae520a88c7eb86406d9a18880f31412cb41cdc15a7ee3e1da5de62979ca7c",
-      "patched": "3588fbc454fb0e850dedfd920d8859c3d43b146bb60060925db5c7bb204c928e"
+      "original": "651a8f76a1b5af4a1b52edd32d70691ebd15604436bedf65176ec7c7d4ad6174",
+      "patched": "f169fe95e37047d1bffb2fc1b1bbf5d2d386208e4107b4a91a76188b87e1d864"
     },
     "dist/core/tools/grep.d.ts": {
-      "original": "cb1b7103658fca88fcc381b1e5f0f42e0e17d900b686c0843fe767a597ac5660",
-      "patched": "0b9c8358f87c444fabd3cfbb3e9ed56bf85fe41c5d7103a5567bb109c828d2cb"
+      "original": "b614ba64a823b1ffb7cb794a65a26b465c06da461bbd1dbfa96dbf7ea3e1f958",
+      "patched": "36062738dd8616f902fba52d019e712edad804cc82f0c3bd27ee286d6c45ac62"
     },
     "dist/extensions/mcp/index.d.ts": {
       "original": "2326ac2f37daa7bbf258629846b4ff6d4d8d2c570331777b2da0852525de843e",
@@ -17,8 +17,8 @@
       ]
     },
     "dist/index.d.ts": {
-      "original": "3b4267eee6912bd03bf155281847cb0ef61ddea4d6c4b40eb996dbfe73d1e076",
-      "patched": "b16ed6c756256c4f7bb8d55ac1b85f6e3c162b6dea1c8c100f7fbb080e424935"
+      "original": "44f8644712aba6b4316aa42854d8d2c1ae0fc183fe6f1966e999a47d537c4b22",
+      "patched": "c6bb70e423bc9b78d8606259b73b2175b4e6d9dd7ed702a5a50431a6988b9a14"
     },
     "dist/extensions/mcp/index.js": {
       "original": "c0570b9d256120a1df9b65a015964076dff6a3710646e041fcb2770ae7132fde",
@@ -44,27 +44,24 @@
       "patched": "7c6b4ccc7e60dd4e6b40dbecca4b7f0687dd49afee7fe757559c4a55ce522bbb"
     },
     "dist/core/system-prompt.js": {
-      "original": "ab02924fa078eef81addcf39bc0e43d3663f06d627cb42ead403662a004a9e5c",
-      "patched": "a7b9e7999f3dac38597f68b8d170145b325ae1ca9f4a60b0b4a3d22421f6baea",
-      "previousPatched": [
-        "a454080fe7930c0e00011395a5b6c15c456bf72ca3e1222bab5470bf88680793"
-      ]
+      "original": "5f68e89c31ba3d4d1af8ad2bfd0c7c548879d47ee6ab4aabee50a826100da32c",
+      "patched": "9194644bb6fe2bd54397b77f572b32e9fce77fe9789ee2027b36c502b11251d9"
     },
     "dist/core/system-prompt.d.ts": {
       "original": "4304c6b9a20f0ee613c64cc67f96adde1357c2af525200418780238111b40966",
       "patched": "ba1bcb03523edadc4e3864107f72186abb63574d775a7254cfda812fe769a4a9"
     },
     "dist/core/agent-session.js": {
-      "original": "a5c9ff22e42215405804dc0c850e98aff424a1262829161155132a3da020b693",
-      "patched": "b8d1ef564e18d8ce3506cc8e2fa9acfdcdd471096a75cdf6cc1b93faad37c019"
+      "original": "1941d9608c98a3638825a8d10b5443ff7c06f96b3ae370bb37269f3a574ede65",
+      "patched": "0b342778c15434beb139d18dd7f963403b8d4f1eeb2c51862615dea226c4e474"
     },
     "dist/core/agent-session.d.ts": {
-      "original": "ad1bf10352120fd57ec8b08be09e13378c82430813d6fc13195536df44b2ee9b",
-      "patched": "7ba70a28d820197c2858abc119a5d064fe0236459b35e113b7ff39bd9f8e3bef"
+      "original": "e5015c005e6bcac65471b2f6e4fb634763896935482b61c47a9f90eeab30a128",
+      "patched": "1f6bf3b8a6e53a746900c84f9b08aeaace82db17e4a0abd2a7984d37e411ad91"
     },
     "dist/core/session-manager.js": {
-      "original": "046b6a1109ac3f0ed893bb85bf0648709362fa926a5da75761216cf2fcf9d926",
-      "patched": "c493a41729f95b685ab6397104eac5e114b899fce147b9d5d59c43282026a7ea"
+      "original": "7e24f1c857c9f0e7be6485e9be12ba528fad9eea3423abf2c96fc27585a88b61",
+      "patched": "c3ca8e9411cae2bae2d7848e1ddbc424ac0913ae9dab16abbe2c5cc65129df49"
     }
   }
 }

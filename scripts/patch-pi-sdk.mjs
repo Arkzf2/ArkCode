@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))));
 const assets = fileURLToPath(new URL('./pi-sdk-patch/', import.meta.url));
 const version = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
-if (version !== '1.2.0') throw new Error(`ArkCode's Pi SDK patch requires 1.2.0; installed ${version}. Review the patch before upgrading.`);
+if (version !== '1.5.0') throw new Error(`ArkCode's Pi SDK patch requires 1.5.0; installed ${version}. Review the patch before upgrading.`);
 
 const normalize = (value) => value.replaceAll('\r\n', '\n');
 const hash = (value) => createHash('sha256').update(normalize(value)).digest('hex');
@@ -71,11 +71,11 @@ patch('dist/core/system-prompt.d.ts', (text) => {
 });
 
 patch('dist/core/agent-session.js', (text) => {
-  text = replace(text, 'contentText, getCurrentSystemMessage, retryDelayMs', 'contentText, getCurrentSystemMessage, toToolDeclaration, retryDelayMs');
+  text = replace(text, 'contentText, getCurrentSystemMessage, getCurrentTools, retryDelayMs', 'contentText, getCurrentSystemMessage, getCurrentTools, toToolDeclaration, retryDelayMs');
   text = replace(text, '        else {\n            // Normalize images after before_agent_start', '        else if (trigger.messageType !== "continuation") {\n            // Normalize images after before_agent_start');
   text = replace(text, '    async compact(customInstructions) {', asset('compaction-host.js') + '\n    async compact(customInstructions) {\n        if (this._hostCompaction) {\n            if (this.isStreaming) throw new Error("Wait until the current run finishes.");\n            return await this.runHostCompaction("manual", customInstructions);\n        }');
-  return replace(text, '    async _checkCompaction(assistantMessage, skipAbortedCheck = true, toolResults = []) {',
-    '    async _checkCompaction(assistantMessage, skipAbortedCheck = true, toolResults = []) {\n        if (this._hostCompaction) return await this._recoverHostOverflow(assistantMessage, skipAbortedCheck);');
+  return replace(text, '    async _checkCompaction(assistantMessage, skipAbortedCheck = true) {',
+    '    async _checkCompaction(assistantMessage, skipAbortedCheck = true) {\n        if (this._hostCompaction) return await this._recoverHostOverflow(assistantMessage, skipAbortedCheck);');
 });
 patch('dist/core/agent-session.d.ts', (text) => replace(text, '    compact(customInstructions?: string): Promise<CompactionResult>;',
   asset('compaction-host.d.ts') + '\n    compact(customInstructions?: string): Promise<CompactionResult>;'));

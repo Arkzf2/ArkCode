@@ -2,6 +2,8 @@
 
 ArkCode 是基于 Pi SDK 的终端编码 agent。模型调用、工具循环、会话历史和上下文压缩由 Pi 管理。ArkCode 提供原生 TUI、工具审批、受管命令、输入队列、多会话并发、会话恢复和 Git 分支状态。
 
+当前使用 Pi SDK 1.5.0，版本适配及行为变化见 [升级记录](docs/implementation/PI_SDK_1_5_UPGRADE.md)。
+
 ## 启动
 
 需要 Node.js 22.19 或更新版本。Windows 自动寻找 Git Bash，优先从 PATH 中的 Git 安装定位，也检查系统和用户的常见安装目录；找不到时回退 PowerShell，优先使用 PowerShell 7。macOS 和 Linux 使用 `/bin/sh`。Git 用于显示当前分支。
@@ -129,7 +131,7 @@ edit/write 沿用 Pi 的同文件修改队列。同一进程内不同会话、�
 
 启动、新建或首次恢复会话时，composer 等待全部已启用且允许连接的 MCP 完成连接和工具发现，等待期间不接收对话输入，Ctrl+C 可退出。单个服务失败不阻止其他服务连接，但交互模式会停留在失败处理页，明确选择重试或使用当前可用工具继续后才开放 composer；非交互模式直接报错，不发送工具不完整的首轮请求。禁用、viewer 或恢复保护阻止的连接不参与等待。服务器的 tools/list_changed 更新目录，禁用或删除后旧工具不可调用；断线后 SDK 可在下次调用时重新连接，并对新连接重新审批。审批期间 schema 改变会取消旧调用。新建、恢复、fork 和退出会等待旧连接关闭；历史恢复不重放调用或恢复旧授权。中断发送协议取消请求，但外部服务未必能撤销已发生的副作用。普通失败和超时不自动重放工具；SDK 对服务器明确返回 session expired 的请求可重建会话后再尝试一次，仍需经过新连接的授权检查。
 
-MCP 使用 Pi 1.2.0 的高层扩展，负责连接、OAuth、工具命名、目录更新和结果转换。`exposure` 默认 `codemode`，工具在脚本中按需发现；设为 `direct` 可直接声明给模型，`deferred` 通过 `tool_search` 加载，`hidden` 隐藏。`toolExposure` 可按原始工具名或 Pi 的 `*` 模式覆盖单项，`enabledTools` / `disabledTools` 始终优先过滤。使用 `/mcp exposure <server> <codemode|deferred|direct|hidden>` 保存模式，在首次 LLM 请求前、新会话或成功 compact 后应用；首次请求后，reload、reconnect 和 enable 保留当前会话的 exposure。disable、配置删除和工具过滤会立即阻止实际调用。没有启用的 MCP 模式时不拼接 MCP 指南。
+MCP 使用 Pi 1.5.0 的高层扩展，负责连接、OAuth、工具命名、目录更新和结果转换。`exposure` 默认 `codemode`，工具在脚本中按需发现；设为 `direct` 可直接声明给模型，`deferred` 通过 `tool_search` 加载，`hidden` 隐藏。`toolExposure` 可按原始工具名或 Pi 的 `*` 模式覆盖单项，`enabledTools` / `disabledTools` 始终优先过滤。使用 `/mcp exposure <server> <codemode|deferred|direct|hidden>` 保存模式，在首次 LLM 请求前、新会话或成功 compact 后应用；首次请求后，reload、reconnect 和 enable 保留当前会话的 exposure。disable、配置删除和工具过滤会立即阻止实际调用。没有启用的 MCP 模式时不拼接 MCP 指南。
 
 `/mcp login <server>` 使用 SDK 的 OAuth 自动发现和动态客户端注册。交互界面显示授权链接，浏览器回调完成后自动重连，也可粘贴回调 URL。`/mcp logout <server>` 删除对应凭据并断开服务。中断或退出会取消登录。菜单只在远程服务器要求 OAuth 时显示 Sign in，有已存 OAuth token 时显示 Sign out；stdio 和已有 header / bearer token 服务不显示这些动作。
 

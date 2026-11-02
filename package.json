@@ -4,7 +4,7 @@
   "description": "A focused terminal coding agent powered by Pi",
   "type": "module",
   "bin": { "arkcode": "dist/cli.js" },
-  "files": ["dist", "scripts", "README.md", "docs/README.md", "docs/architecture", "docs/development", "docs/implementation/VERIFICATION.md"],
+  "files": ["dist", "scripts", "README.md", "docs/README.md", "docs/architecture", "docs/development", "docs/implementation/VERIFICATION.md", "docs/implementation/PI_SDK_1_5_UPGRADE.md"],
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "node scripts/build.mjs",
@@ -20,10 +20,10 @@
   },
   "engines": { "node": ">=22.19.0" },
   "dependencies": {
-    "@earendil-works/pi-ai": "1.2.0",
-    "@earendil-works/pi-coding-agent": "1.2.0",
-    "@earendil-works/pi-mcp": "1.2.0",
-    "@earendil-works/pi-tui": "1.2.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-mcp": "1.5.0",
+    "@earendil-works/pi-tui": "1.5.0",
     "bash-parser": "0.5.0",
     "jsonc-parser": "3.3.1",
     "minimatch": "10.2.6",

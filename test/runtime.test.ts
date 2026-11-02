@@ -542,6 +542,79 @@ test("CodeMode composes SDK basic tools and MCP structured results, serializes a
   assert.ok(resumed.ui.tools.some((tool) => tool.name === "write" && tool.details?.target === "one.txt" && tool.state === "done"));
 });
 
+for (const mode of ["direct", "codemode"]) {
+  test(`MCP coercion in ${mode} mode preserves approved arguments and blocks invalid or denied calls`, async (t) => {
+    const inputs = [{ limit: "7", tags: "one" }, { limit: "not-a-number", tags: [] }, { limit: "9", tags: "two" }];
+    const f = await fixture(t, (_request, index) => {
+      const args = inputs[index];
+      if (!args) return { kind: "text", text: "Done." };
+      return mode === "direct"
+        ? { kind: "tool", name: "mcp__fixture__coerce", arguments: args }
+        : { kind: "tool", name: "codemode", arguments: { code: `text(await tools.mcp__fixture__coerce(${JSON.stringify(args)}));` } };
+    });
+    const mcp = await httpMcpFixture(t, { tools: [{ name: "coerce", description: "Accept a number and a string array.", inputSchema: {
+      type: "object", properties: { limit: { type: "number" }, tags: { type: "array", items: { type: "string" } } }, required: ["limit", "tags"],
+    } }] });
+    await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url, exposure: mode } } }));
+    let decisions = 0;
+    const ui = new RecordingUI(async () => ++decisions === 1 ? "once" : "deny");
+    const { host } = await f.start(ui, ["--permissions", "always-ask"]);
+    await host.submit("Check converted MCP arguments, validation and denial.");
+    assert.deepEqual(mcp.calls.map((call) => call.arguments), [{ limit: 7, tags: ["one"] }]);
+    assert.equal(ui.approvals.length, 2);
+    assert.deepEqual(ui.approvals.map((approval) => {
+      assert.equal(approval.invocation?.kind, "mcp");
+      if (approval.invocation?.kind !== "mcp") throw new Error("Expected an MCP approval.");
+      return approval.invocation.arguments;
+    }), [{ limit: 7, tags: ["one"] }, { limit: 9, tags: ["two"] }]);
+    assert.equal(f.requests.length, 4);
+    assert.equal(host.outcome, "completed");
+  });
+}
+
+test("CodeMode queues across sessions, cancels a waiting run and reuses worker slots", { timeout: 45000 }, async (t) => {
+  const previousLimit = process.env.PI_CODEMODE_MAX_WORKERS;
+  process.env.PI_CODEMODE_MAX_WORKERS = "2";
+  t.after(() => {
+    if (previousLimit === undefined) delete process.env.PI_CODEMODE_MAX_WORKERS;
+    else process.env.PI_CODEMODE_MAX_WORKERS = previousLimit;
+  });
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, (request) => request.messages.some((message) => message.role === "tool")
+    ? { kind: "text", text: "Worker completed." }
+    : { kind: "tool", name: "codemode", arguments: { code: 'text(await tools.mcp__fixture__echo({text:"worker"}));' } });
+  let entered = 0;
+  const mcp = await httpMcpFixture(t, { call: async () => {
+    if (++entered <= 2) await gate;
+    return { content: [{ type: "text", text: "Worker released." }] };
+  } });
+  await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
+  const first = await f.start();
+  const second = await f.start();
+  const waiting = await f.start();
+  const next = await f.start();
+  const firstRun = first.host.submit("Hold the first worker.");
+  await until(() => mcp.calls.length === 1);
+  const secondRun = second.host.submit("Hold the second worker.");
+  await until(() => mcp.calls.length === 2);
+  const waitingRun = waiting.host.submit("Wait for a worker.");
+  await until(() => waiting.ui.tools.some((tool) => tool.name === "codemode" && tool.state === "running"));
+  await waiting.host.interrupt();
+  await waitingRun;
+  assert.equal(waiting.host.outcome, "interrupted");
+  assert.equal(mcp.calls.length, 2);
+  const nextRun = next.host.submit("Run after a worker becomes free.");
+  await until(() => next.ui.tools.some((tool) => tool.name === "codemode" && tool.state === "running"));
+  assert.equal(mcp.calls.length, 2);
+  release();
+  await Promise.all([firstRun, secondRun, nextRun]);
+  assert.equal(mcp.calls.length, 3);
+  assert.deepEqual([first.host.outcome, second.host.outcome, next.host.outcome], ["completed", "completed", "completed"]);
+  assert.ok(next.ui.tools.some((tool) => tool.name === "codemode" && tool.state === "done" && tool.text.includes("Worker released.")));
+});
+
 for (const source of ["MCP", "bash"]) {
   test(`${source} truncated output can be read without granting writes or access to other external files`, async (t) => {
     let outputPath = "";

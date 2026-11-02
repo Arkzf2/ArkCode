@@ -183,13 +183,13 @@ test("SDK patch applies to a fresh installation, recovers partial application, a
   const root = await mkdtemp(join(tmpdir(), "arkcode-sdk-install-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sdk = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
-  const manifest = z.object({ files: z.record(z.string(), z.object({ original: z.string(), patched: z.string(), previousPatched: z.array(z.string()).optional() })) })
+  const manifest = z.object({ version: z.string(), files: z.record(z.string(), z.object({ original: z.string(), patched: z.string(), previousPatched: z.array(z.string()).optional() })) })
     .parse(JSON.parse(await readFile("scripts/pi-sdk-patch/manifest.json", "utf8")));
   await mkdir(join(root, "scripts"), { recursive: true });
   await cp("scripts/patch-pi-sdk.mjs", join(root, "scripts/patch-pi-sdk.mjs"));
   await cp("scripts/pi-sdk-patch", join(root, "scripts/pi-sdk-patch"), { recursive: true });
   await mkdir(join(sdk, "dist"), { recursive: true });
-  await writeFile(join(sdk, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.2.0", type: "module", exports: { ".": "./dist/index.js" } }));
+  await writeFile(join(sdk, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: manifest.version, type: "module", exports: { ".": "./dist/index.js" } }));
   await writeFile(join(sdk, "dist/index.js"), "");
   const upstream = join(process.cwd(), "node_modules/@earendil-works/pi-coding-agent/.arkcode-sdk-originals");
   for (const file of Object.keys(manifest.files)) {

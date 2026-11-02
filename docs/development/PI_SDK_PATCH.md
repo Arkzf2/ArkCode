@@ -1,6 +1,6 @@
-# Pi SDK 1.2.0 host hooks
+# Pi SDK 1.5.0 host hooks
 
-ArkCode uses Pi's public `createMcpExtension()` and tool factories. Pi 1.2.0 does not expose all hooks needed by an embedding host, so [`scripts/patch-pi-sdk.mjs`](../../scripts/patch-pi-sdk.mjs) adds these hooks to this package's installed SDK. It does not change the separate Pi checkout or an independently installed Pi CLI.
+ArkCode uses Pi's public `createMcpExtension()` and tool factories. Pi 1.5.0 does not expose all hooks needed by an embedding host, so [`scripts/patch-pi-sdk.mjs`](../../scripts/patch-pi-sdk.mjs) adds these hooks to this package's installed SDK. It does not change the separate Pi checkout or an independently installed Pi CLI.
 
 The patch adds:
 
@@ -22,3 +22,9 @@ The installer checks the package version and normalized SHA-256 digests in [`man
 When upgrading Pi, first check whether its public API now provides these hooks. Remove superseded patches. Review the remaining transformations against the new published package and update the version and digests deliberately. Run `test/sdk-patch.test.ts`, `test/compaction.test.ts` and the MCP/runtime permission and checkpoint regressions. Do not update checksums merely to suppress an installation failure.
 
 `agentDir` here controls MCP credentials and logs. Pi's other caches and downloaded search binaries retain the SDK's upstream locations. Authorization and per-server state stay in ArkCode's directory.
+
+The 1.5.0 migration keeps all 14 patched files and updates their verified upstream/output hashes. The `AgentSession` import retains the new `getCurrentTools` import, and the compaction hook matches `_checkCompaction(assistantMessage, skipAbortedCheck = true)` without the removed `toolResults` argument. Upstream recovery logic and session persistence fixes remain in place. Earlier patch hashes are retained only where the upstream file and final patch are unchanged. The fresh-install test derives its simulated package version from the manifest.
+
+Pi 1.5.0 validates MCP JSON Schema arguments with pi-schema, including numeric-string and scalar-array coercion. Host approval receives the converted arguments used by the live HTTP request. Runtime regressions cover both direct and CodeMode calls, validation failures before approval, and denial before dispatch. CodeMode workers are shared across sessions, with a default limit of two live workers and a 60-second admission wait. `PI_CODEMODE_MAX_WORKERS` accepts a positive integer. The runtime regression holds both workers, cancels a waiting session, and verifies that a later waiting session can execute after a worker exits.
+
+See [Pi SDK 1.5.0 upgrade](../implementation/PI_SDK_1_5_UPGRADE.md) for the resulting behavior and validation record.

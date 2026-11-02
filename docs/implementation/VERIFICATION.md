@@ -2,6 +2,14 @@
 
 Date: 2026-10-09. Platform: Windows. Node: 24.18.0. Pi SDK: 1.1.0.
 
+## Pi SDK 1.5.0, 2026-11-02
+
+The four direct Pi packages and their Pi dependencies are pinned to 1.5.0. The versioned host patch retains all 14 files, adapts the two changed AgentSession anchors, and verifies the published files and patched output with new SHA-256 digests. The application source requires no migration. The install fixture reads its version from the patch manifest.
+
+Type checking, production build, and compiled CLI version/help checks passed. The full regression run passed 313 tests with zero failures, cancellations or skips. Added real-ArkHost regressions verify that direct and CodeMode MCP calls authorize the coerced number/array arguments actually sent over HTTP, reject invalid arguments before approval, and never send a denied call. A four-session regression holds both CodeMode workers, cancels a waiting run, and completes another queued run after capacity becomes free.
+
+The package smoke script installs the packed release in a fresh external temporary directory, checks all eight Pi package versions and all 14 patched file hashes before manually rerunning the patch, and drives the installed CLI against a local model service through a Read call and resume of the same persisted session. This verifies both automatic postinstall and idempotent patch application. Its JSON result records the tarball SHA-256, model request count and session count. Commands, results and source-preservation evidence are stored in `.audit/runtime/pi-150-upgrade/`. This validation uses Windows and loopback services; it does not claim a remote provider, external OAuth or macOS/Linux acceptance run. See [Pi SDK 1.5.0 upgrade](PI_SDK_1_5_UPGRADE.md) for user-visible improvements and configuration changes.
+
 ## Skill bodies after compaction, 2026-10-29
 
 Compaction no longer restores historical loaded Skill bodies as an `arkcode-active-skills` message. Authored Skill selections remain in retained user text, and the current Skill catalog remains available through the normal system section. The model can read an enabled Skill when needed. Newly submitted, undelivered inputs retain their normal submission-time Skill expansion. A subsequent successful compact refreshes older checkpoints containing the removed Skill block without generating another summary or rewriting the original JSONL.
