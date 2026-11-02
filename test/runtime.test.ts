@@ -25,7 +25,7 @@ import { parseCheckpoint } from "../src/compaction/checkpoint.js";
 import { renderUser, textTokens, TOOL_PRUNING_MARKER } from "../src/compaction/policy.js";
 import { SUMMARY_PREFIX } from "../src/compaction/prompts.js";
 import { echoMcpTool, httpMcpFixture } from "./mcp-fixture.js";
-import { inspectSession, SessionLease, writeRunMarker } from "../src/session/storage.js";
+import { inspectSession, readRunMarker, SessionLease, writeRunMarker } from "../src/session/storage.js";
 import type { ApprovalDecision, ApprovalRequest, Choice, ChoiceOptions, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/app/types.js";
 
 const requestSchema = z.object({
@@ -498,6 +498,89 @@ async function fixture(t: TestContext, respond: (request: ModelRequest, index: n
   const sessions = async () => (await readdir(join(home, "sessions"), { recursive: true })).filter((path) => path.endsWith(".jsonl")).map((path) => join(home, "sessions", path));
   return { cwd, home, requests, start, sessions };
 }
+
+for (const text of ["Partial answer", ""]) {
+  test(`output limit exhaustion preserves ${text ? "partial text" : "reasoning-only output"} and fails after bounded continuation`, async (t) => {
+    const f = await fixture(t, () => ({ kind: "text", text, thinking: "Reasoning before the output limit.", finish: "length" }));
+    const { host, ui } = await f.start();
+    await host.submit("Complete this task.");
+    assert.equal(host.outcome, "failed");
+    assert.equal(f.requests.length, 3);
+    assert.equal(ui.answers.length, 3);
+    assert.ok(ui.answers.every((answer) => answer === text));
+    assert.match(ui.messages.find((message) => message.kind === "error")?.text ?? "", /output.*limit|truncated/i);
+    const path = (await f.sessions())[0]; assert.ok(path);
+    const manager = SessionManager.open(path);
+    const answers = manager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "assistant");
+    assert.equal(answers.length, 3);
+    assert.ok(answers.every((entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "length"));
+    assert.equal((await readRunMarker(f.home, manager.getSessionId()))?.status, "failed");
+  });
+}
+
+test("output limit continuation keeps completed tool results without replaying the tool", async (t) => {
+  const f = await fixture(t, (_request, index) => index === 0
+    ? { kind: "tool", name: "write", arguments: { path: "once.txt", content: "Saved once." } }
+    : index === 1 ? { kind: "text", text: "The saved file", finish: "length" } : { kind: "text", text: " contains the result." });
+  const { host, ui } = await f.start();
+  await host.submit("Write the result and explain it.");
+  assert.equal(host.outcome, "completed");
+  assert.equal(f.requests.length, 3);
+  assert.equal(ui.tools.filter((tool) => tool.name === "write" && tool.state === "done").length, 1);
+  assert.equal(await readFile(join(f.cwd, "once.txt"), "utf8"), "Saved once.");
+  assert.ok(f.requests[2]?.messages.some((message) => message.role === "tool"));
+  assert.match(JSON.stringify(f.requests[2]?.messages), /The saved file/);
+});
+
+test("output limit continuation stops on user cancellation", async (t) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, async (_request, index) => {
+    if (index > 0) await gate;
+    return { kind: "text", text: "Partial", finish: "length" };
+  });
+  const { host } = await f.start();
+  const run = host.submit("Complete this task.");
+  await until(() => f.requests.length === 2);
+  await host.interrupt(); await run;
+  assert.equal(host.outcome, "interrupted");
+  assert.equal(f.requests.length, 2);
+});
+
+test("output limit continuation stops on insufficient provider balance", async (t) => {
+  const f = await fixture(t, (_request, index) => index === 0
+    ? { kind: "text", text: "Partial", finish: "length" }
+    : { kind: "error", status: 402, message: "Insufficient account balance" });
+  const { host, ui } = await f.start();
+  await host.submit("Complete this task.");
+  assert.equal(host.outcome, "failed");
+  assert.equal(f.requests.length, 2);
+  assert.ok(ui.messages.some((message) => message.kind === "error" && /Insufficient account balance/.test(message.text)));
+});
+
+test("normal empty stop is completed without guessing that the response was truncated", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "", finish: "stop" }));
+  const { host } = await f.start();
+  await host.submit("Complete this task.");
+  assert.equal(host.outcome, "completed");
+  assert.equal(f.requests.length, 1);
+});
+
+test("CLI exits unsuccessfully when output limit continuations are exhausted", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Partial answer", finish: "length" }));
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  await assert.rejects(promisify(execFile)(process.execPath,
+    ["--import", "tsx", cli, "--cwd", f.cwd, "--home", f.home, "--model", "fixture/test", "--print", "Complete the task."],
+    { timeout: 25000, windowsHide: true }), (error: unknown) => {
+      assert.ok(error instanceof Error && "code" in error && "stderr" in error && "stdout" in error);
+      assert.equal(error.code, 1);
+      assert.match(String(error.stderr), /truncated by the output limit/);
+      assert.match(String(error.stdout), /Partial answer/);
+      return true;
+    });
+  assert.equal(f.requests.length, 3);
+});
 
 for (const permission of ["always-ask", "ask-when-needed", "never-ask"]) {
   test(`CodeMode MCP ${permission} uses nested permissions and keeps hidden tools unreachable`, async (t) => {

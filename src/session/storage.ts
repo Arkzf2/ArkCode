@@ -230,6 +230,7 @@ const runBase = { runId: z.string().min(1), startedAt: z.number().finite(), cwd:
 export const runMarkerSchema = z.discriminatedUnion("status", [
   z.object({ ...runBase, status: z.literal("active"), pid: z.number().int().positive() }),
   z.object({ ...runBase, status: z.literal("completed"), endedAt: z.number().finite() }),
+  z.object({ ...runBase, status: z.literal("failed"), endedAt: z.number().finite() }),
   z.object({ ...runBase, status: z.literal("interrupted"), endedAt: z.number().finite() }),
 ]);
 export type RunMarker = z.infer<typeof runMarkerSchema>;

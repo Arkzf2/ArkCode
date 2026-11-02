@@ -4,6 +4,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type AgentSession, type AgentSessionEvent, type ModelRuntime,
@@ -88,6 +89,7 @@ export class SessionRuntime {
   private initializing = true;
   private failure = false;
   private interrupted = false;
+  private stopReason: AssistantMessage["stopReason"] | undefined;
   private branch = "No Git";
   private queued: string[] = [];
   private localQueue: string[] = [];
@@ -382,6 +384,7 @@ export class SessionRuntime {
         return;
       case "message_end":
         if (event.message.role === "assistant") {
+          this.stopReason = event.message.stopReason;
           for (const [index, block] of event.message.content.entries()) {
             if (block.type === "thinking" && !block.redacted) this.ui.reasoning(`${this.responseId}:${index}`, cleanOutput(block.thinking), false);
           }
@@ -449,7 +452,7 @@ export class SessionRuntime {
     if (!session) throw new Error("No session.");
     const runId = randomUUID();
     const startedAt = Date.now();
-    this.failure = false; this.interrupted = false;
+    this.failure = false; this.interrupted = false; this.stopReason = undefined;
     this.state = { kind: "running", id: runId, startedAt };
     this.refreshStatus();
     const work = (async () => {
@@ -473,6 +476,20 @@ export class SessionRuntime {
           await session.prompt(expanded, { images: prompt.images });
         }
         await session.waitForIdle();
+        let continuations = 0;
+        while (!this.interrupted && !this.failure && this.stopReason === "length" && continuations < 2) {
+          continuations++;
+          this.ui.message("info", `Response reached the output limit. Continuing (${continuations}/2)...`);
+          if (this.interrupted) break;
+          await session.sendCustomMessage({ customType: "arkcode-output-continuation", display: false,
+            content: "Your previous response reached its output token limit. Continue from where it stopped. Preserve completed work and tool results; do not repeat completed tool calls. Finish the remaining response concisely.",
+          }, { triggerTurn: true });
+          await session.waitForIdle();
+        }
+        if (!this.interrupted && !this.failure && this.stopReason === "length") {
+          this.failure = true;
+          this.ui.message("error", "Response truncated by the output limit after two continuation attempts. Existing output and completed work have been retained.");
+        }
         while (!this.interrupted && this.localQueue.length) {
           const next = this.localQueue.shift();
           if (!next) break;
@@ -489,7 +506,7 @@ export class SessionRuntime {
         try {
           if (session.sessionFile && existsSync(session.sessionFile)) await inspectSession(session.sessionFile, this.cwd);
           else if (session.messages.length > 0) throw new Error("Session file is missing.");
-          if (!this.executionUnconfirmed) await writeRunMarker(this.home, session.sessionId, { status: this.interrupted ? "interrupted" : "completed", runId, startedAt, endedAt: Date.now(), cwd: this.cwd });
+          if (!this.executionUnconfirmed) await writeRunMarker(this.home, session.sessionId, { status: outcome, runId, startedAt, endedAt: Date.now(), cwd: this.cwd });
         } catch (error) {
           this.storageFailed = true;
           this.ui.message("error", `History not saved. ${cleanOutput(error instanceof Error ? error.message : String(error))}`);
@@ -512,7 +529,7 @@ export class SessionRuntime {
     const receipt = await this.shell.execute(command, undefined, (value) => this.ui.tool(value.id, "shell", value.output, "running", { target: cleanOutput(command) }));
     this.ui.tool(receipt.id, "shell", receipt.output + `\nExit code: ${receipt.exitCode ?? "unknown"}`, receipt.status === "completed" ? "done" : "error", { target: cleanOutput(command), ...(receipt.exitCode !== null ? { exitCode: receipt.exitCode } : {}) });
     await this.session?.sendCustomMessage({ customType: "arkcode-shell", content: `User shell command: ${command}\n${receipt.output}\nExit code: ${receipt.exitCode}`, details: receipt, display: true }, { triggerTurn: false });
-    this.failure = receipt.status === "failed";
+    this.failure ||= receipt.status === "failed";
     this.interrupted ||= receipt.status === "cancelled";
   }
   async interrupt(): Promise<void> {
