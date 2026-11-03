@@ -9,6 +9,7 @@
     "dev": "tsx src/cli.ts",
     "build": "node scripts/build.mjs",
     "check": "tsc -p tsconfig.test.json",
+    "schemas:shell": "tsx scripts/shell-schemas.mjs",
     "test": "tsx --test --test-concurrency=4 test/*.test.ts",
     "start": "node dist/cli.js",
     "postinstall": "node scripts/patch-pi-sdk.mjs",

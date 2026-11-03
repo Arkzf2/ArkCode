@@ -14,10 +14,10 @@ Pi 管理模型请求、agent 循环、历史格式、MCP 协议和 CodeMode。A
 | `src/integrations/web-search.ts`、`web-search-usage.ts` | 原生搜索、辅助模型 usage、搜索次数与额外费用统计 |
 | `src/permissions/` | 三种权限策略、审批状态和 shell 风险分析 |
 | `src/session/` | session writer 锁、会话检查、运行标记与分支工具策略快照 |
-| `src/tools/index.ts` | 六个 SDK 工具定义的宿主适配 |
+| `src/tools/index.ts` | 五个 SDK 文件工具适配及两个 shell 工具注册 |
 | `src/tools/mode.ts`、`src/tools/loadout.ts` | 基础工具模式、官方 CodeMode／搜索装配及 compact 后应用策略 |
 | `src/tools/workspace.ts` | 路径、symlink、敏感目录和大小限制 |
-| `src/tools/shell.ts` | 子进程树、取消和执行 receipt |
+| `src/tools/shell.ts` | 运行期 shell 会话、观察、输入、执行期限和进程树取消 |
 | `src/tools/output.ts` | 终端控制字符清理 |
 | `src/tools/output-files.ts` | SDK 大结果文件的会话级精确只读授权 |
 | `src/ui/` | TUI、补全、slash 命令目录及 Git 状态 |
@@ -33,7 +33,7 @@ Pi 管理模型请求、agent 循环、历史格式、MCP 协议和 CodeMode。A
 
 edit/write 继续由 Pi SDK 的模块级文件队列排序，宿主不另建版本检查或合并机制。该队列只覆盖同一进程的同一 SDK 模块实例，不保证跨终端进程排序，也不约束任意 shell 写入。
 
-增加基础工具时，在 `src/tools/index.ts` 定义能力并加入 `TOOL_NAMES`；该集合同时控制白名单和非 MCP 模式范围。审批放在实际执行边界，直接与 CodeMode 调用共用；不能仅通过 UI 或模型提示控制权限。审批 UI 排队展示请求，取消使整代等待请求失效。六个基础工具使用 Pi 默认并行调度，write/edit 复用 SDK 同文件修改队列；MCP 保留 SDK 的执行策略。
+增加基础工具时，在 `src/tools/index.ts` 定义能力并加入 `TOOL_NAMES`；该集合同时控制白名单和非 MCP 模式范围。审批放在实际执行边界，直接与 CodeMode 调用共用；不能仅通过 UI 或模型提示控制权限。审批 UI 排队展示请求，取消使整代等待请求失效。七个基础工具使用 Pi 默认并行调度，write/edit 复用 SDK 同文件修改队列；MCP 保留 SDK 的执行策略。
 
 `SessionToolSettings` 从当前分支读取模式、MCP exposure 快照与首次模型请求状态，新会话使用最新配置；旧会话缺少快照时沿用原有 hybrid 行为。`createToolLoadout()` 保留官方 CodeMode `on`，按基础工具 exposure 实现局部 direct/hybrid/only，并限制官方 `tool_search` 不加载基础工具。尚未请求 LLM 时，首次 run 准备阶段重新应用最新选择。首次请求后，工具策略由 ArkCode compact 暂存并与完整替换历史一起提交，提交前失败恢复旧策略，提交后激活异常阻止请求直到恢复。resume/fork 优先读取当前分支的 ArkCode 检查点策略；仅 legacy 检查点保留原先的初始化兼容路径。
 
@@ -45,7 +45,9 @@ exposure 修改只保存配置；重载时合并当前会话的 exposure 快照�
 
 CodeMode 通过 SDK 的嵌套工具管线调用这些工具。它不会绕过白名单，也没有独立访问操作系统的接口。MCP resources 未接入逐服务审批，因此明确禁用；模型子调用同样禁用。
 
-SDK 截断 MCP/bash/CodeMode 输出时会保存临时文件。宿主只从这些工具的 `fullOutputPath` 结果元数据登记文件，记录真实路径与文件身份，允许本会话的 read 按 offset/limit 读取；write/edit 和其他工作区外文件仍被拒绝。文件被替换后授权失效，授权不随历史恢复。普通文件保留 2 MiB 上限，已登记的大结果文件允许读取最多 64 MiB；更大的结果应在 CodeMode 中先过滤。
+SDK 截断 MCP/CodeMode 输出时会保存临时文件；ArkCode 的 bash/shell_control 在需要时导出完整日志前缀的不可变快照。宿主从这些可信工具的 `fullOutputPath` 元数据登记文件，记录真实路径与文件身份，允许本会话的 read 按 offset/limit 读取；write/edit 和其他工作区外文件仍被拒绝。文件被替换或修改后授权失效，授权不随历史恢复。普通文件保留 2 MiB 上限，已登记文本结果采用有界流式读取，可读取超过 64 MiB 文件中的相关行；二进制辅助读取仍保留 64 MiB 上限。
+
+`ManagedShell` 在当前 agent run 中持有会话，支持跨直接调用与 CodeMode 脚本的 wait/send/stop。观察到期不终止进程；可选 timeout 是独立执行期限。增量位置包含已经省略的输出，后续 wait 不回放。直接预览为 2000 行/50 KiB 尾部，结构化输出为独立 1 MiB 头尾数据；外层 CodeMode 配置不变。运行结束清理进程并使句柄过期，清理未确认时阻止继续执行。`shell-contract.ts` 与 `shell-tools.ts` 定义工具，`shell-output.ts` 与 `shell-context.ts` 管理日志和上下文。完整契约及生成的 schema 见 [shell 控制](shell-control/README.md)。
 
 普通回答明确返回 `length` 时保留原始停止原因和已有输出，宿主在原有工具结果之上最多续写两次，不重放工具。续写仍耗尽时运行和持久标记均为 failed，CLI 返回 1。用户取消时立即停止续写，余额不足和网络错误沿用已有错误及重试路径。空回答和短回答本身不作为截断依据。
 

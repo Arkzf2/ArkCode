@@ -98,8 +98,6 @@ test("a failed shell launch does not silently switch the interpreter", async (t)
   const executable = join(root, "missing-bash.exe");
   const shell = new ManagedShell(root, executable);
   t.after(() => shell.stopAll());
-  const receipt = await shell.execute("echo must-not-run-in-another-shell");
-  assert.equal(receipt.status, "failed");
-  assert.equal(receipt.shell, executable);
+  await assert.rejects(shell.execute("echo must-not-run-in-another-shell"), /The command did not start/);
   assert.equal(shell.executable, executable);
 });

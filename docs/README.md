@@ -8,6 +8,7 @@
 | 开发 | [Pi SDK 补丁维护](development/PI_SDK_PATCH.md) | 安装校验、宿主接口和 SDK 升级要求 |
 | 实施与验证 | [验收记录](implementation/VERIFICATION.md)、[初期计划](implementation/PLAN.md) | 实施流程、验证结果和已知限制 |
 | SDK 迁移 | [Pi 1.5.0 升级](implementation/PI_SDK_1_5_UPGRADE.md)、[原迁移计划](implementation/SDK_MIGRATION.md)、[决策记录](implementation/sdk-migration.tsv) | 当前 SDK 适配与 Pi 1.2.0 历史迁移过程 |
+| Shell 控制 | [bash / shell_control](architecture/shell-control/README.md) | 持续进程、增量输出、输入、停止及生成的工具 schema |
 | 工具模式 | [工具调用模式与会话配置](implementation/TOOL_MODE_PLAN.md) | 非 MCP 三模式、并行审批、MCP 生效时机和会话继承规则 |
 | 压缩重构 | [首版压缩设计](implementation/COMPACTION_DESIGN.md)、[压缩提示](implementation/COMPACT_PROMPT.md) | 已接入的自有 compact 规范，参照 Codex local 与 DSH 工具结果裁剪；历史检索留待后续 |
 | MCP 历史 | [首期接入](implementation/mcp/INITIAL_IMPLEMENTATION.md)、[连接诊断](implementation/mcp/CONNECTION_DIAGNOSIS.md) | 历史方案和故障分析，不代表全部当前行为 |

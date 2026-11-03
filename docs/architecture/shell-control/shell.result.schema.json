@@ -1,0 +1,876 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Programmatic shell result. Direct text uses its independent 2000-line/50-KiB tail preview. CodeMode applies its own limits to script-emitted output.",
+  "anyOf": [
+    {
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "status",
+                "stdin_open"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "const": "running",
+                  "description": "The process has not reached a confirmed terminal state. Continue observing this session with shell_control wait; do not launch the command again."
+                },
+                "stdin_open": {
+                  "type": "boolean"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "status",
+                "stdin_open",
+                "termination_reason",
+                "cleanup"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "const": "stopping"
+                },
+                "stdin_open": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "termination_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "stop"
+                    },
+                    {
+                      "type": "string",
+                      "const": "timeout"
+                    },
+                    {
+                      "type": "string",
+                      "const": "user_interrupt"
+                    }
+                  ]
+                },
+                "cleanup": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "pending"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "failed"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "stdin_open",
+                "exit_code",
+                "signal",
+                "status"
+              ],
+              "properties": {
+                "stdin_open": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "exit_code": {
+                  "type": "number",
+                  "const": 0
+                },
+                "signal": {
+                  "type": "null"
+                },
+                "status": {
+                  "type": "string",
+                  "const": "completed"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "stdin_open",
+                "exit_code",
+                "signal",
+                "status"
+              ],
+              "properties": {
+                "stdin_open": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "exit_code": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "signal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "const": "failed"
+                }
+              },
+              "not": {
+                "properties": {
+                  "exit_code": {
+                    "const": 0
+                  },
+                  "signal": {
+                    "const": null
+                  }
+                },
+                "required": [
+                  "exit_code",
+                  "signal"
+                ]
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "stdin_open",
+                "exit_code",
+                "signal",
+                "status",
+                "termination_reason",
+                "cleanup"
+              ],
+              "properties": {
+                "stdin_open": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "exit_code": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "signal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "const": "cancelled"
+                },
+                "termination_reason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "stop"
+                    },
+                    {
+                      "type": "string",
+                      "const": "user_interrupt"
+                    }
+                  ]
+                },
+                "cleanup": {
+                  "type": "object",
+                  "required": [
+                    "state"
+                  ],
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "const": "confirmed"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "stdin_open",
+                "exit_code",
+                "signal",
+                "status",
+                "termination_reason",
+                "cleanup"
+              ],
+              "properties": {
+                "stdin_open": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "exit_code": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "signal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "const": "timed_out"
+                },
+                "termination_reason": {
+                  "type": "string",
+                  "const": "timeout"
+                },
+                "cleanup": {
+                  "type": "object",
+                  "required": [
+                    "state"
+                  ],
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "const": "confirmed"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "truncated"
+              ],
+              "properties": {
+                "truncated": {
+                  "type": "boolean",
+                  "const": false
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "truncated",
+                "output_file",
+                "truncation"
+              ],
+              "properties": {
+                "truncated": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "output_file": {
+                  "type": "string"
+                },
+                "truncation": {
+                  "type": "object",
+                  "required": [
+                    "mode",
+                    "reason",
+                    "total_lines",
+                    "total_bytes",
+                    "observation_bytes",
+                    "shown_bytes",
+                    "omitted_bytes"
+                  ],
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "const": "head_tail"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "const": "bytes"
+                    },
+                    "total_lines": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "total_bytes": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "observation_bytes": {
+                      "type": "integer",
+                      "minimum": 1048577
+                    },
+                    "shown_bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1048576
+                    },
+                    "omitted_bytes": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "session_id",
+            "output",
+            "wake_reason",
+            "wall_time_seconds"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "session"
+            },
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
+            },
+            "output": {
+              "type": "string",
+              "maxLength": 1048704,
+              "description": "New programmatic output, independently limited to 1 MiB UTF-8 payload plus a bounded omission marker. Direct text uses a separate 2000-line/50-KiB tail preview. Omitted output is never replayed by wait."
+            },
+            "wake_reason": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "exit"
+                },
+                {
+                  "type": "string",
+                  "const": "wait_limit"
+                },
+                {
+                  "type": "string",
+                  "const": "user_steer"
+                },
+                {
+                  "type": "string",
+                  "const": "stop_unconfirmed"
+                },
+                {
+                  "type": "string",
+                  "const": "cleanup_failed"
+                }
+              ],
+              "description": "Why this observation returned. wait_limit leaves the process running and does not mean failure or execution timeout."
+            },
+            "wall_time_seconds": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Actual elapsed time of this bash or shell_control call in seconds, including execution preparation, input delivery, observation and output capture, excluding approval. Not cumulative process lifetime; an already-finished session returns immediately."
+            },
+            "message": {
+              "type": "string",
+              "description": "Host continuation guidance for a running process. A named observation window is the requested wait budget in milliseconds, not measured elapsed time. Use the same session_id rather than launching the command again."
+            },
+            "input": {
+              "type": "object",
+              "required": [
+                "state"
+              ],
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "accepted"
+                }
+              }
+            },
+            "output_lost_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "output_file": {
+              "type": "string"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "error"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "error"
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "invalid_arguments"
+                },
+                {
+                  "type": "string",
+                  "const": "spawn_failed"
+                },
+                {
+                  "type": "string",
+                  "const": "session_not_found"
+                },
+                {
+                  "type": "string",
+                  "const": "session_expired"
+                },
+                {
+                  "type": "string",
+                  "const": "session_limit"
+                },
+                {
+                  "type": "string",
+                  "const": "observation_in_progress"
+                },
+                {
+                  "type": "string",
+                  "const": "stdin_closed"
+                },
+                {
+                  "type": "string",
+                  "const": "process_exited"
+                },
+                {
+                  "type": "string",
+                  "const": "stdin_write_failed"
+                },
+                {
+                  "type": "string",
+                  "const": "permission_denied"
+                },
+                {
+                  "type": "string",
+                  "const": "internal_error"
+                }
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        },
+        "session": {
+          "allOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "stdin_open"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "const": "running",
+                      "description": "The process has not reached a confirmed terminal state. Continue observing this session with shell_control wait; do not launch the command again."
+                    },
+                    "stdin_open": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "stdin_open",
+                    "termination_reason",
+                    "cleanup"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "const": "stopping"
+                    },
+                    "stdin_open": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "termination_reason": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "stop"
+                        },
+                        {
+                          "type": "string",
+                          "const": "timeout"
+                        },
+                        {
+                          "type": "string",
+                          "const": "user_interrupt"
+                        }
+                      ]
+                    },
+                    "cleanup": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "const": "pending"
+                            },
+                            "message": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "const": "failed"
+                            },
+                            "message": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "stdin_open",
+                    "exit_code",
+                    "signal",
+                    "status"
+                  ],
+                  "properties": {
+                    "stdin_open": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "exit_code": {
+                      "type": "number",
+                      "const": 0
+                    },
+                    "signal": {
+                      "type": "null"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "completed"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "stdin_open",
+                    "exit_code",
+                    "signal",
+                    "status"
+                  ],
+                  "properties": {
+                    "stdin_open": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "exit_code": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "signal": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "failed"
+                    }
+                  },
+                  "not": {
+                    "properties": {
+                      "exit_code": {
+                        "const": 0
+                      },
+                      "signal": {
+                        "const": null
+                      }
+                    },
+                    "required": [
+                      "exit_code",
+                      "signal"
+                    ]
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "stdin_open",
+                    "exit_code",
+                    "signal",
+                    "status",
+                    "termination_reason",
+                    "cleanup"
+                  ],
+                  "properties": {
+                    "stdin_open": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "exit_code": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "signal": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "cancelled"
+                    },
+                    "termination_reason": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "stop"
+                        },
+                        {
+                          "type": "string",
+                          "const": "user_interrupt"
+                        }
+                      ]
+                    },
+                    "cleanup": {
+                      "type": "object",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "confirmed"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "stdin_open",
+                    "exit_code",
+                    "signal",
+                    "status",
+                    "termination_reason",
+                    "cleanup"
+                  ],
+                  "properties": {
+                    "stdin_open": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "exit_code": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "signal": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "timed_out"
+                    },
+                    "termination_reason": {
+                      "type": "string",
+                      "const": "timeout"
+                    },
+                    "cleanup": {
+                      "type": "object",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "confirmed"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "object",
+              "required": [
+                "session_id"
+              ],
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
+                }
+              }
+            }
+          ],
+          "unevaluatedProperties": false
+        },
+        "input": {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "accepted"
+                },
+                {
+                  "type": "string",
+                  "const": "not_sent"
+                },
+                {
+                  "type": "string",
+                  "const": "unknown"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

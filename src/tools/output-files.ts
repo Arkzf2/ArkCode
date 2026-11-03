@@ -1,7 +1,8 @@
-import { readFile, realpath, stat } from "node:fs/promises";
+import { readFile, open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
+import { truncateHead } from "@earendil-works/pi-coding-agent";
 
 const outputDetails = z.object({ fullOutputPath: z.string() });
 const key = (path: string) => process.platform === "win32" ? path.toLowerCase() : path;
@@ -11,7 +12,7 @@ export class ToolOutputFiles {
   private readonly files = new Map<string, { path: string; dev: number; ino: number; size: number; mtimeMs: number }>();
 
   async capture(tool: string, details: unknown): Promise<void> {
-    if (tool !== "bash" && tool !== "codemode" && !tool.startsWith("mcp__")) return;
+    if (tool !== "bash" && tool !== "shell_control" && tool !== "codemode" && !tool.startsWith("mcp__")) return;
     const result = outputDetails.safeParse(details);
     if (!result.success || !isAbsolute(result.data.fullOutputPath)) return;
     const path = await realpath(result.data.fullOutputPath);
@@ -38,5 +39,56 @@ export class ToolOutputFiles {
     if (!actual) return undefined;
     if ((await stat(actual)).size > 64 * 1024 * 1024) throw new Error("Tool output exceeds the 64 MiB read limit. Use CodeMode to filter the result before returning it.");
     return readFile(actual);
+  }
+
+  async readText(cwd: string, path: string, options: { offset?: number; limit?: number; signal?: AbortSignal } = {}): Promise<string | undefined> {
+    const actual = await this.resolve(cwd, path);
+    if (!actual) return undefined;
+    const offset = options.offset ?? 1;
+    const limit = options.limit ?? 2000;
+    if (!Number.isSafeInteger(offset) || offset < 1 || !Number.isSafeInteger(limit) || limit < 1) throw new Error("Read offset and limit must be positive integers.");
+    const record = this.files.get(key(resolve(cwd, path)));
+    const file = await open(actual, "r");
+    try {
+      const sameFile = async () => {
+        const info = await file.stat();
+        if (!record || info.dev !== record.dev || info.ino !== record.ino || info.size !== record.size || info.mtimeMs !== record.mtimeMs) throw new Error("Saved tool output changed before reading.");
+      };
+      await sameFile();
+      const stream = file.createReadStream({ encoding: "utf8", highWaterMark: 64 * 1024, autoClose: false });
+      let line = 1;
+      let selected = "";
+      let bytes = 0;
+      let stopped = false;
+      try {
+        for await (const chunk of stream) {
+          options.signal?.throwIfAborted();
+          const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+          let start = 0;
+          while (start < text.length) {
+            const newline = text.indexOf("\n", start);
+            const end = newline < 0 ? text.length : newline + 1;
+            if (line >= offset) {
+              if (line >= offset + limit) { stopped = true; break; }
+              const fragment = text.slice(start, end);
+              const room = 65536 - bytes;
+              const safe = new TextDecoder().decode(Buffer.from(fragment).subarray(0, room), { stream: true });
+              selected += safe; bytes += Buffer.byteLength(safe);
+              if (Buffer.byteLength(fragment) > room) { stopped = true; break; }
+            }
+            if (newline >= 0) line++;
+            start = end;
+          }
+          if (stopped) break;
+        }
+      } finally { stream.destroy(); }
+      options.signal?.throwIfAborted();
+      await sameFile(); await this.resolve(cwd, path);
+      if (line < offset) throw new Error(`Offset ${offset} is beyond end of saved file.`);
+      const preview = truncateHead(selected);
+      if (preview.firstLineExceedsLimit) return `[Line ${offset} exceeds 50 KiB. Use bash to extract or filter the relevant portion of this saved file: ${actual}]`;
+      const shown = preview.outputLines;
+      return preview.content + (stopped || preview.truncated ? `\n\n[Showing saved-file lines starting at ${offset}. Use offset=${offset + shown} if more detail is needed.]` : "");
+    } finally { await file.close(); }
   }
 }

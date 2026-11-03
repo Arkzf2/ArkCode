@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Wait for, send input to, or stop an existing shell session, returning newly collected output and current process status. Already-finished sessions return immediately; wait never forces a finished process to wait out the budget. wall_time_seconds reports this call's actual elapsed seconds, not cumulative process lifetime. Model-facing text shows at most the last 2000 lines or 50 KiB, whichever limit is reached first; truncated output is saved to a file. Programmatic callers receive independently bounded structured output. Later calls do not replay content omitted from earlier responses. Use action \"wait\" to observe the session, \"send\" to write exact input and optionally close stdin, or \"stop\" to request process-tree cancellation. Status \"stopping\" does not confirm termination.",
+  "anyOf": [
+    {
+      "type": "object",
+      "required": [
+        "action",
+        "session_id"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "wait",
+          "description": "Observe until exit, observation expiry, or user steering. Return new output; never replay earlier omitted logs."
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 10000,
+          "maximum": 300000,
+          "default": 10000,
+          "description": "Observation budget in integer milliseconds, default 10000, range 10000 to 300000. Earlier exit and finished sessions return earlier. Expiry never stops the process."
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "action",
+        "session_id"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "send",
+          "description": "Write exact input, optionally close stdin, then observe. Requires nonempty data or eof true."
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 65536,
+          "description": "Exact UTF-8 input, at most 65536 bytes. No trimming or appended newline. Include \\n when required."
+        },
+        "eof": {
+          "type": "boolean",
+          "default": false,
+          "description": "After optional data, permanently close stdin. Can be true without data. EOF is not process termination or Ctrl+C."
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 500,
+          "maximum": 60000,
+          "default": 500,
+          "description": "Observation budget after input delivery, in integer milliseconds, default 500, range 500 to 60000. Earlier exit returns earlier."
+        }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "data"
+          ],
+          "properties": {
+            "data": {
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "eof"
+          ],
+          "properties": {
+            "eof": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "required": [
+        "action",
+        "session_id"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "stop",
+          "description": "Immediately request process-tree cancellation. The host briefly confirms cleanup and returns its confirmed state or stopping. stopping does not confirm termination."
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "type": "object"
+}

@@ -3,12 +3,12 @@ import type { ToolMode } from "../tools/mode.js";
 
 const builtinPrompts = {
   direct: `Built-in tool mode: direct.
-Call read, write, edit, grep, glob, and bash directly using their tool declarations. These built-in tools are unavailable inside codemode scripts. A codemode tool provided for MCP does not change how you call the built-in tools.`,
+Call read, write, edit, grep, glob, bash, and shell_control directly using their tool declarations. These built-in tools are unavailable inside codemode scripts. A codemode tool provided for MCP does not change how you call the built-in tools.`,
   codemode: `Built-in tool mode: codemode.
-You can call read, write, edit, grep, glob, and bash directly or through tools.<name>() in codemode. Use direct calls for simple operations. Prefer codemode to batch independent calls, chain dependent operations, or filter large results before returning them to the conversation.
+You can call read, write, edit, grep, glob, bash, and shell_control directly or through tools.<name>() in codemode. Use direct calls for simple operations. Prefer codemode to batch independent calls, chain dependent operations, or filter large results before returning them to the conversation.
 Await every tool call. For independent calls, use Promise.allSettled and inspect every result. Keep dependent operations and conflicting writes sequential. Return the evidence needed for the task with text(), image(), or a top-level return.`,
   "codemode-only": `Built-in tool mode: codemode-only.
-Access read, write, edit, grep, glob, and bash through tools.<name>() inside codemode. These built-in tools have no direct tool declarations; tool_search does not activate them. This restriction applies to built-in tools; MCP tools follow their own exposure modes.
+Access read, write, edit, grep, glob, bash, and shell_control through tools.<name>() inside codemode. These built-in tools have no direct tool declarations; tool_search does not activate them. This restriction applies to built-in tools; MCP tools follow their own exposure modes.
 Await every tool call. For independent calls, use Promise.allSettled and inspect every result. Keep dependent operations and conflicting writes sequential. Filter large results in the script and return the evidence needed for the task with text(), image(), or a top-level return.`,
 } satisfies Record<ToolMode, string>;
 

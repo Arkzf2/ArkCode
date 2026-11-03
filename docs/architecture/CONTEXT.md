@@ -1,6 +1,6 @@
 # ArkCode 静态与动态上下文机制
 
-本文记录当前实现，更新于 2026-11-02。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。compact 由 ArkCode 重建检查点并替换模型可见历史。
+本文记录当前实现，更新于 2026-11-03。ArkCode 使用稳定的 system 行为准则、按会话策略声明的工具和追加式动态上下文构造对话请求。动态信息更新时保留已有消息，便于模型供应商复用相同的请求前缀。compact 由 ArkCode 重建检查点并替换模型可见历史。
 
 ## 请求由哪些部分组成
 
@@ -13,6 +13,7 @@
 | 工具声明 | 基础工具、CodeMode／搜索入口与 MCP 的名称、描述及参数 schema | 由 Pi 按实际协议序列化 | 模式在新会话／成功 compact 更新；MCP 发现与目录变化按运行时处理；权限切换不改变声明 |
 | 对话历史 | 用户输入、模型回答、工具调用及结果、compact 摘要 | Pi 会话历史的有效投影 | 随对话追加，compact 可改变模型可见的历史 |
 | 动态上下文 | 环境信息、全局 AGENTS.md 及可信项目 AGENTS.md | 内部隐藏 custom 消息，发送前转换为 user role | 每次对话模型请求准备时检查，仅有变化时追加 |
+| Shell 会话 | 当前 run 的有效句柄、状态、已披露文件和未交付的结束通知 | `arkcode-shell-sessions` 隐藏 custom 消息 | 请求准备时检查；compact 替换历史后重新补入，不消费输出，不唤醒空闲模型 |
 | Skills 目录 | 已启用且允许自动选择的 Skill 名称、描述与路径 | Pi system prompt 的 skills 段 | 每个 agent run 开始时按当前启停配置重建 |
 | 明确选择的 Skill | `/skill:name` 或 `@skill:name` 对应正文 | 激活说明与 `<skill-loaded>` 块，随用户消息持久化 | 提交或入队时读取快照 |
 
@@ -38,7 +39,7 @@ ArkCode 不加载项目 prompt templates、主题或扩展。Skills、工具装�
 - Tool use：专用文件工具优先，独立调用并行，依赖和冲突写入串行；用户拒绝调用后调整方案。
 - Response formatting：Markdown、本地文件链接和列表空行等输出约定。
 
-静态正文保留面向未来 Web/桌面端的进度消息折叠约定，并不表示当前终端已经实现折叠。六个基础工具的注册名称已统一为 `read`、`write`、`edit`、`grep`、`glob`、`bash`。脚本环境说明、参数 schema 和生成的工具目录继续位于 SDK 的工具描述中。
+静态正文保留面向未来 Web/桌面端的进度消息折叠约定，并不表示当前终端已经实现折叠。七个基础工具为 `read`、`write`、`edit`、`grep`、`glob`、`bash`、`shell_control`。脚本环境说明、参数 schema 和生成的工具目录继续位于 SDK 的工具描述中。
 
 `createResources()` 提供这段文本，其 `getAgentsFiles()` 始终返回空集合，避免 AGENTS.md 同时进入 system prompt。动态机制通过独立的 `InstructionsLoader` 读取全局与可信项目指令。
 
@@ -193,7 +194,7 @@ Pi 的消息转换器将该 custom 消息转换为供应商请求中的 `user` r
 | fork | 使用分支保留的有效消息确定基线，首次请求重新采集当前信息；不重放工具 |
 | 切换工作区 | 创建对应 AgentSession，使用新的 cwd、shell、信任状态和当前信息 |
 | 手动或自动 compact | 检查点直接重建完整上下文锚点，下一次请求只对比并追加真正变化的差量 |
-| 权限模式切换 | 只更新执行时的审批策略，不添加权限 prompt，不改变六工具声明 |
+| 权限模式切换 | 只更新执行时的审批策略，不添加权限 prompt，不改变基础工具声明 |
 
 `contextUpdate()` 只相信模型当前有效历史中的 `arkcode-context` 消息及通过 schema 验证的元数据。它从完整 `full` 消息建立基线，然后接受其后的 `diff` 快照；如果只剩差量而没有完整锚点，必须重新注入完整内容。
 
@@ -205,7 +206,7 @@ ArkCode 的 `src/compaction/` 负责压缩。最近最多 20k 估算 token 的�
 
 ## 权限与 prompt cache
 
-六个工具始终注册。Always Ask、Ask When Needed、Never Ask 的差别由 `ApprovalBroker` 与宿主执行入口处理，模型使用相同工具声明。静态 prompt 要求模型直接提交所需调用，宿主决定自动批准、询问或拒绝，模型不得绕过拒绝。
+七个工具始终注册。Always Ask、Ask When Needed、Never Ask 的差别由 `ApprovalBroker` 与宿主执行入口处理，模型使用相同工具声明。静态 prompt 要求模型直接提交所需调用，宿主决定自动批准、询问或拒绝，模型不得绕过拒绝。shell_control 的 wait/stop 仅操作当前 run 所属会话；send 的输入审批独立于启动审批。
 
 缓存设计的目标是保留供应商可以复用的相同前缀：
 
@@ -226,7 +227,8 @@ compact 会重组有效历史，因此完整对话前缀不再保持。新工作
 | `src/context/dynamic.ts` | 快照 schema、完整/差量渲染、隐藏持久消息、请求注入和检查点完整基线采集 |
 | `src/compaction/` | 用户原文来源、摘要、预算、裁剪、检查点提交和恢复 |
 | `src/app/host.ts` | 会话安装、隐藏历史过滤、执行恢复限制 |
-| `src/tools/index.ts`、`src/permissions/approval.ts` | 六工具声明及执行时审批 |
+| `src/tools/index.ts`、`src/permissions/approval.ts` | 基础工具声明及执行时审批 |
+| `src/tools/shell-contract.ts`、`src/tools/shell-context.ts` | Shell 使用指南、会话清单及不消费输出的结束通知 |
 | `test/context.test.ts` | 跨日、差量、完整锚点丢失与取消行为 |
 | `test/instructions.test.ts` | 规则顺序、递归作用域、大小、信任、链接、读取失败、配置和删除刷新 |
 | `test/runtime.test.ts` | 本地模型请求中的 user role、前缀一致性、隐藏历史、AGENTS.md 修改/删除、恢复/fork/新会话、手动/自动 compact |

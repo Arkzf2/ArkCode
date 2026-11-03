@@ -860,6 +860,7 @@ export class TerminalUI implements UserInterface {
     else if (status.state.outcome === "failed") rows.push("Failed");
     else rows.push(status.state.outcome === "completed" ? "Completed" : "Ready");
     if (status.queued.length) rows.push(...status.queued.map((item) => `Queued · ${sanitizeTerminalText(item)}`));
+    if (status.shellSessions) rows.push(`Shell sessions · ${status.shellSessions} running or stopping`);
     const background = status.backgroundSessions?.filter((item) => item.state === "working" || item.state === "needs-you") ?? [];
     if (background.length) rows.push(`Background · ${background.map((item) => `${sanitizeTerminalText(item.title)} (${item.state === "needs-you" ? "approval needed" : "working"})`).join(" · ")} · Left / /sessions to switch`);
     return rows.flatMap((row) => wrapTextWithAnsi(dim(row), Math.max(1, width - 4)).map((line) => `  ${line}`));

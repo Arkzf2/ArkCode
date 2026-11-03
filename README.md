@@ -71,7 +71,7 @@ arkcode --model local/my-model
 | Ask When Needed (`ask-when-needed`) | 普通 write/edit/bash 自动允许，高危命令询问；MCP 默认询问，用户级 `autoApproveTools` 中的工具可自动批准，服务标记为 destructive 的工具仍询问 |
 | Never Ask (`never-ask`) | 使用当前用户的 OS 权限执行，内建工具和 MCP 不等待调用审批；仍遵守服务器启用状态、工具过滤、viewer 和恢复保护 |
 
-六个内建工具 `read`、`write`、`edit`、`grep`、`glob`、`bash` 在三种权限模式中都可使用，暴露形式由 `/tool-mode` 决定。MCP 工具由已连接服务器的当前目录动态注册，名称为 `mcp__<server>__<tool>`，清洗或超长名称加 hash。权限切换不会改变工具 schema。原 `find` 改名为 `glob`，原 `ls` 工具删除；目录列表使用 bash。`bash` 是固定工具名，Windows 优先运行 Git Bash，否则运行 PowerShell。工具描述、系统提示词和环境上下文同步提供实际 shell 及对应语法；恢复会话时以当前发现结果为准。Always Ask 对当前 shell 的独立目录列表提供豁免，Bash 使用 `ls`，PowerShell 使用 `Get-ChildItem` 或其 `ls` 别名；重定向、管道、命令替换和串联命令不属于列表豁免。
+七个内建工具 `read`、`write`、`edit`、`grep`、`glob`、`bash`、`shell_control` 在三种权限模式中都可使用，暴露形式由 `/tool-mode` 决定。MCP 工具由已连接服务器的当前目录动态注册，名称为 `mcp__<server>__<tool>`，清洗或超长名称加 hash。权限切换不会改变工具 schema。原 `find` 改名为 `glob`，原 `ls` 工具删除；目录列表使用 bash。`bash` 是固定工具名，Windows 优先运行 Git Bash，否则运行 PowerShell。工具描述、系统提示词和环境上下文同步提供实际 shell 及对应语法；恢复会话时以当前发现结果为准。Always Ask 对当前 shell 的独立目录列表提供豁免，Bash 使用 `ls`，PowerShell 使用 `Get-ChildItem` 或其 `ls` 别名；重定向、管道、命令替换和串联命令不属于列表豁免。
 
 未信任目录跳过项目 AGENTS.md，保留全局规则，默认 Always Ask；显式 CLI 权限仍生效。通过 `/permissions` 选择的模式会保存，下次启动自动恢复；`--permissions always-ask/ask-when-needed/never-ask` 可覆盖当次启动的模式。旧 `ask`、`full-access` 和 `--full-access` 仍映射到相应新模式；旧 `read-only` 配置及 `--read-only` 会报错，要求明确选择新模式。
 
@@ -141,7 +141,7 @@ MCP 使用 Pi 1.5.0 的高层扩展，负责连接、OAuth、工具命名、目�
 
 官方 `codemode` 工具使用 QuickJS 执行 JavaScript。脚本内用 `searchTools()`、`describeTool()` 发现工具，用 `tools.<name>(...)` 调用；`text()` 输出，`store()` / `load()` 在会话分支中保存 JSON 数据。没有额外的 exec/wait 后台单元机制。
 
-`/tool-mode` 打开临时子菜单，仅在这里显示 Current 和有变化时的 Pending。支持 `direct`（六个基础工具仅直接调用）、`codemode`（直接与脚本调用，默认）、`codemode-only`（仅脚本调用）；也可用 `/tool-mode <mode>` 保存设置。菜单和命令不进入聊天或输入历史。MCP exposure 独立配置，基础工具的 only 模式仍可保留 MCP direct 工具。只有基础工具和当前 MCP 策略需要时才声明 CodeMode／工具搜索入口。
+`/tool-mode` 打开临时子菜单，仅在这里显示 Current 和有变化时的 Pending。支持 `direct`（七个基础工具仅直接调用）、`codemode`（直接与脚本调用，默认）、`codemode-only`（仅脚本调用）；也可用 `/tool-mode <mode>` 保存设置。菜单和命令不进入聊天或输入历史。MCP exposure 独立配置，基础工具的 only 模式仍可保留 MCP direct 工具。只有基础工具和当前 MCP 策略需要时才声明 CodeMode／工具搜索入口。
 
 新会话首次 LLM 请求前可反复修改模式，首次请求使用最新选择并同步拼接 system prompt。首次请求后，模式修改在新会话或手动、自动 compact 成功后生效。resume 和 fork 保留所在分支的策略及是否请求过 LLM 的状态；fork 后成功 compact 可应用最新设置。compact 取消或失败保留已请求会话的旧策略。策略快照只保存工具模式和 MCP exposure，不保存凭据或执行命令；首次请求状态另行保存，两者都不发送给模型。MCP 按需发现及真实服务端工具目录变化仍可在会话内发生。新增声明复用 Pi 的协议能力；工具卸载同时停止执行并追加隐藏通知，不承诺所有协议都能保留缓存。
 
@@ -151,11 +151,13 @@ MCP 使用 Pi 1.5.0 的高层扩展，负责连接、OAuth、工具命名、目�
 
 `/web-search status` 查看当前模型的验证状态，`/web-search check` 发出一次真实搜索验证，可能产生供应商费用；`on` / `off` 保存启停设置，并在下次对话生效。默认启用，可在 `settings.json` 设置 `"webSearch": false`。兼容端点在首次实际搜索时验证，必须返回成功的服务端搜索记录，不能只返回普通文本。能力记录仅保留在当前进程中，按端点、协议、模型及凭据身份区分；明确不支持后隐藏工具，可用 `check` 重新验证。限流、鉴权、超时和服务端执行错误不会被记作永久不支持。搜索格式被代理接受不代表它支持所有其他内置工具。
 
-六个基础工具复用 Pi 的并行调度；write/edit 对同一文件的修改排队，不同文件可以并行。审批界面逐项展示，通过后的独立调用可并行执行。读后编辑、同仓库 Git 修改等有依赖的操作仍应按顺序调用；bash 不受文件工具的同文件队列保护。
+七个基础工具复用 Pi 的并行调度；write/edit 对同一文件的修改排队，不同文件可以并行。审批界面逐项展示，通过后的独立调用可并行执行。读后编辑、同仓库 Git 修改等有依赖的操作仍应按顺序调用；bash 不受文件工具的同文件队列保护。
 
 脚本没有直接 Node、文件系统或网络能力，模型子调用也已关闭。每个嵌套调用经过与直接调用相同的审批和恢复保护；`Promise.all` 中需要审批的调用也会逐项展示审批。中断信号传入嵌套调用，会话历史保存嵌套调用的名称、参数和状态；恢复不重放操作，compact 继续跟踪其文件路径。
 
-read、write、edit、grep、glob、bash 复用 Pi SDK 工具定义，宿主仅保留路径保护、审批和进程管理适配。read 支持图片，文本采用 SDK 输出格式。edit 使用 `edits: [{oldText,newText}]`，SDK 仍接受旧的单段参数。grep 使用 rg 的正则及 gitignore 行为，排除元数据、凭据与依赖目录，跳过超过 2 MiB 的文件。glob 保留安全目录遍历，超过 10000 个文件明确报错并要求缩小路径。bash 按已选择的 shell 执行，Windows 优先 Git Bash，PowerShell 回退保留 UTF-8 编码设置。取消调用的工具退出码为 130，原始进程退出码保留在 receipt 中。
+read、write、edit、grep、glob 复用 Pi SDK 工具定义，宿主保留路径保护和审批。read 支持图片；授权的大输出文本文件支持按行分段读取。edit 使用 `edits: [{oldText,newText}]`，SDK 仍接受旧的单段参数。grep 使用 rg 的正则及 gitignore 行为，排除元数据、凭据与依赖目录，跳过超过 2 MiB 的文件。glob 保留安全目录遍历，超过 10000 个文件明确报错并要求缩小路径。
+
+bash 和 shell_control 由 ArkCode 管理持续进程，沿用所选 Pi shell 的基础描述。bash 默认观察 10 秒，可设 10–60 秒；仍运行时返回短 session_id 和明确的继续等待提示。shell_control 的 wait 默认 10 秒，可设 10–300 秒；send 默认观察 0.5 秒，可设 0.5–60 秒；stop 无等待参数，立即请求进程树取消，由宿主短暂确认清理。提前结束会提前返回，已完成会话立即返回，观察到期不停止进程。`wall_time_seconds` 仅表示本次调用实际耗时，单位秒；到期提示中的毫秒数表示请求的观察窗口。后续结果只包含新增输出；直接文本最多保留最后 2000 行或 50 KiB，截断时提供完整日志的不可变快照路径。CodeMode 的结构化数据和脚本输出各自遵守独立上限。会话跨工具调用和脚本保留，当前 agent run 结束时清理。结果保留真实退出码与信号，不合成 130。输入默认关闭，需要后续输入时显式选择 `stdin: "pipe"`；send 的审批独立于启动审批。详见 [工具契约与 schema](docs/architecture/shell-control/README.md)。
 
 安装、开发、检查及构建时会运行固定版本的 [SDK 接入补丁](docs/development/PI_SDK_PATCH.md)。补丁补充宿主生命周期、审批、凭据目录和搜索限制接口，校验 SDK 版本与文件 SHA-256，遇到不匹配立即失败。升级 Pi 时需要审查并删去上游已提供的补丁。源码分层与验证入口见 [架构说明](docs/architecture/ARCHITECTURE.md)，全部项目文档见 [文档目录](docs/README.md)。外部项目研究按主题保存在被 Git 忽略的 `research/`。
 

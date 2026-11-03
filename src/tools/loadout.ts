@@ -5,6 +5,7 @@ import type { McpManager } from "../integrations/mcp/manager.js";
 import { TOOL_NAMES } from "./index.js";
 import { builtinExposure } from "./mode.js";
 import { builtinToolModePrompt, mcpToolModesPrompt } from "../context/tool-modes.js";
+import { shellGuidance } from "./shell-contract.js";
 
 export function createToolLoadout(options: {
   settings: SessionToolSettings; tools: () => ToolDefinition[]; mcp: McpManager; shell: () => string; shellInstructions: () => string; resetApprovals: () => void;
@@ -81,7 +82,7 @@ export function createToolLoadout(options: {
       activate(); restored = [];
       event.systemPromptOptions.sectionProviders.builtin_tool_mode = () => builtinToolModePrompt(settings.current.toolMode);
       event.systemPromptOptions.sectionProviders.mcp_tool_modes = () => mcpToolModesPrompt(mcp.exposures());
-      event.systemPromptOptions.sectionProviders.shell_environment = options.shellInstructions;
+      event.systemPromptOptions.sectionProviders.shell_environment = () => `${options.shellInstructions()}\n\n${shellGuidance}`;
     });
     pi.on("before_provider_request", () => { settings.markRequested(); });
   };

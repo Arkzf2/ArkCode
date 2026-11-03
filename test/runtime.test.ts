@@ -820,9 +820,9 @@ for (const mode of ["direct", "codemode", "codemode-only"]) {
     let current = defaultShell;
     const powershell = resolveShell({ executable: "powershell.exe" });
     t.mock.getter(ManagedShell.prototype, "configuration", () => current);
-    const execute = ManagedShell.prototype.execute;
+    const execute = ManagedShell.prototype.launch;
     let completed = 0;
-    t.mock.method(ManagedShell.prototype, "execute", async function (this: ManagedShell, ...args: Parameters<ManagedShell["execute"]>) {
+    t.mock.method(ManagedShell.prototype, "launch", async function (this: ManagedShell, ...args: Parameters<ManagedShell["launch"]>) {
       const result = await execute.apply(this, args);
       completed++;
       current = completed === 1 ? powershell : defaultShell;
@@ -1361,7 +1361,7 @@ for (const permission of ["always-ask", "ask-when-needed", "never-ask"]) {
     await writeFile(join(f.home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { exposure: "direct", url: mcp.url, disabledTools: ["hidden"] } } }));
     const { host, ui } = await f.start(new RecordingUI(async () => "deny"), ["--permissions", permission]);
     await host.submit("Use the MCP echo tool.");
-    assert.deepEqual(f.requests[0]?.tools?.map(({ function: tool }) => tool.name), ["read", "write", "edit", "grep", "glob", "bash", "codemode", "mcp__fixture__echo"]);
+    assert.deepEqual(f.requests[0]?.tools?.map(({ function: tool }) => tool.name), [...TOOL_NAMES, "codemode", "mcp__fixture__echo"]);
     assert.equal(ui.approvals.length, permission === "never-ask" ? 0 : 1);
     assert.equal(mcp.calls.length, permission === "never-ask" ? 1 : 0);
     if (permission !== "never-ask") {
@@ -2057,6 +2057,97 @@ test("actual provider reasoning reaches the transcript with a stable identity an
   assert.equal(f.requests.length, 1);
 });
 
+for (const mode of ["direct", "codemode", "codemode-only"]) {
+  test(`shell_control shares sessions across tool calls in ${mode} mode`, { timeout: 60000 }, async (t) => {
+    let sessionId = "";
+    const command = `node -e "process.stdin.setEncoding('utf8');console.log('READY');process.stdin.on('data',d=>process.stdout.write('INPUT:'+d));process.stdin.on('end',()=>setTimeout(()=>{console.log('EOF');process.exit(0)},800));"`;
+    const call = (name: string, args: Record<string, unknown>): ToolReply => mode === "codemode-only" || mode === "codemode" && name === "shell_control"
+      ? { kind: "tool", name: "codemode", arguments: { code: `text(await tools.${name}(${JSON.stringify(args)}));` } }
+      : { kind: "tool", name, arguments: args };
+    const f = await fixture(t, (request, index) => {
+      const latest = request.messages.findLast(message => message.role === "tool")?.content;
+      const output = typeof latest === "string" ? latest : JSON.stringify(latest);
+      if (index === 0) return call("bash", { command, stdin: "pipe" });
+      if (index === 1) {
+        assert.match(output, /running/); assert.match(output, /READY/);
+        assert.match(output, /10000ms observation window/);
+        assert.match(output, /(?:wall_time_seconds|Wall time:)/);
+        assert.doesNotMatch(output, /waited_ms|elapsed_ms/);
+        const match = output.match(/(?:Session: |"session_id"\s*:\s*")(sh_[a-f0-9]{8})/);
+        assert.ok(match?.[1], output); sessionId = match[1];
+        return call("shell_control", { action: "send", session_id: sessionId, data: "中文🙂\n" });
+      }
+      if (index === 2) {
+        assert.match(output, /INPUT:中文🙂/); assert.doesNotMatch(output, /READY/);
+        assert.match(output, /accepted/);
+        assert.ok(request.messages.some(message => JSON.stringify(message.content).includes("Host shell-session state")));
+        return call("shell_control", { action: "send", session_id: sessionId, eof: true });
+      }
+      if (index === 3) return call("shell_control", { action: "wait", session_id: sessionId });
+      if (index === 4) {
+        assert.match(output, /completed/); assert.doesNotMatch(output, /INPUT:中文🙂/);
+        return call("shell_control", { action: "stop", session_id: sessionId });
+      }
+      if (index === 6) return call("shell_control", { action: "wait", session_id: sessionId });
+      if (index === 7) {
+        assert.match(output, /session_expired/);
+        return { kind: "text", text: "The previous run's handle has expired." };
+      }
+      assert.equal(index, 5); assert.match(output, /completed/);
+      return { kind: "text", text: "Input and EOF completed in the same shell session." };
+    });
+    await writeFile(join(f.home, "settings.json"), JSON.stringify({ ...loadConfig(f.home), toolMode: mode }));
+    const { host, ui } = await f.start(new RecordingUI(async () => "session"), ["--permissions", "always-ask"]);
+    await host.submit("Start the worker, send a line, close its input, and collect its result.");
+    assert.equal(host.outcome, "completed");
+    assert.equal(f.requests.length, 6);
+    assert.equal(ui.approvals.length, 3);
+    assert.deepEqual(ui.approvals.map(request => request.invocation?.kind), ["shell", "shell_control", "shell_control"]);
+    assert.ok(ui.statuses.some(status => (status.shellSessions ?? 0) > 0));
+    assert.equal(ui.statuses.at(-1)?.shellSessions, 0);
+    await host.submit("Check that the previous run's shell handle has expired.");
+    assert.equal(f.requests.length, 8);
+    assert.equal(ui.approvals.length, 3);
+  });
+}
+
+test("automatic compact restores the live shell inventory before the next model request", { timeout: 60000 }, async (t) => {
+  let launched = false;
+  let compacted = false;
+  let sent = false;
+  let reads = 0;
+  let sessionId = "";
+  const f = await fixture(t, (request) => {
+    if (isCompactRequest(request)) {
+      compacted = true;
+      return { kind: "text", text: "The large file was inspected. Close the active worker's input and collect its result." };
+    }
+    if (!launched) {
+      launched = true;
+      return { kind: "tool", name: "bash", arguments: { command: `node -e "console.log('READY');process.stdin.resume();process.stdin.on('end',()=>process.exit(0));"`, stdin: "pipe" } };
+    }
+    if (!sessionId) {
+      const match = JSON.stringify(request.messages).match(/Session: (sh_[a-f0-9]{8})/);
+      assert.ok(match?.[1]); sessionId = match[1];
+    }
+    if (reads < 2) return { kind: "tool", name: "read", arguments: { path: "large.txt", offset: reads++ * 2000 + 1, limit: 2000 } };
+    if (!sent) {
+      assert.equal(compacted, true);
+      assert.ok(request.messages.some(message => JSON.stringify(message.content).includes("Host shell-session state") && JSON.stringify(message.content).includes(sessionId)));
+      sent = true;
+      return { kind: "tool", name: "shell_control", arguments: { action: "send", session_id: sessionId, eof: true } };
+    }
+    return { kind: "text", text: "The original worker completed after compaction." };
+  }, false, 53000);
+  await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
+  const { host, ui } = await f.start();
+  await host.submit("Start a worker, inspect the large file, then finish the worker.");
+  assert.equal(host.outcome, "completed", JSON.stringify(ui.messages.filter(message => message.kind === "error")));
+  assert.equal(sent, true);
+  assert.equal(compacted, true);
+  assert.ok(ui.tools.some(tool => tool.name === "shell_control" && tool.state === "done" && tool.text.includes("completed")));
+});
+
 test("failed shell receipts retain the exit code in the TUI and restored history", { timeout: 30000 }, async (t) => {
   const command = 'node -e "process.exit(9)"';
   const f = await fixture(t, (_request, index) => index === 0
@@ -2066,8 +2157,8 @@ test("failed shell receipts retain the exit code in the TUI and restored history
   await host.submit("Run the diagnostic command.");
   const failed = ui.tools.findLast((tool) => tool.state === "error");
   assert.equal(failed?.details?.exitCode, 9);
-  assert.match(failed?.text ?? "", /exited with code 9/);
-  assert.ok(f.requests.at(-1)?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("exited with code 9")));
+  assert.match(failed?.text ?? "", /Exit code: 9/);
+  assert.ok(f.requests.at(-1)?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("Exit code: 9")));
   await host.exit();
   const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
   assert.deepEqual(resumed.ui.tools.findLast((tool) => tool.state === "error")?.details, { target: command, exitCode: 9 });
@@ -2127,7 +2218,7 @@ test("denied writes return a tool error and the agent can continue", { timeout: 
   assert.equal(host.outcome, "completed");
 });
 
-test("unconfirmed agents retain six tools but can only inspect files", { timeout: 30000 }, async (t) => {
+test("unconfirmed agents retain built-in tools but can only inspect files", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => {
     if (index === 0) return { kind: "tool", name: "read", arguments: { path: "input.txt" } };
     if (index === 1) return { kind: "tool", name: "write", arguments: { path: "denied.txt", content: "must not exist" } };
@@ -2146,7 +2237,7 @@ test("unconfirmed agents retain six tools but can only inspect files", { timeout
   assert.ok(ui.tools.some((tool) => tool.name === "write" && tool.state === "error"));
   await assert.rejects(readFile(join(f.cwd, "denied.txt")), { code: "ENOENT" });
   assert.equal(ui.answers.at(-1), "Inspection complete. Writing unavailable.");
-  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), ["bash", "codemode", "edit", "glob", "grep", "read", "write"]);
+  assert.deepEqual(f.requests[0]?.tools?.map((tool) => tool.function.name).sort(), [...TOOL_NAMES, "codemode"].sort());
 });
 
 test("steering and follow-up inputs are consumed by the real agent queue", { timeout: 30000 }, async (t) => {
@@ -2524,7 +2615,7 @@ test("permission modes keep the same tool schemas and append-only hidden context
   const { host, ui } = await f.start(new RecordingUI(), ["--permissions", "always-ask"]);
   await host.submit("First task");
   const first = f.requests[0]; assert.ok(first);
-  assert.deepEqual(first.tools?.map((tool) => tool.function.name), ["read", "write", "edit", "grep", "glob", "bash", "codemode"]);
+  assert.deepEqual(first.tools?.map((tool) => tool.function.name), [...TOOL_NAMES, "codemode"]);
   const context = first.messages.filter((message) => JSON.stringify(message.content).includes("<environment_context>"));
   assert.equal(context.length, 1);
   assert.equal(context[0]?.role, "user");

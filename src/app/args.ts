@@ -65,9 +65,9 @@ Usage: arkcode [options] [prompt]
       --home PATH         ArkCode configuration directory
   -h, --help              Show help
 
-Six built-in tools remain available in every approval mode; connected MCP tools are exposed dynamically.
-Always Ask allows workspace reading/search and plain ls; other actions and MCP calls need approval.
-Ask When Needed allows ordinary built-in actions; dangerous commands and MCP tools without user auto-approval ask.
+Seven built-in tools remain available in every approval mode; connected MCP tools are exposed dynamically.
+Always Ask allows workspace reading/search, plain ls, and shell wait/stop; other actions and MCP calls need approval.
+Ask When Needed allows ordinary built-in actions; dangerous commands, shell input, and MCP tools without user auto-approval ask.
 Never Ask runs without tool approval. Untrusted directories skip project AGENTS.md, Skills, and MCP; user configuration still applies.
 Use /connect to configure a Pi provider or custom endpoint.
 Use /mcp to inspect servers and tools, reload configuration, reconnect, or enable/disable servers.

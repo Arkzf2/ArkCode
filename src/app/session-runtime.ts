@@ -6,7 +6,7 @@ import { z } from "zod";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
-  createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
+  createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, truncateTail,
   type AgentSession, type AgentSessionEvent, type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { ApprovalBroker } from "../permissions/approval.js";
@@ -24,6 +24,7 @@ import { slashCommands } from "../ui/commands.js";
 import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig, type ConnectionRequest } from "../config/settings.js";
 import { SessionLease, inspectSession, readRunMarker, writeRunMarker } from "../session/storage.js";
 import { ManagedShell } from "../tools/shell.js";
+import { installShellContext } from "../tools/shell-context.js";
 import { createTools, TOOL_NAMES, READ_TOOL_NAMES } from "../tools/index.js";
 import { cleanOutput } from "../tools/output.js";
 import { ToolOutputFiles } from "../tools/output-files.js";
@@ -49,6 +50,7 @@ export function contentText(content: unknown): string {
 const unsupported = new Set(["goal", "agent", "plugins", "memories", "plan", "cloud"]);
 const toolTargetSchema = z.object({ path: z.string().optional(), command: z.string().optional(), pattern: z.string().optional(), query: z.string().optional() });
 const toolResultSchema = z.object({ exitCode: z.number().nullable().optional(), diff: z.string().optional() });
+const shellToolDetailsSchema = z.object({ id: z.string(), status: z.enum(["running", "stopping", "completed", "failed", "cancelled", "timed_out"]) });
 const shellHistorySchema = z.object({ id: z.string(), command: z.string(), exitCode: z.number().nullable(), status: z.enum(["running", "completed", "failed", "cancelled"]), output: z.string() });
 
 function toolDetails(args: unknown, name = ""): ToolDetails | undefined {
@@ -101,6 +103,7 @@ export class SessionRuntime {
   private viewerRefresh: Promise<void> | null = null;
   private viewerSnapshot = "";
   private responseId = "";
+  private readonly shellCalls = new Map<string, { id: string; name: string }>();
   private modifiedAt = Date.now();
   readonly home: string;
   cwd: string;
@@ -195,6 +198,7 @@ export class SessionRuntime {
       context: usage ?? null,
       state: this.state, queued: [...this.queued, ...this.localQueue.map((input) => `Queued shell: ${input}`)], viewer: this.lease?.viewer ?? false,
       executionBlocked: this.executionUnconfirmed || this.storageFailed,
+      shellSessions: this.shell.list().filter(entry => entry.status === "running" || entry.status === "stopping").length,
       initializing: this.initializing,
       mcpServers: this.mcp?.statuses.map(({ entry }) => entry.name) ?? [],
       skills: this.skills?.available.map(({ name, description, scope }) => ({ name, description, scope })) ?? [],
@@ -270,9 +274,20 @@ export class SessionRuntime {
       executionBlocked: () => this.executionUnconfirmed || this.storageFailed || Boolean(this.lease?.viewer),
     });
     installToolAvailability(session, () => toolSettings.ready());
+    shell.onChange = (receipt) => {
+      if (this.closing) return;
+      const call = this.shellCalls.get(receipt.id);
+      if (call) {
+        const live = receipt.status === "running" || receipt.status === "stopping";
+        this.ui.tool(call.id, call.name, `${truncateTail(receipt.output).content}\nSession: ${receipt.id} | Status: ${receipt.status}`,
+          live ? "running" : receipt.status === "completed" ? "done" : "error", { target: cleanOutput(receipt.command), ...(receipt.exitCode !== null ? { exitCode: receipt.exitCode } : {}) });
+      }
+      this.refreshStatus();
+    };
     const compaction = new CompactionController(session, { settings: toolSettings, captureContext: dynamicContext.capture,
       warning: (message) => this.ui.message("info", cleanOutput(message)),
     });
+    installShellContext(session, shell);
     let marker;
     try { marker = await readRunMarker(this.home, session.sessionId); }
     catch (error) { session.dispose(); throw error; }
@@ -352,7 +367,9 @@ export class SessionRuntime {
         for (const call of message.nestedCalls?.calls ?? []) this.ui.tool(call.id, call.name,
           cleanOutput(call.error ?? (call.status === "ok" ? "Completed in CodeMode. Output was consumed by the script." : "Execution unconfirmed.")),
           call.status === "ok" ? "done" : "error", toolDetails(call.arguments, call.name));
-        this.ui.tool(message.toolCallId, message.toolName, contentText(message.content), message.isError ? "error" : "done", { ...details.get(message.toolCallId), ...toolResultDetails(message.details) });
+        const shellResult = shellToolDetailsSchema.safeParse(message.details);
+        const failed = shellResult.success && ["failed", "cancelled", "timed_out"].includes(shellResult.data.status);
+        this.ui.tool(message.toolCallId, message.toolName, contentText(message.content), message.isError || failed ? "error" : "done", { ...details.get(message.toolCallId), ...toolResultDetails(message.details) });
       }
       else if (message.role === "bashExecution") this.ui.tool(randomUUID(), "shell", message.output, message.cancelled || message.exitCode !== 0 ? "error" : "done", { target: cleanOutput(message.command), exitCode: message.exitCode });
       else if (message.role === "custom" && message.customType === "arkcode-shell") {
@@ -399,7 +416,14 @@ export class SessionRuntime {
         break;
       case "tool_execution_start": this.ui.tool(event.toolCallId, event.toolName, "", "running", toolDetails(event.args, event.toolName)); break;
       case "tool_execution_update": this.ui.tool(event.toolCallId, event.toolName, contentText(event.partialResult.content), "running"); break;
-      case "tool_execution_end": this.ui.tool(event.toolCallId, event.toolName, contentText(event.result.content), event.isError ? "error" : "done", toolResultDetails(event.result.details)); break;
+      case "tool_execution_end": {
+        const shellResult = shellToolDetailsSchema.safeParse(event.result.details);
+        if (shellResult.success && (event.toolName === "bash" || event.toolName === "shell_control")) this.shellCalls.set(shellResult.data.id, { id: event.toolCallId, name: event.toolName });
+        const live = shellResult.success && (shellResult.data.status === "running" || shellResult.data.status === "stopping");
+        const failed = shellResult.success && ["failed", "cancelled", "timed_out"].includes(shellResult.data.status);
+        this.ui.tool(event.toolCallId, event.toolName, contentText(event.result.content), live ? "running" : event.isError || failed ? "error" : "done", toolResultDetails(event.result.details));
+        break;
+      }
       case "queue_update": this.queued = [...event.steering.map((text) => `Instruction pending: ${displayUserText(text)}`), ...event.followUp.map((text) => `Queued follow-up: ${displayUserText(text)}`)]; break;
       case "auto_retry_start": this.ui.message("info", `Retry ${event.attempt}/${event.maxAttempts}. ${cleanOutput(event.errorMessage)}`); break;
       case "auto_retry_end": if (!event.success && event.finalError) { this.failure = true; this.ui.message("error", cleanOutput(event.finalError)); } else if (event.success) this.failure = false; break;
@@ -439,7 +463,7 @@ export class SessionRuntime {
         const prepared = await prepareMentions(text, this.cwd, session.model.input.includes("image"));
         const expanded = await this.skills?.prepare(prepared.text) ?? prepared.text;
         this.compaction?.inputs.capture({ rawText, preparedText: expanded, images: prepared.images, delivery: mode === "follow-up" ? "follow-up" : "steering" });
-        if (mode === "follow-up") await session.followUp(expanded, prepared.images); else await session.steer(expanded, prepared.images);
+        if (mode === "follow-up") await session.followUp(expanded, prepared.images); else { await session.steer(expanded, prepared.images); this.shell.steer(); }
         this.refreshStatus(); return;
       }
       await this.run(text, rawText);
@@ -459,6 +483,8 @@ export class SessionRuntime {
     this.refreshStatus();
     const work = (async () => {
       try {
+        await this.shell.beginRun();
+        this.shellCalls.clear();
         if (!this.executionUnconfirmed) await writeRunMarker(this.home, session.sessionId, { status: "active", runId, startedAt, pid: process.pid, cwd: this.cwd });
         if (this.interrupted) return;
         if (session.agent.hasQueuedMessages()) {
@@ -503,7 +529,10 @@ export class SessionRuntime {
         if (!this.interrupted) { this.failure = true; this.ui.message("error", cleanOutput(error instanceof Error ? error.message : String(error))); }
       } finally {
         this.broker.cancel();
-        if (!this.compaction?.executionPaused) await this.shell.stopAll();
+        if (!this.compaction?.executionPaused) {
+          try { await this.shell.endRun(); }
+          catch (error) { this.failure = true; this.executionUnconfirmed = true; this.ui.message("error", cleanOutput(error instanceof Error ? error.message : String(error))); }
+        }
         const outcome = this.interrupted ? "interrupted" : this.failure ? "failed" : "completed";
         try {
           if (session.sessionFile && existsSync(session.sessionFile)) await inspectSession(session.sessionFile, this.cwd);

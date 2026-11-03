@@ -251,7 +251,8 @@ test("SDK shell tool returns Chinese output intact in model content and session 
     content: z.array(z.object({ type: z.literal("text"), text: z.string() })),
     details: z.object({ output: z.string(), exitCode: z.number() }),
   }).parse(await executeTool(tool, "unicode", { command: '\'今天：中文输出 😀\'' }));
-  assert.equal(result.content[0]?.text.trim(), "今天：中文输出 😀");
+  assert.ok(result.content[0]?.text.includes("今天：中文输出 😀\r\n"));
+  assert.match(result.content[0]?.text ?? "", /Status: completed/);
   assert.equal(result.details.output, "今天：中文输出 😀\r\n");
   assert.equal(result.details.exitCode, 0);
 });
@@ -285,8 +286,9 @@ test("approval requests identify exact write content and shell timeout", async (
     assert.ok(bash);
     await assert.rejects(executeTool(write, "first", { path: "file.txt", content: "first" }), /denied/);
     await assert.rejects(executeTool(write, "second", { path: "file.txt", content: "second" }), /denied/);
-    await assert.rejects(executeTool(bash, "third", { command: "node --version", timeout: 1 }), /denied/);
-    await assert.rejects(executeTool(bash, "fourth", { command: "node --version", timeout: 2 }), /denied/);
+    const denied = z.object({ isError: z.literal(true), structuredContent: z.object({ kind: z.literal("error"), error: z.object({ code: z.literal("permission_denied") }) }) });
+    denied.parse(await executeTool(bash, "third", { command: "node --version", timeout: 1 }));
+    denied.parse(await executeTool(bash, "fourth", { command: "node --version", timeout: 2 }));
     assert.notEqual(requests[0]?.description, requests[1]?.description);
     assert.notEqual(requests[2]?.description, requests[3]?.description);
     assert.equal(shell.list().length, 0);
@@ -315,22 +317,23 @@ test("managed native shell records exit codes and waits for descendant cancellat
   } finally { await shell.stopAll(); await files.cleanup(); }
 });
 
-test("bash timeout and nonzero exit report a failed tool result", { timeout: 15000 }, async () => {
+test("bash timeout and nonzero exit retain structured session outcomes and real exit codes", { timeout: 15000 }, async () => {
   const files = await fixture();
   const shell = new ManagedShell(files.cwd);
   try {
     const bash = createTools({ cwd: files.cwd, shell, authorize: async () => true }).find((tool) => tool.name === "bash");
     assert.ok(bash);
-    const failedReceipt = z.object({ isError: z.literal(true), content: z.array(z.object({ type: z.literal("text"), text: z.string() })), details: z.object({ exitCode: z.number().nullable(), status: z.string() }) });
+    const failedReceipt = z.object({ isError: z.undefined().optional(), content: z.array(z.object({ type: z.literal("text"), text: z.string() })), details: z.object({ exitCode: z.number().nullable(), status: z.string() }), structuredContent: z.object({ kind: z.literal("session"), status: z.string(), exit_code: z.number().nullable() }) });
     const failure = failedReceipt.parse(await executeTool(bash, "failure", { command: "node -e \"process.exit(9)\"" }));
-    assert.equal(failure.isError, true);
+    assert.equal(failure.isError, undefined);
     assert.equal(failure.details.exitCode, 9);
-    assert.match(JSON.stringify(failure.content), /exited with code 9/);
+    assert.equal(failure.structuredContent.status, "failed");
+    assert.match(JSON.stringify(failure.content), /Exit code: 9/);
     const timeout = failedReceipt.parse(await executeTool(bash, "timeout", { command: "node -e \"setTimeout(()=>{},30000)\"", timeout: 1 }));
-    assert.equal(timeout.isError, true);
-    assert.equal(timeout.details.exitCode, 130);
-    assert.equal(timeout.details.status, "cancelled");
-    assert.match(JSON.stringify(timeout.content), /cancelled/);
+    assert.equal(timeout.isError, undefined);
+    assert.equal(timeout.details.exitCode, timeout.structuredContent.exit_code);
+    assert.equal(timeout.details.status, "timed_out");
+    assert.match(JSON.stringify(timeout.content), /timed_out/);
     assert.equal(shell.list().filter((entry) => entry.status === "running").length, 0);
   } finally { await shell.stopAll(); await files.cleanup(); }
 });

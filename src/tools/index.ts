@@ -3,19 +3,21 @@ import { relative, sep } from "node:path";
 import type { TSchema } from "typebox";
 import { minimatch } from "minimatch";
 import { z } from "zod";
-import { createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition,
-  createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition,
+import { createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition,
+  createReadToolDefinition, createWriteToolDefinition,
   generateDiffString,
-  detectSupportedImageMimeTypeFromFile, type BashOperations, type ToolDefinition,
+  detectSupportedImageMimeTypeFromFile, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { ApprovalRequest } from "../app/types.js";
-import type { ManagedShell, ShellReceipt } from "./shell.js";
+import type { ManagedShell } from "./shell.js";
 import type { ToolOutputFiles } from "./output-files.js";
 import type { SkillsManager } from "../integrations/skills.js";
 import { collect, readBuffer, workspacePath } from "./workspace.js";
 
+import { createShellTools } from "./shell-tools.js";
+
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
-export const TOOL_NAMES = ["read", "write", "edit", "grep", "glob", "bash"];
+export const TOOL_NAMES = ["read", "write", "edit", "grep", "glob", "bash", "shell_control"];
 export const READ_TOOL_NAMES = ["read", "grep", "glob"];
 const invocationSchema = z.union([z.object({ command: z.string() }), z.object({ path: z.string() })]);
 
@@ -58,13 +60,24 @@ export function createTools(options: {
     if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw new Error("Content exceeds the 2 MiB text limit.");
     await writeFile(await workspacePath(cwd, path, true), content, "utf8");
   };
-  const read = wrap("read", createReadToolDefinition(cwd, {
+  const readDefinition = createReadToolDefinition(cwd, {
     operations: {
       access: async (path) => access(await readPath(path)),
       readFile: async (path) => await skills?.read(cwd, path) ?? await outputFiles?.read(cwd, path) ?? readBuffer(cwd, path, false, true),
       detectImageMimeType: async (path) => detectSupportedImageMimeTypeFromFile(await readPath(path)),
     },
-  }));
+  });
+  const read = wrap("read", {
+    ...readDefinition,
+    async execute(id, params, signal, update, ctx) {
+      const artifact = await outputFiles?.resolve(cwd, params.path);
+      if (artifact && !await detectSupportedImageMimeTypeFromFile(artifact)) {
+        const text = await outputFiles?.readText(cwd, params.path, { offset: params.offset, limit: params.limit, signal });
+        if (text !== undefined) return { content: [{ type: "text", text }], details: undefined, structuredContent: text };
+      }
+      return readDefinition.execute(id, params, signal, update, ctx);
+    },
+  });
   const { renderCall: _writeCall, renderResult: _writeResult, ...writeDefinition } = createWriteToolDefinition(cwd);
   const write = wrap<typeof writeDefinition.parameters, { diff: string } | undefined, unknown>("write", {
     ...writeDefinition,
@@ -118,39 +131,5 @@ export function createTools(options: {
       readFile: async (path) => (await readBuffer(cwd, path)).toString("utf8"),
     },
   }));
-  const createShell = shell.kind === "powershell" ? createPowerShellToolDefinition : createBashToolDefinition;
-  const shellDefinition = createShell(cwd, { exposeSessionEnvironment: false });
-  const bash = wrap("bash", {
-    ...shellDefinition,
-    description: `${shellDefinition.description} Runs with your OS privileges; commands can access paths outside the workspace.`,
-    async execute(id, params, signal, update, ctx) {
-      if (params.timeout !== undefined && (!Number.isFinite(params.timeout) || params.timeout < 1 || params.timeout > 600)) {
-        throw new Error("Shell timeout must be between 1 and 600 seconds.");
-      }
-      let receipt: ShellReceipt | undefined;
-      const operations: BashOperations = {
-        async exec(command, _cwd, { signal: shellSignal, timeout, onData }) {
-          const controller = new AbortController();
-          const abort = () => controller.abort();
-          shellSignal?.addEventListener("abort", abort, { once: true });
-          if (shellSignal?.aborted) controller.abort();
-          const timer = timeout === undefined ? undefined : setTimeout(abort, timeout * 1000);
-          try {
-            receipt = await shell.execute(command, controller.signal, undefined, onData);
-            if (receipt.status === "cancelled") onData(Buffer.from("\n[Command cancelled]"));
-            return { exitCode: receipt.status === "cancelled" ? 130 : receipt.exitCode };
-          } finally {
-            if (timer) clearTimeout(timer);
-            shellSignal?.removeEventListener("abort", abort);
-          }
-        },
-      };
-      const definition = createShell(cwd, { operations, exposeSessionEnvironment: false });
-      const result = await definition.execute(id, params, signal, update, ctx);
-      return { ...result, details: { ...result.details, ...receipt,
-        ...(receipt?.status === "cancelled" ? { exitCode: 130, processExitCode: receipt.exitCode } : {}),
-      } };
-    },
-  });
-  return [read, write, edit, grep, find, bash];
+  return [read, write, edit, grep, find, ...createShellTools(options)];
 }
