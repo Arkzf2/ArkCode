@@ -74,7 +74,7 @@ compact 失败不应用已请求会话的待切换模式。未请求的新会话
 | `git_branch` | 当前 Git 分支或无仓库状态 | 每次请求准备时调用 `getBranch()` |
 | `execution` | 宿主执行可用性 | `available` 或 `inspection-only` |
 
-`shell_environment` 系统提示词段使用同一个 `ManagedShell` 的配置，提供实际可执行文件、对应的 Bash/POSIX 或 PowerShell 语法，以及 Windows 路径写法。工具定义也依据该配置选择 Pi 的 Bash 或 PowerShell 工具，不再仅依据 OS。该段在 direct、codemode 和 codemode-only 中都存在；恢复或压缩后的请求重新使用当前配置，旧会话中的 shell 信息不决定当前命令语法。
+`shell_environment` 系统提示词段使用同一个 `ManagedShell` 的配置，提供解释器类型、对应的 Bash/POSIX 或 PowerShell 语法，以及 Windows 路径写法。具体可执行文件路径集中放在动态环境的 `shell` 字段，不在系统提示词、bash 工具描述或 CodeMode 工具目录中重复。工具定义也依据该配置选择 Pi 的 Bash 或 PowerShell 工具，不再仅依据 OS。该段在 direct、codemode 和 codemode-only 中都存在；恢复或压缩后的请求重新使用当前配置，旧会话中的 shell 信息不决定当前命令语法。
 
 `ManagedShell` 在创建时冻结 shell 配置，常规运行不提供切换入口，执行失败也不会自动回退到另一个解释器。提示词与动态环境仍通过回调读取同一个执行器，避免保留启动时的快照。工具装配在 `before_agent_start` 和 `turn_end` 检查 shell 是否变化；若发生意外变化，重新注册工具描述并清除旧审批缓存。下一个模型请求即使用新 shell 的指南、环境及工具定义，包括无需新用户输入的工具继续请求。已发送或正在生成的模型请求无法追溯修改。
 
@@ -100,7 +100,7 @@ compact 失败不应用已请求会话的待切换模式。未请求的新会话
 
 全局优先、项目共享预算、空文件和信任处理参照本地 Codex 实现。workspace 子树递归、限制目录链接不逃出 workspace、使用有界文件读取是 ArkCode 的扩展；Codex 自身的自动发现只覆盖 Git 根到 cwd 的祖先路径。即使递归发现，预算耗尽或读取失败仍可能让更深的指令无法自动注入，模型处理对应目录时需检查适用的指令文件。
 
-AGENTS.md 的路径、内容、作用范围或集合变化时，宿主追加整个当前集合，并声明它替换此前宿主提供的项目及全局指令。删除某个文件后，该来源不会继续出现在新集合中；集合为空时明确说明没有可信项目指令。旧消息仍在历史中，模型依据替换声明使用当前版本。
+AGENTS.md 的路径、内容、作用范围或集合变化时，宿主追加整个当前集合，并声明它替换此前宿主提供的项目及全局指令。首次没有任何全局或可信项目指令时，省略整个 `project_instructions` 块；只有全局指令时仍加载全局内容。已加载的指令被全部删除时，追加一次简短失效通知，后续无变化不再追加。旧消息仍在历史中，模型依据替换声明使用当前版本。压缩前仍有旧指令历史时，新的完整锚点保留失效通知，避免摘要中的旧规则继续生效；旧版本上下文无法解析时也保守地发送失效通知。
 
 指令内容与环境值均进行 XML 文本转义，避免原文中的标签破坏宿主生成的外层结构。
 
@@ -110,7 +110,7 @@ AGENTS.md 的路径、内容、作用范围或集合变化时，宿主追加整�
 
 ## renderFull 与 renderDiff
 
-`renderFull(snapshot)` 生成完整的 `<environment_context>` 和 `<project_instructions>`。`renderDiff(previous, current)` 只输出变化的环境字段；项目指令发生变化时输出完整指令替换集合。所有值相同则返回 `undefined`，不追加消息。
+`renderFull(snapshot)` 生成完整的 `<environment_context>`，有指令内容或需要清除旧规则时才附加 `<project_instructions>`。`renderDiff(previous, current)` 只输出变化的环境字段；项目指令发生变化时输出完整指令替换集合，集合变空时输出简短失效通知。所有值相同则返回 `undefined`，不追加消息。
 
 第一次请求的动态内容形如：
 

@@ -241,7 +241,7 @@ export class SessionRuntime {
       extensionFactories: [{ name: "arkcode-tool-output", hidden: true, factory: (pi) => {
           pi.on("tool_result", async (event) => { await outputFiles.capture(event.toolName, event.details); });
         } },
-        { name: "arkcode-tool-loadout", hidden: true, factory: createToolLoadout({ settings: toolSettings, mcp, shellInstructions: () => shell.instructions,
+        { name: "arkcode-tool-loadout", hidden: true, factory: createToolLoadout({ settings: toolSettings, mcp, shell: () => shell.executable, shellInstructions: () => shell.instructions,
           tools: () => createTools({ cwd, shell, outputFiles, skills, authorize: (request) => this.authorizeTool(request) }),
           resetApprovals: () => this.broker.reset(),
         }) },

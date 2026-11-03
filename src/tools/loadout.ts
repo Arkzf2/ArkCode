@@ -7,11 +7,12 @@ import { builtinExposure } from "./mode.js";
 import { builtinToolModePrompt, mcpToolModesPrompt } from "../context/tool-modes.js";
 
 export function createToolLoadout(options: {
-  settings: SessionToolSettings; tools: () => ToolDefinition[]; mcp: McpManager; shellInstructions: () => string; resetApprovals: () => void;
+  settings: SessionToolSettings; tools: () => ToolDefinition[]; mcp: McpManager; shell: () => string; shellInstructions: () => string; resetApprovals: () => void;
 }): ExtensionFactory {
   return (pi) => {
     const { settings, mcp } = options;
-    let currentShell = options.shellInstructions();
+    const shellSignature = () => JSON.stringify([options.shell(), options.shellInstructions()]);
+    let currentShell = shellSignature();
     let restored: string[] = [];
     const discoveryTools = () => [...mcp.discoveryTools(), ...(settings.current.toolMode !== "direct" ? ["codemode"] : [])];
     const discoveryApi: ExtensionAPI = { ...pi,
@@ -41,7 +42,7 @@ export function createToolLoadout(options: {
     };
     register();
     const refreshShell = () => {
-      const current = options.shellInstructions();
+      const current = shellSignature();
       if (current === currentShell) return;
       options.resetApprovals();
       register();

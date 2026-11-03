@@ -14,9 +14,29 @@ test("legacy context snapshots cannot suppress the new full instruction disclosu
     timestamp: 1, details: { version: 1, kind: "full", snapshot },
   }], snapshot);
   assert.ok(update);
-  assert.match(String(update.content), /<environment_context>|including global instructions/);
+  assert.match(String(update.content), /<environment_context>/);
+  assert.match(String(update.content), /global and project instructions no longer apply/);
   assert.equal(update.display, false);
   assert.deepEqual(update.details, { version: 2, kind: "full", snapshot });
+});
+
+test("empty initial instructions are omitted, global rules load, and removal clears earlier rules once", () => {
+  const snapshot = { environment: { cwd: "/workspace", platform: "linux", os: "Linux", shell: "bash", current_date: "2026-11-02",
+    timezone: "UTC", git_branch: "main", execution: "available" }, agents: [] } satisfies ContextSnapshot;
+  const first = contextUpdate([], snapshot);
+  assert.ok(first);
+  assert.doesNotMatch(String(first.content), /project_instructions|No trusted project/);
+  assert.equal(contextUpdate([first], snapshot), undefined);
+  const global = { ...snapshot, agents: [{ kind: "global", path: "/home/AGENTS.md", content: "Global convention." }] } satisfies ContextSnapshot;
+  const loaded = contextUpdate([first], global);
+  assert.ok(loaded);
+  assert.match(String(loaded.content), /kind="global".*scope="all workspaces"/);
+  assert.match(String(loaded.content), /Global convention/);
+  const removed = contextUpdate([first, loaded], snapshot);
+  assert.ok(removed);
+  assert.match(String(removed.content), /global and project instructions no longer apply/);
+  assert.doesNotMatch(String(removed.content), /More specific|sibling|<environment_context>/);
+  assert.equal(contextUpdate([first, loaded, removed], snapshot), undefined);
 });
 
 test("request preparation appends hidden deltas, refreshes across midnight and restores a full anchor after compact", async (t) => {
@@ -33,7 +53,7 @@ test("request preparation appends hidden deltas, refreshes across midnight and r
   t.after(() => session.dispose());
   let now = new Date("2026-10-13T15:59:00Z");
   let shell = "powershell.exe";
-  installDynamicContext(session, { cwd, home: join(cwd, "home"), projectDocMaxBytes: 32 * 1024, shell: () => shell, trusted: true, executionBlocked: () => false,
+  const dynamic = installDynamicContext(session, { cwd, home: join(cwd, "home"), projectDocMaxBytes: 32 * 1024, shell: () => shell, trusted: true, executionBlocked: () => false,
     now: () => now, timezone: () => "Asia/Shanghai",
   });
   const events: string[] = [];
@@ -51,6 +71,7 @@ test("request preparation appends hidden deltas, refreshes across midnight and r
     return String(message.content);
   };
   manager.appendMessage({ role: "user", content: "Initial task", timestamp: Date.now() });
+  assert.doesNotMatch(String((await dynamic.capture()).content), /project_instructions/);
   await mkdir(join(cwd, "home"));
   await mkdir(join(cwd, "child"));
   await writeFile(join(cwd, "home", "AGENTS.md"), "Global convention.");
@@ -98,6 +119,17 @@ test("request preparation appends hidden deltas, refreshes across midnight and r
   assert.match(lastText(compacted), /2026-10-14/);
   assert.match(lastText(compacted), /Use project convention B/);
   assert.deepEqual(await prepare(), compacted);
+  await unlink(join(cwd, "AGENTS.md"));
+  const clearedAnchor = await dynamic.capture();
+  assert.match(String(clearedAnchor.content), /global and project instructions no longer apply/);
+  const cleared = await prepare();
+  assert.match(lastText(cleared), /No trusted project instructions apply/);
+  assert.deepEqual(await prepare(), cleared);
+  manager.appendCompaction("Stale instructions in an older summary", null, 100);
+  manager.appendCustomMessageEntry(clearedAnchor.customType, clearedAnchor.content, false, clearedAnchor.details);
+  const afterCompact = await prepare();
+  assert.deepEqual(await prepare(), afterCompact);
+  assert.doesNotMatch(String((await dynamic.capture()).content), /project_instructions/);
   const entriesBeforeAbort = manager.getEntries().length;
   await assert.rejects(prepare(AbortSignal.abort()), { name: "AbortError" });
   assert.equal(manager.getEntries().length, entriesBeforeAbort);

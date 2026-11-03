@@ -798,7 +798,7 @@ for (const mode of ["direct", "codemode", "codemode-only"]) {
     const { host } = await f.start();
     await host.submit("Verify the current shell.");
     const prompt = toolPrompt(f.requests[0], "shell_environment");
-    assert.ok(prompt.includes(JSON.stringify(defaultShell.executable)), prompt);
+    assert.ok(!prompt.includes(JSON.stringify(defaultShell.executable)), prompt);
     assert.match(prompt, usesPowerShell ? /Use PowerShell syntax/ : /Use POSIX shell syntax/);
     const declared = f.requests[0]?.tools?.find((tool) => tool.function.name === "bash");
     if (mode !== "codemode-only") {
@@ -808,6 +808,10 @@ for (const mode of ["direct", "codemode", "codemode-only"]) {
     assert.ok(f.requests.at(-1)?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("中文 shell verified")));
     const environment = JSON.stringify(f.requests[0]?.messages.filter((message) => message.role === "user"));
     assert.ok(environment.includes(JSON.stringify(defaultShell.executable).slice(1, -1)), environment);
+    assert.doesNotMatch(environment, /project_instructions|No trusted project instructions/);
+    for (const tool of f.requests[0]?.tools ?? []) {
+      assert.ok(!String(tool.function.description).includes(defaultShell.executable));
+    }
   });
 }
 
@@ -826,7 +830,7 @@ for (const mode of ["direct", "codemode", "codemode-only"]) {
     });
     const f = await fixture(t, (request, index) => {
       const prompt = toolPrompt(request, "shell_environment");
-      assert.ok(prompt.includes(JSON.stringify(current.executable)), prompt);
+      assert.ok(!prompt.includes(JSON.stringify(current.executable)), prompt);
       assert.match(prompt, current.kind === "powershell" ? /Use PowerShell syntax/ : /Use POSIX shell syntax/);
       if (mode !== "codemode-only") {
         const description = request.tools?.find((tool) => tool.function.name === "bash")?.function.description;
@@ -873,7 +877,7 @@ test("resuming with no Git Bash switches the actual CLI prompt and execution to 
   const request = f.requests[1];
   const prompt = toolPrompt(request, "shell_environment");
   assert.match(prompt, /executes PowerShell.*\nUse PowerShell syntax/);
-  assert.ok(prompt.includes(JSON.stringify(fallback.executable)), prompt);
+  assert.ok(!prompt.includes(JSON.stringify(fallback.executable)), prompt);
   assert.match(String(request?.tools?.find((tool) => tool.function.name === "bash")?.function.description), /Execute a PowerShell command/);
   assert.ok(f.requests[2]?.messages.some((message) => message.role === "tool" && JSON.stringify(message.content).includes("中文 fallback verified")));
   const context = JSON.stringify(request?.messages.filter((message) => message.role === "user"));
@@ -881,7 +885,7 @@ test("resuming with no Git Bash switches the actual CLI prompt and execution to 
   const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
   await resumed.host.submit("Use the detected shell again.");
   const restored = toolPrompt(f.requests[3], "shell_environment");
-  assert.ok(restored.includes(JSON.stringify(defaultShell.executable)), restored);
+  assert.ok(!restored.includes(JSON.stringify(defaultShell.executable)), restored);
   assert.match(restored, usesPowerShell ? /Use PowerShell syntax/ : /Use POSIX shell syntax/);
 });
 

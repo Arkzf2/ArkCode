@@ -122,7 +122,7 @@ export function createTools(options: {
   const shellDefinition = createShell(cwd, { exposeSessionEnvironment: false });
   const bash = wrap("bash", {
     ...shellDefinition,
-    description: `${shellDefinition.description} Runs in ${shell.executable} with your OS privileges; commands can access paths outside the workspace.`,
+    description: `${shellDefinition.description} Runs with your OS privileges; commands can access paths outside the workspace.`,
     async execute(id, params, signal, update, ctx) {
       if (params.timeout !== undefined && (!Number.isFinite(params.timeout) || params.timeout < 1 || params.timeout > 600)) {
         throw new Error("Shell timeout must be between 1 and 600 seconds.");

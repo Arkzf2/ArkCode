@@ -54,5 +54,5 @@ export function shellInstructions(shell: ShellConfiguration, platform = process.
   const paths = platform === "win32" && shell.kind === "posix"
     ? "\nThis is Git Bash on Windows. Use /c/path or C:/path and quote paths containing spaces. Native Windows programs may require Windows paths."
     : "";
-  return `The bash tool executes ${name} at ${JSON.stringify(shell.executable)}.\n${syntax}${paths}\nThis is the current shell configuration and supersedes shell instructions in earlier history.`;
+  return `The bash tool executes ${name}.\n${syntax}${paths}\nThis is the current shell configuration and supersedes shell instructions in earlier history.`;
 }

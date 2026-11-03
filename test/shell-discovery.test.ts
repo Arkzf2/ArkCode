@@ -66,7 +66,8 @@ test("discovered Git Bash runs Chinese output in a Unicode workspace and exposes
   assert.ok(tool);
   assert.match(tool.description, /Execute a bash command/i);
   assert.match(tool.promptSnippet ?? "", /bash/i);
-  assert.ok(tool.description.includes(shell.executable));
+  assert.ok(!tool.description.includes(shell.executable));
+  assert.ok(!shell.instructions.includes(JSON.stringify(shell.executable)));
   assert.equal((await inspectShell("ls", shell.executable)).listing, true);
 });
 

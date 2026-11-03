@@ -22,12 +22,22 @@ function renderEnvironment(environment: Partial<ContextSnapshot["environment"]>)
 }
 
 function renderAgents(agents: ContextSnapshot["agents"]): string {
+  if (!agents.length) return "<project_instructions>\nPreviously supplied global and project instructions no longer apply. No trusted project instructions apply.\n</project_instructions>";
   const files = agents.map((file) => `<instructions kind="${file.kind}" path="${xml(file.path)}" scope="${xml(file.kind === "global" ? "all workspaces" : file.scope)}">\n${xml(file.content)}\n</instructions>`).join("\n");
-  return `<project_instructions>\nThese replace all previously supplied project instructions, including global instructions. Earlier sources omitted below no longer apply. Global instructions apply to all workspaces. Each project file applies only to its scope directory and descendants. More specific directory instructions take precedence on conflicts within their scope; sibling directory rules do not apply to each other.\n${files || "No trusted project instructions apply."}\n</project_instructions>`;
+  return `<project_instructions>\nThese replace all previously supplied project instructions, including global instructions. Earlier sources omitted below no longer apply. Global instructions apply to all workspaces. Each project file applies only to its scope directory and descendants. More specific directory instructions take precedence on conflicts within their scope; sibling directory rules do not apply to each other.\n${files}\n</project_instructions>`;
 }
 
-export function renderFull(snapshot: ContextSnapshot): string {
-  return `${renderEnvironment(snapshot.environment)}\n${renderAgents(snapshot.agents)}`;
+function hasInstructionHistory(messages: AgentSession["messages"]): boolean {
+  return messages.some((message) => {
+    if (message.role !== "custom" || message.customType !== CONTEXT_MESSAGE) return false;
+    const parsed = disclosureSchema.safeParse(message.details);
+    return !parsed.success || parsed.data.snapshot.agents.length > 0;
+  });
+}
+
+export function renderFull(snapshot: ContextSnapshot, options: { clearInstructions?: boolean } = {}): string {
+  const environment = renderEnvironment(snapshot.environment);
+  return snapshot.agents.length || options.clearInstructions ? `${environment}\n${renderAgents(snapshot.agents)}` : environment;
 }
 
 export function renderDiff(previous: ContextSnapshot, current: ContextSnapshot): string | undefined {
@@ -46,7 +56,7 @@ export function contextUpdate(messages: AgentSession["messages"], snapshot: Cont
     if (!parsed.success) continue;
     if (parsed.data.kind === "full" || previous) previous = parsed.data.snapshot;
   }
-  const content = previous ? renderDiff(previous, snapshot) : renderFull(snapshot);
+  const content = previous ? renderDiff(previous, snapshot) : renderFull(snapshot, { clearInstructions: hasInstructionHistory(messages) });
   if (!content) return undefined;
   return { role: "custom", customType: CONTEXT_MESSAGE, content, display: false, timestamp: Date.now(),
     details: { version: 2, kind: previous ? "diff" : "full", snapshot } };
@@ -72,7 +82,8 @@ export function installDynamicContext(session: AgentSession, options: {
       agents: await instructions.load(signal),
     };
     signal?.throwIfAborted();
-    return { role: "custom", customType: CONTEXT_MESSAGE, content: renderFull(snapshot), display: false, timestamp: Date.now(),
+    const messages = session.sessionManager.buildSessionProjection().messages;
+    return { role: "custom", customType: CONTEXT_MESSAGE, content: renderFull(snapshot, { clearInstructions: hasInstructionHistory(messages) }), display: false, timestamp: Date.now(),
       details: { version: 2, kind: "full", snapshot } };
   };
   session.agent.prepareRequest = async (request, signal) => {
