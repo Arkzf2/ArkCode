@@ -62,6 +62,10 @@
     "dist/core/session-manager.js": {
       "original": "7e24f1c857c9f0e7be6485e9be12ba528fad9eea3423abf2c96fc27585a88b61",
       "patched": "c3ca8e9411cae2bae2d7848e1ddbc424ac0913ae9dab16abbe2c5cc65129df49"
+    },
+    "../pi-ai/dist/api/anthropic-messages.js": {
+      "original": "992daf485e2d479ac1df3886019946d0bf512ef6517ec730ce4c7315f9472ecc",
+      "patched": "6b794810971db4fa1c1ca716ef005c154dd85bde323d90d00ccbf6765356b75e"
     }
   }
 }

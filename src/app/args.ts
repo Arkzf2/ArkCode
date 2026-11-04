@@ -1,10 +1,9 @@
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { z } from "zod";
 import { parsePermission } from "../permissions/policy.js";
+import { thinkingLevelSchema } from "../config/settings.js";
 
-const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 export function parseCli(argv: string[]) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     cwd: { type: "string", short: "C" }, home: { type: "string" },
@@ -25,7 +24,7 @@ export function parseCli(argv: string[]) {
   return {
     cwd: resolve(values.cwd ?? process.cwd()),
     home: resolve(values.home ?? process.env.ARKCODE_HOME ?? resolve(homedir(), ".arkcode")),
-    model: values.model, thinking: values.thinking ? thinkingSchema.parse(values.thinking) : undefined,
+    model: values.model, thinking: values.thinking ? thinkingLevelSchema.parse(values.thinking) : undefined,
     permission: values["full-access"] ? parsePermission("never-ask") : values.permissions ? parsePermission(values.permissions) : undefined,
     print: Boolean(values.print || values.json), json: Boolean(values.json), approve: Boolean(values.approve),
     last: Boolean(values.last), help: Boolean(values.help), version: Boolean(values.version),

@@ -71,7 +71,7 @@ type TranscriptEntry =
   | { kind: "reasoning"; id: string; text: string; active: boolean; component: Text }
   | { kind: "tool"; id: string; name: string; target: string; exitCode?: number; diff?: string; text: string; state: ToolState; expanded: boolean | null };
 type Panel = { transient?: boolean } & (
-  | { kind: "choice"; component: Container; cancel: () => void; select: (index: number) => void }
+  | { kind: "choice"; component: Container; cancel: () => void; select: (index: number) => void; delete?: () => void }
   | { kind: "input"; component: Container; cancel: () => void }
   | { kind: "toggle"; component: Container; cancel: () => void; input: (data: string) => void }
   | { kind: "inspection"; component: Container; cancel: () => void; scroll: (delta: number) => void });
@@ -338,22 +338,36 @@ export class TerminalUI implements UserInterface {
       if (options.notice) component.addChild(new Text(dim(sanitizeTerminalText(options.notice)), 2, 0));
       component.addChild(list);
       component.addChild(new Text(dim(options.hint ?? "↑/↓ select · Enter confirm · Esc cancel"), 2, 1));
+      let deleting = false;
       const finish = (value: string | null): void => {
         this.closePanel();
         resolve(value);
       };
-      list.onSelect = (item) => finish(item.value);
+      list.onSelect = (item) => { if (!deleting) finish(item.value); };
       list.onCancel = () => finish(null);
-      this.panel = {
+      const panel: Panel = {
         kind: "choice",
         transient: options.transient,
         component,
         cancel: () => finish(null),
         select: (index) => {
+          if (deleting) return;
           const choice = choices[index];
           if (choice) finish(choice.value);
         },
+        ...(options.onDelete ? { delete: () => {
+          const item = list.getSelectedItem();
+          if (!item || deleting) return;
+          deleting = true;
+          this.run(async () => {
+            try {
+              await options.onDelete?.(item.value);
+              if (this.panel === panel) finish(null);
+            } finally { deleting = false; }
+          });
+        } } : {}),
       };
+      this.panel = panel;
       this.rebuild();
       this.tui.setFocus(list);
       this.render();
@@ -968,6 +982,10 @@ export class TerminalUI implements UserInterface {
         return { consume: true };
       }
       if (this.panel.kind === "toggle") { this.panel.input(data); return { consume: true }; }
+      if (this.panel.kind === "choice" && matchesKey(data, "delete")) {
+        this.panel.delete?.();
+        return { consume: true };
+      }
       if (this.panel.kind === "inspection") {
         if (matchesKey(data, "up")) this.panel.scroll(-1);
         else if (matchesKey(data, "down")) this.panel.scroll(1);

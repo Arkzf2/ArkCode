@@ -10,6 +10,100 @@ import { configuredPermissionSchema } from "../permissions/policy.js";
 import { SYSTEM_PROMPT } from "../context/prompt.js";
 import { toolModeSchema } from "../tools/mode.js";
 
+export const thinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const customModelSchema = z.object({
+  id: z.string(), reasoning: z.boolean().optional(), api: z.string().optional(),
+  thinkingLevelMap: z.record(z.string(), z.string().nullable()).optional(),
+  compat: z.record(z.string(), z.unknown()).optional(),
+}).passthrough();
+const modelsDocumentSchema = z.object({ providers: z.record(z.string(), z.object({
+  api: z.string().optional(), models: z.array(customModelSchema).optional(),
+}).passthrough()).default({}) }).passthrough();
+const jsonEditOptions = { formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" } };
+
+function writeModels(path: string, source: string): void {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, source, { flag: "wx", mode: 0o600 });
+    renameSync(temporary, path);
+  } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+}
+
+function modelDefaults(id: string, api: string | undefined) {
+  if (!/(?:^|\/)deepseek-(?:flash|v4-pro)(?:$|[-:])/i.test(id)) {
+    return { thinkingLevelMap: { xhigh: "xhigh", max: "max" }, compat: {} };
+  }
+  return {
+    thinkingLevelMap: { off: "none", minimal: "low", low: "low", medium: "high", high: "high", xhigh: "high", max: "max" },
+    compat: api === "openai-completions" ? {
+      thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true,
+      supportsReasoningEffort: true, supportsDeveloperRole: false, supportsStore: false, maxTokensField: "max_tokens",
+    } : api === "anthropic-messages" ? { forceAdaptiveThinking: true } : {},
+  };
+}
+
+function upgradeCustomThinkingModels(path: string): void {
+  if (!existsSync(path)) return;
+  const source = readFileSync(path, "utf8");
+  const errors: ParseError[] = [];
+  const parsed = modelsDocumentSchema.safeParse(parse(source, errors, { allowTrailingComma: true }));
+  if (errors.length || !parsed.success) return;
+  let updated = source;
+  for (const [provider, definition] of Object.entries(parsed.data.providers)) {
+    if (builtinProviders().some((entry) => entry.id === provider)) continue;
+    for (const [index, model] of (definition.models ?? []).entries()) {
+      if (!model.reasoning) continue;
+      const defaults = modelDefaults(model.id, model.api ?? definition.api);
+      for (const field of ["thinkingLevelMap", "compat"] as const) {
+        for (const [key, value] of Object.entries(defaults[field])) {
+          if (model[field]?.[key] !== undefined) continue;
+          updated = applyEdits(updated, modify(updated, ["providers", provider, "models", index, field, key], value, jsonEditOptions));
+        }
+      }
+    }
+  }
+  if (updated !== source) writeModels(path, updated);
+}
+
+export function configuredModelIds(home: string): Set<string> {
+  const path = join(home, "models.json");
+  if (!existsSync(path)) return new Set();
+  const document = modelsDocumentSchema.parse(parse(readFileSync(path, "utf8")));
+  return new Set(Object.entries(document.providers).flatMap(([provider, definition]) =>
+    (definition.models ?? []).map((model) => `${provider}/${model.id}`)));
+}
+
+export async function removeConfiguredModel(home: string, runtime: ModelRuntime, selector: string): Promise<void> {
+  const path = join(home, "models.json");
+  if (!existsSync(path)) throw new Error("No custom models configured. Pi catalog models cannot be deleted.");
+  const source = readFileSync(path, "utf8");
+  const errors: ParseError[] = [];
+  const document = modelsDocumentSchema.parse(parse(source, errors, { allowTrailingComma: true }));
+  if (errors.length) throw new Error(`Invalid models.json at ${path}.`);
+  const separator = selector.indexOf("/");
+  const provider = selector.slice(0, separator);
+  const id = selector.slice(separator + 1);
+  const definition = document.providers[provider];
+  const index = definition?.models?.findIndex((model) => model.id === id) ?? -1;
+  if (separator < 0 || index < 0) throw new Error("Pi catalog models cannot be deleted. Delete a configured custom model.");
+  const config = loadConfig(home);
+  const updated = applyEdits(source, modify(source, ["providers", provider, "models", index], undefined, jsonEditOptions));
+  writeModels(path, updated);
+  try {
+    const result = await runtime.refresh({ allowNetwork: false });
+    const error = runtime.getError() ?? result.errors.get(provider)?.message;
+    if (error) throw new Error(error);
+    if (config.provider === provider && config.model === id) {
+      const { provider: _provider, model: _model, ...rest } = config;
+      saveConfig(home, rest);
+    }
+  } catch (error) {
+    writeModels(path, source);
+    await runtime.refresh({ allowNetwork: false });
+    throw error;
+  }
+}
+
 const legacyDeepSeekProviderSchema = z.object({
   baseUrl: z.literal("https://api.deepseek.com/v1"),
   api: z.literal("openai-completions"),
@@ -19,7 +113,7 @@ const legacyDeepSeekProviderSchema = z.object({
 export const arkConfigSchema = z.object({
   provider: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
-  thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).default("medium"),
+  thinking: thinkingLevelSchema.default("medium"),
   permission: configuredPermissionSchema.default("always-ask"),
   toolMode: toolModeSchema.default("codemode"),
   webSearch: z.boolean().default(true),
@@ -92,6 +186,7 @@ export async function createModelRuntime(home: string): Promise<ModelRuntime> {
   mkdirSync(home, { recursive: true });
   const modelsPath = join(home, "models.json");
   upgradeLegacyDeepSeekModel(modelsPath);
+  upgradeCustomThinkingModels(modelsPath);
   const runtime = await ModelRuntime.create({
     authPath: join(home, "auth.json"),
     modelsPath,
@@ -160,7 +255,12 @@ export async function configureConnection(home: string, runtime: ModelRuntime, r
     if (models.length && (provider?.baseUrl !== selected.baseUrl || provider?.api !== selected.api)) {
       throw new Error(`Provider ${selected.provider} already has models on a different endpoint or API. Use a distinct provider ID.`);
     }
+    const priorModel = models.find((entry) => !!entry && typeof entry === "object" && "id" in entry && entry.id === selected.model);
+    const prior = priorModel ? customModelSchema.parse(priorModel) : undefined;
+    const defaults = modelDefaults(selected.model, selected.api);
     const model = { id: selected.model, name: selected.name, input: selected.input === "image" ? ["text", "image"] : ["text"],
+      ...(selected.reasoning ? { thinkingLevelMap: { ...defaults.thinkingLevelMap, ...prior?.thinkingLevelMap },
+        ...(Object.keys(defaults.compat).length ? { compat: { ...defaults.compat, ...prior?.compat } } : {}) } : {}),
       reasoning: selected.reasoning, contextWindow: selected.contextWindow, maxTokens: selected.maxTokens };
     const index = models.findIndex((entry) => !!entry && typeof entry === "object" && "id" in entry && entry.id === selected.model);
     const pathToProvider = ["providers", selected.provider];
@@ -177,23 +277,14 @@ export async function configureConnection(home: string, runtime: ModelRuntime, r
     } else if (provider?.models) updated = applyEdits(updated, modify(updated, [...modelPath, -1], model, options));
     else updated = applyEdits(updated, modify(updated, modelPath, [model], options));
     mkdirSync(home, { recursive: true });
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temporary, updated, { flag: "wx", mode: 0o600 });
-      renameSync(temporary, path);
-    } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+    writeModels(path, updated);
     try {
       const result = await runtime.refresh({ allowNetwork: false });
       const error = result.errors.get(selected.provider)?.message;
       if (error || !runtime.getModel(selected.provider, selected.model)) throw new Error(error ?? `Pi could not load ${selected.provider}/${selected.model}.`);
     } catch (error) {
-      if (hadFile) {
-        const rollback = `${path}.${randomUUID()}.tmp`;
-        try {
-          writeFileSync(rollback, source, { flag: "wx", mode: 0o600 });
-          renameSync(rollback, path);
-        } finally { if (existsSync(rollback)) unlinkSync(rollback); }
-      } else unlinkSync(path);
+      if (hadFile) writeModels(path, source);
+      else unlinkSync(path);
       await runtime.refresh({ allowNetwork: false });
       throw error;
     }

@@ -17,6 +17,9 @@ function patch(path, change) {
   const text = replacements.get(path)?.text ?? normalize(original);
   replacements.set(path, { original, text: change(text) });
 }
+function backupPath(path) {
+  return join(packageRoot, '.arkcode-sdk-originals', path.startsWith('../') ? `dependencies/${path.slice(3)}` : path);
+}
 function replace(text, before, after) {
   if (text.split(before).length !== 2) throw new Error(`Pi SDK patch expected exactly one occurrence: ${before.slice(0, 120)}`);
   return text.replace(before, after);
@@ -43,7 +46,7 @@ if (pending.length === 0 && !updateManifest) process.exit(0);
 // Recover the exact upstream files before computing changes, including after a partial installation.
 for (const [path] of Object.entries(manifest.files)) {
   const target = join(packageRoot, path);
-  const backup = join(packageRoot, '.arkcode-sdk-originals', path);
+  const backup = backupPath(path);
   if (!existsSync(backup)) {
     if (hash(readFileSync(target, 'utf8')) !== manifest.files[path].original)
       throw new Error(`Missing upstream backup for already patched file: ${path}`);
@@ -54,6 +57,10 @@ for (const [path] of Object.entries(manifest.files)) {
   if (hash(original) !== manifest.files[path].original) throw new Error(`Invalid upstream backup: ${path}`);
   replacements.set(path, { original, text: normalize(original) });
 }
+
+patch('../pi-ai/dist/api/anthropic-messages.js', (text) => replace(text,
+  '            params.thinking = { type: "adaptive", display };',
+  '            params.thinking = /(?:^|\\/)deepseek-(?:flash|v4-pro)(?:$|[-:])/i.test(model.id)\n                ? { type: "enabled" }\n                : { type: "adaptive", display };'));
 
 patch('dist/core/system-prompt.js', (text) => {
   text = replace(text, '        sections: { ...(input.sections ?? {}) },',

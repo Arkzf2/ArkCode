@@ -125,6 +125,48 @@ const inertActions: UiActions = {
   async submit() {}, async interrupt() {}, async exit() {}, async editPrevious() {}, async browseSessions() {},
 };
 
+test("Delete acts on the highlighted choice, ignores repeats, and preserves the composer", async (t) => {
+  const terminal = new ScreenTerminal(100, 30);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle); ui.start(); ui.setDraft("Keep this prompt");
+  const deleted: string[] = [];
+  let release = () => {};
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const panel = ui.choose("Select a model", [{ value: "custom/first", label: "first" }, { value: "custom/second", label: "second" }], {
+    hint: "Del delete configured model",
+    onDelete: async (value) => { deleted.push(value); await pending; },
+  });
+  await terminal.flush();
+  terminal.press("\x1b[B");
+  terminal.press("\x1b[3~");
+  terminal.press("\x1b[3~");
+  terminal.press("\r");
+  await terminal.flush();
+  assert.deepEqual(deleted, ["custom/second"]);
+  assert.match(terminal.text(), /Select a model/);
+  release();
+  assert.equal(await panel, null);
+  await terminal.flush();
+  assert.equal(ui.draft(), "Keep this prompt");
+});
+
+test("failed choice deletion keeps the picker open and permits another selection", async (t) => {
+  const terminal = new ScreenTerminal(100, 30);
+  const ui = new TerminalUI(inertActions, terminal);
+  t.after(() => ui.stop());
+  ui.status(idle); ui.start();
+  const panel = ui.choose("Select a model", [{ value: "builtin/model", label: "builtin model" }], {
+    onDelete: async () => { throw new Error("Catalog models cannot be deleted."); },
+  });
+  terminal.press("\x1b[3~");
+  await terminal.flush();
+  assert.match(terminal.text(), /Catalog models cannot be deleted/);
+  assert.match(terminal.text(), /Select a model/);
+  terminal.press("\r");
+  assert.equal(await panel, "builtin/model");
+});
+
 const browserItems: SessionItem[] = [
   { id: "current", path: null, cwd: "D:/ArkCode", title: "Current task", preview: "No messages yet", modified: Date.now(), state: "ready", current: true },
   { id: "other", path: "E:/Other/session.jsonl", cwd: "E:/Other", title: "Other project task", preview: "Review a function", modified: Date.now() - 3_600_000, state: "inactive", current: false },

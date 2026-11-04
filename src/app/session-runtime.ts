@@ -21,7 +21,7 @@ import { toolModeSchema, type ToolMode } from "../tools/mode.js";
 import { createToolLoadout } from "../tools/loadout.js";
 import { SessionToolSettings } from "../session/tool-settings.js";
 import { slashCommands } from "../ui/commands.js";
-import { configureConnection, createModelRuntime, createResources, loadConfig, saveConfig, selectModel, type ArkConfig, type ConnectionRequest } from "../config/settings.js";
+import { configuredModelIds, configureConnection, createModelRuntime, createResources, loadConfig, removeConfiguredModel, saveConfig, selectModel, thinkingLevelSchema, type ArkConfig, type ConnectionRequest } from "../config/settings.js";
 import { SessionLease, inspectSession, readRunMarker, writeRunMarker } from "../session/storage.js";
 import { ManagedShell } from "../tools/shell.js";
 import { installShellContext } from "../tools/shell-context.js";
@@ -722,8 +722,33 @@ export class SessionRuntime {
       }
       case "model": {
         await runtime.refresh({ allowNetwork: false });
-        const models = await runtime.getAvailable();
-        const selected = argument || await this.ui.choose("Select a model", models.map((model) => ({ value: `${model.provider}/${model.id}`, label: `${model.provider}/${model.id}`, description: model.name })));
+        let selected = argument;
+        let highlighted = session.model ? `${session.model.provider}/${session.model.id}` : undefined;
+        while (!selected) {
+          const configured = configuredModelIds(this.home);
+          const available = new Set((await runtime.getAvailable()).map((model) => `${model.provider}/${model.id}`));
+          const models = runtime.getModels().filter((model) => available.has(`${model.provider}/${model.id}`) || configured.has(`${model.provider}/${model.id}`));
+          let pendingDelete: string | undefined;
+          selected = await this.ui.choose("Select a model", models.map((model) => ({ value: `${model.provider}/${model.id}`, label: `${model.provider}/${model.id}`, description: model.name })), {
+            hint: "↑/↓ select · Enter confirm · Del delete configured model · Esc cancel",
+            initialValue: highlighted,
+            onDelete: async (value) => {
+              if (!configured.has(value)) throw new Error("Pi catalog models cannot be deleted. Delete a configured custom model.");
+              pendingDelete = value;
+            },
+          }) ?? "";
+          if (!pendingDelete) break;
+          highlighted = pendingDelete;
+          const confirmation = await this.ui.choose(`Delete ${pendingDelete}?`, [
+            { value: "cancel", label: "Cancel" },
+            { value: "delete", label: "Delete" },
+          ], { initialValue: "cancel" });
+          if (confirmation !== "delete") continue;
+          await removeConfiguredModel(this.home, runtime, pendingDelete);
+          this.config = loadConfig(this.home);
+          const active = session.model && `${session.model.provider}/${session.model.id}` === pendingDelete;
+          this.ui.message("info", `Deleted ${pendingDelete}.${active ? " The current session keeps this model until you select another; its saved default has been cleared." : ""}`);
+        }
         if (!selected) break;
         const model = await selectModel(runtime, selected, this.config);
         if (!model) throw new Error("No model available.");
@@ -731,7 +756,7 @@ export class SessionRuntime {
         this.config.provider = model.provider; this.config.model = model.id;
         const levels = session.getAvailableThinkingLevels();
         const thinking = await this.ui.choose("Thinking level", levels.map((value) => ({ value, label: value })));
-        if (thinking) { const level = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).parse(thinking); session.setThinkingLevel(level); this.config.thinking = level; }
+        if (thinking) { const level = thinkingLevelSchema.parse(thinking); session.setThinkingLevel(level); this.config.thinking = level; }
         saveConfig(this.home, this.config); break;
       }
       case "permissions": {

@@ -192,16 +192,17 @@ test("SDK patch applies to a fresh installation, recovers partial application, a
   await writeFile(join(sdk, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: manifest.version, type: "module", exports: { ".": "./dist/index.js" } }));
   await writeFile(join(sdk, "dist/index.js"), "");
   const upstream = join(process.cwd(), "node_modules/@earendil-works/pi-coding-agent/.arkcode-sdk-originals");
+  const backup = (file: string) => file.startsWith("../") ? `dependencies/${file.slice(3)}` : file;
   for (const file of Object.keys(manifest.files)) {
     await mkdir(dirname(join(sdk, file)), { recursive: true });
-    await cp(join(upstream, file), join(sdk, file));
+    await cp(join(upstream, backup(file)), join(sdk, file));
   }
   const runPatch = () => promisify(execFile)(process.execPath, [join(root, "scripts/patch-pi-sdk.mjs")], { cwd: root });
   const hash = (text: string) => createHash("sha256").update(text.replaceAll("\r\n", "\n")).digest("hex");
   await runPatch();
   for (const [file, checksum] of Object.entries(manifest.files)) {
     assert.equal(hash(await readFile(join(sdk, file), "utf8")), checksum.patched);
-    assert.equal(hash(await readFile(join(sdk, ".arkcode-sdk-originals", file), "utf8")), checksum.original);
+    assert.equal(hash(await readFile(join(sdk, ".arkcode-sdk-originals", backup(file)), "utf8")), checksum.original);
   }
   const partial = "dist/extensions/mcp/runtime.js";
   await cp(join(upstream, partial), join(sdk, partial));

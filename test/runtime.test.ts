@@ -26,6 +26,8 @@ import { renderUser, textTokens, TOOL_PRUNING_MARKER } from "../src/compaction/p
 import { SUMMARY_PREFIX } from "../src/compaction/prompts.js";
 import { echoMcpTool, httpMcpFixture } from "./mcp-fixture.js";
 import { inspectSession, readRunMarker, SessionLease, writeRunMarker } from "../src/session/storage.js";
+import { TerminalUI } from "../src/ui/terminal.js";
+import { ScreenTerminal } from "./terminal-fixture.js";
 import type { ApprovalDecision, ApprovalRequest, Choice, ChoiceOptions, Permission, SessionBrowserResult, SessionDetails, SessionItem, Status, ToolDetails, UserInterface } from "../src/app/types.js";
 
 const requestSchema = z.object({
@@ -1786,6 +1788,126 @@ input.on('close', () => {log('closed'); process.exit(0);});
   const events = (await readFile(log, "utf8")).trim().split("\n").map((line) => z.object({ event: z.string(), pid: z.number() }).parse(JSON.parse(line)));
   assert.deepEqual(events.map((event) => event.event), ["started", "called", "started", "closed", "closed"]);
   for (const pid of new Set(events.map((event) => event.pid))) assert.throws(() => process.kill(pid, 0));
+});
+
+test("/model exposes custom DeepSeek xhigh and max and sends max effort in a real session", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Done.", thinking: "Fixture reasoning." }));
+  const path = join(f.home, "models.json");
+  const source = JSON.parse(await readFile(path, "utf8"));
+  source.providers.fixture.models.push({ id: "deepseek-flash", reasoning: true, input: ["text"], contextWindow: 128000, maxTokens: 4096 });
+  await writeFile(path, JSON.stringify(source));
+  class ModelUI extends RecordingUI {
+    override async choose(title: string, choices: Choice[]): Promise<string | null> {
+      if (title === "Select a model") return "fixture/deepseek-flash";
+      assert.equal(title, "Thinking level");
+      assert.ok(choices.some((choice) => choice.value === "xhigh"));
+      assert.ok(choices.some((choice) => choice.value === "max"));
+      assert.ok(choices.every((choice) => choice.value !== "ultra"));
+      return "max";
+    }
+  }
+  const { host, ui } = await f.start(new ModelUI());
+  await host.submit("/model");
+  assert.equal(ui.statuses.at(-1)?.thinking, "max");
+  assert.equal(loadConfig(f.home).thinking, "max");
+  await host.submit("Use the selected reasoning effort.");
+  assert.equal(f.requests[0]?.reasoning_effort, "max");
+  assert.deepEqual(f.requests[0]?.thinking, { type: "enabled" });
+  await host.submit("Continue after the reasoning output.");
+  assert.ok(f.requests[1]?.messages.some((message) => message.role === "assistant" && message.reasoning_content === "Fixture reasoning."));
+});
+
+test("/model deletes configured entries including ones without credentials and refreshes the picker", async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  const path = join(f.home, "models.json");
+  const source = JSON.parse(await readFile(path, "utf8"));
+  source.providers["missing-auth"] = { baseUrl: "http://localhost:1234/v1", api: "openai-completions", models: [{ id: "unused" }] };
+  await writeFile(path, JSON.stringify(source));
+  class ModelUI extends RecordingUI {
+    menus = 0;
+    override async choose(title: string, choices: Choice[], options?: ChoiceOptions): Promise<string | null> {
+      if (title.startsWith("Delete ")) {
+        assert.ok(choices.some((choice) => choice.value === "delete"));
+        assert.equal(options?.initialValue, "cancel");
+        return "delete";
+      }
+      assert.equal(title, "Select a model");
+      this.menus++;
+      if (this.menus === 1) {
+        assert.ok(choices.some((choice) => choice.value === "missing-auth/unused"));
+        assert.ok(options?.onDelete);
+        await options.onDelete("missing-auth/unused");
+      } else if (this.menus === 2) {
+        assert.ok(choices.every((choice) => choice.value !== "missing-auth/unused"));
+        assert.ok(options?.onDelete);
+        await options.onDelete("fixture/test");
+      } else {
+        assert.ok(choices.every((choice) => choice.value !== "fixture/test"));
+        assert.ok(choices.some((choice) => choice.value === "fixture/alternate"));
+      }
+      return null;
+    }
+  }
+  const ui = new ModelUI();
+  const { host } = await f.start(ui);
+  await host.submit("/model");
+  assert.equal(ui.menus, 3);
+  assert.equal(loadConfig(f.home).model, undefined);
+  const updated = JSON.parse(await readFile(path, "utf8"));
+  assert.deepEqual(updated.providers["missing-auth"].models, []);
+  assert.deepEqual(updated.providers.fixture.models.map((model: { id: string }) => model.id), ["alternate"]);
+  assert.ok(ui.messages.some((message) => /current session keeps this model/.test(message.text)));
+});
+
+test("/model Delete requires confirmation and cancellation returns to the picker without changing configuration", { timeout: 20000 }, async (t) => {
+  const terminal = new ScreenTerminal(110, 30);
+  const screen = new TerminalUI({
+    async submit() {}, async interrupt() {}, async exit() {}, async editPrevious() {}, async browseSessions() {},
+  }, terminal);
+  t.after(() => screen.stop());
+  const f = await fixture(t, () => ({ kind: "text", text: "Unused." }));
+  class ModelUI extends RecordingUI {
+    titles: string[] = [];
+    override status(value: Status): void { super.status(value); screen.status(value); }
+    override choose(title: string, choices: Choice[], options?: ChoiceOptions): Promise<string | null> {
+      this.titles.push(title);
+      return screen.choose(title, choices, options);
+    }
+  }
+  const ui = new ModelUI();
+  const { host } = await f.start(ui);
+  const modelsPath = join(f.home, "models.json");
+  const settingsPath = join(f.home, "settings.json");
+  const modelsBefore = await readFile(modelsPath, "utf8");
+  const settingsBefore = await readFile(settingsPath, "utf8");
+  screen.start(); screen.setDraft("Keep my draft");
+  const menu = host.submit("/model");
+  await until(() => ui.titles.at(-1) === "Select a model");
+  await terminal.flush();
+  for (const cancel of ["\r", "\x1b"]) {
+    terminal.press("\x1b[3~");
+    await until(() => ui.titles.at(-1) === "Delete fixture/test?");
+    await terminal.flush();
+    assert.match(terminal.text(), /Delete fixture\/test\?/);
+    assert.equal(await readFile(modelsPath, "utf8"), modelsBefore);
+    terminal.press(cancel);
+    await until(() => ui.titles.at(-1) === "Select a model");
+    await terminal.flush();
+    assert.equal(await readFile(modelsPath, "utf8"), modelsBefore);
+    assert.equal(await readFile(settingsPath, "utf8"), settingsBefore);
+  }
+  terminal.press("\x1b[3~");
+  await until(() => ui.titles.at(-1) === "Delete fixture/test?");
+  await terminal.flush();
+  terminal.press("\x1b[B"); terminal.press("\r");
+  await until(() => ui.titles.at(-1) === "Select a model");
+  await terminal.flush();
+  assert.equal(loadConfig(f.home).model, undefined);
+  assert.deepEqual(JSON.parse(await readFile(modelsPath, "utf8")).providers.fixture.models.map((model: { id: string }) => model.id), ["alternate"]);
+  terminal.press("\x1b");
+  await menu;
+  assert.equal(screen.draft(), "Keep my draft");
+  assert.equal(f.requests.length, 0);
 });
 
 test("/connect chooses a Pi provider, credentials, then an available catalog model", async (t) => {

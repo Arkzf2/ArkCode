@@ -27,7 +27,10 @@ export interface Choice {
   tone?: "accent" | "directory" | "positive" | "muted";
   status?: { text: string; tone: "positive" | "muted" | "neutral" };
 }
-export interface ChoiceOptions { transient?: boolean; hint?: string; notice?: string; initialValue?: string }
+export interface ChoiceOptions {
+  transient?: boolean; hint?: string; notice?: string; initialValue?: string;
+  onDelete?: (value: string) => Promise<void>;
+}
 export interface ToggleChoice { value: string; label: string; description: string; detail: string; enabled: boolean }
 export interface ToolDetails { target?: string; exitCode?: number; diff?: string }
 export type SessionState = "needs-you" | "working" | "ready" | "inactive" | "unconfirmed";
