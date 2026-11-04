@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import { SessionManager, type AgentSession } from "@earendil-works/pi-coding-agent";
-import { COMPACT_PROMPT, SUMMARY_PREFIX } from "../src/compaction/prompts.js";
+import { COMPACT_PROMPT, COMPACT_RETRY_PROMPT, SUMMARY_PREFIX } from "../src/compaction/prompts.js";
 import { InputJournal } from "../src/compaction/inputs.js";
 import { checkpointSchema, parseCheckpoint } from "../src/compaction/checkpoint.js";
 import { assertClosedTools, estimateMessages, pruneToolResults, renderUser, requestBudget, retainUsers, summarySampling, textTokens, TOOL_PRUNING_MARKER, type RetainedUser } from "../src/compaction/policy.js";
@@ -138,9 +138,10 @@ test("compaction only runs after a complete tool batch", () => {
   assert.throws(() => assertClosedTools([tool("orphan")]), /matching call/);
 });
 
-test("runtime compaction prompts preserve the user-edited specification", async () => {
-  const document = await readFile("docs/implementation/COMPACT_PROMPT.md", "utf8");
-  const blocks = [...document.matchAll(/~~~text\r?\n([\s\S]*?)\r?\n~~~/g)];
-  assert.equal(blocks[0]?.[1]?.replaceAll("\r\n", "\n"), COMPACT_PROMPT);
-  assert.equal(blocks[1]?.[1], SUMMARY_PREFIX);
-});
+for (const locale of ["en", "zh-CN"]) {
+  test(`runtime compaction prompts preserve the ${locale} specification`, async () => {
+    const document = await readFile(`docs/${locale}/reference/compaction-prompts.md`, "utf8");
+    const blocks = [...document.replaceAll("\r\n", "\n").matchAll(/~~~text\n([\s\S]*?)\n~~~/g)];
+    assert.deepEqual(blocks.map(block => block[1]), [COMPACT_PROMPT, SUMMARY_PREFIX, COMPACT_RETRY_PROMPT]);
+  });
+}

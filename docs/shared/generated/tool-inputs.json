@@ -1,0 +1,304 @@
+{
+  "tools": [
+    {
+      "name": "read",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to the file to read (relative or absolute)"
+          },
+          "offset": {
+            "type": "number",
+            "description": "Line number to start reading from (1-indexed)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of lines to read"
+          }
+        }
+      }
+    },
+    {
+      "name": "write",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to the file to write (relative or absolute)"
+          },
+          "content": {
+            "type": "string",
+            "description": "Content to write to the file"
+          }
+        }
+      }
+    },
+    {
+      "name": "edit",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "path",
+          "edits"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to the file to edit (relative or absolute)"
+          },
+          "edits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "oldText",
+                "newText"
+              ],
+              "properties": {
+                "oldText": {
+                  "type": "string",
+                  "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+                },
+                "newText": {
+                  "type": "string",
+                  "description": "Replacement text for this targeted edit."
+                }
+              }
+            },
+            "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+          }
+        }
+      }
+    },
+    {
+      "name": "grep",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "pattern"
+        ],
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Search pattern (regex or literal string)"
+          },
+          "path": {
+            "type": "string",
+            "description": "Directory or file to search (default: current directory)"
+          },
+          "glob": {
+            "type": "string",
+            "description": "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'"
+          },
+          "ignoreCase": {
+            "type": "boolean",
+            "description": "Case-insensitive search (default: false)"
+          },
+          "literal": {
+            "type": "boolean",
+            "description": "Treat pattern as literal string instead of regex (default: false)"
+          },
+          "context": {
+            "type": "number",
+            "description": "Number of lines to show before and after each match (default: 0)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of matches to return (default: 100)"
+          }
+        }
+      }
+    },
+    {
+      "name": "glob",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "pattern"
+        ],
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'"
+          },
+          "path": {
+            "type": "string",
+            "description": "Directory to search in (default: current directory)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of results (default: 1000)"
+          }
+        }
+      }
+    },
+    {
+      "name": "bash",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Command interpreted by the selected shell in the current working directory."
+          },
+          "yield_time_ms": {
+            "type": "integer",
+            "minimum": 10000,
+            "maximum": 60000,
+            "default": 10000,
+            "description": "Maximum initial observation time in milliseconds, default 10000, range 10000 to 60000. Earlier exit returns earlier; expiry leaves the process running."
+          },
+          "timeout": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 600,
+            "description": "Optional execution deadline in seconds, 1 to 600, no default. Expiry cancels the process tree, including after handoff."
+          },
+          "stdin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "closed"
+              },
+              {
+                "type": "string",
+                "const": "pipe"
+              }
+            ],
+            "default": "closed",
+            "description": "closed by default. pipe permits later exact input through shell_control. No PTY is allocated."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "shell_control",
+      "inputSchema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "required": [
+              "action",
+              "session_id"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "wait",
+                "description": "Observe until exit, observation expiry, or user steering. Return new output; never replay earlier omitted logs."
+              },
+              "session_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
+              },
+              "wait_ms": {
+                "type": "integer",
+                "minimum": 10000,
+                "maximum": 300000,
+                "default": 10000,
+                "description": "Observation budget in integer milliseconds, default 10000, range 10000 to 300000. Earlier exit and finished sessions return earlier. Expiry never stops the process."
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "action",
+              "session_id"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "send",
+                "description": "Write exact input, optionally close stdin, then observe. Requires nonempty data or eof true."
+              },
+              "session_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
+              },
+              "data": {
+                "type": "string",
+                "maxLength": 65536,
+                "description": "Exact UTF-8 input, at most 65536 bytes. No trimming or appended newline. Include \\n when required."
+              },
+              "eof": {
+                "type": "boolean",
+                "default": false,
+                "description": "After optional data, permanently close stdin. Can be true without data. EOF is not process termination or Ctrl+C."
+              },
+              "wait_ms": {
+                "type": "integer",
+                "minimum": 500,
+                "maximum": 60000,
+                "default": 500,
+                "description": "Observation budget after input delivery, in integer milliseconds, default 500, range 500 to 60000. Earlier exit returns earlier."
+              }
+            },
+            "additionalProperties": false,
+            "anyOf": [
+              {
+                "required": [
+                  "data"
+                ],
+                "properties": {
+                  "data": {
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "required": [
+                  "eof"
+                ],
+                "properties": {
+                  "eof": {
+                    "const": true
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "required": [
+              "action",
+              "session_id"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "stop",
+                "description": "Immediately request process-tree cancellation. The host briefly confirms cleanup and returns its confirmed state or stopping. stopping does not confirm termination."
+              },
+              "session_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
+              }
+            },
+            "additionalProperties": false
+          }
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}
