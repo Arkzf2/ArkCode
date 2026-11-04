@@ -3049,6 +3049,36 @@ test("empty and truncated summaries are retried once and never installed", { tim
   assert.match(toolPrompt(f.requests.at(-1), "builtin_tool_mode"), /^Built-in tool mode: codemode\./);
 });
 
+for (const scenario of ["invalid-summary", "retry-success", "write-failure"]) {
+  test(`compact usage counts every response once after ${scenario} and resume`, { timeout: 30000 }, async (t) => {
+    let attempts = 0;
+    const f = await fixture(t, (request) => {
+      if (!isCompactRequest(request)) return { kind: "text", text: "Original verified evidence. ".repeat(3000) };
+      attempts++;
+      return { kind: "text", text: scenario === "write-failure" || (scenario === "retry-success" && attempts === 2) ? "Verified handoff." : "",
+        finish: "stop" };
+    });
+    const { host, ui } = await f.start();
+    await host.submit("Create history.");
+    if (scenario === "write-failure") t.mock.method(SessionManager.prototype, "appendCompaction", () => { throw new Error("Injected checkpoint write failure"); });
+    await host.submit("/compact");
+    assert.equal(host.outcome, scenario === "retry-success" ? "completed" : "failed");
+    assert.equal(attempts, scenario === "write-failure" ? 1 : 2);
+    const expected = scenario === "write-failure"
+      ? { input: 60, output: 20, cacheRead: 0, cacheWrite: 0, total: 80 }
+      : { input: 90, output: 30, cacheRead: 0, cacheWrite: 0, total: 120 };
+    const usage = async (active: ArkHost, recording: RecordingUI) => {
+      await active.submit("/status");
+      const text = recording.messages.at(-1)?.text.split("\nUsage: ")[1]; assert.ok(text);
+      return z.object({ tokens: z.object({ input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), total: z.number() }) }).parse(JSON.parse(text)).tokens;
+    };
+    assert.deepEqual(await usage(host, ui), expected);
+    await host.exit();
+    const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
+    assert.deepEqual(await usage(resumed.host, resumed.ui), expected);
+  });
+}
+
 test("an unchanged checkpoint is a no-op and pending tool configuration can refresh without another summary", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (request) => ({ kind: "text", text: isCompactRequest(request) ? "Continue the verified task." : "Prior inspected output. ".repeat(3000) }));
   const { host } = await f.start();

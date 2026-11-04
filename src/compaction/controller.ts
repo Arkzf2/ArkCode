@@ -137,6 +137,7 @@ export class CompactionController {
           if (header) retryAfter = /^\d+(?:\.\d+)?$/.test(header) ? Number(header) * 1000 : Math.max(0, Date.parse(header) - Date.now());
         },
       });
+      this.session.sessionManager.appendUsage("compaction", model.provider, model.id, response.usage);
       signal.throwIfAborted();
       if (response.stopReason !== "error" || isContextOverflow(response) || retry >= 2 || !/(?:429|rate.?limit|timed?\s*out|ECONNRESET|fetch failed|temporar|network|\b50[02349]\b|overloaded)/i.test(response.errorMessage ?? ""))
         return { response, usage: response.usage };
@@ -267,7 +268,7 @@ export class CompactionController {
       signal.throwIfAborted();
       const branch = manager.getBranch();
       const cutoffIndex = cutoff === null ? -1 : branch.findIndex((entry) => entry.id === cutoff);
-      if ((cutoff !== null && cutoffIndex < 0) || branch.slice(cutoffIndex + 1).some((entry) => entry.type !== "custom")
+      if ((cutoff !== null && cutoffIndex < 0) || branch.slice(cutoffIndex + 1).some((entry) => entry.type !== "custom" && entry.type !== "usage")
         || session.model !== selected || JSON.stringify(this.options.settings.defaults()) !== JSON.stringify(nextSettings))
         throw new CompactionError("conflict", "The session branch, model or configuration changed during compaction. Retry against the current state.");
       const checkpoint: Checkpoint = {
@@ -279,7 +280,7 @@ export class CompactionController {
       };
       parseCheckpoint({ arkcode: checkpoint });
       try {
-        manager.appendCompaction(summary, null, tokensBefore, { arkcode: checkpoint }, true, usage);
+        manager.appendCompaction(summary, null, tokensBefore, { arkcode: checkpoint }, true);
         committed = true;
         const path = manager.getSessionFile();
         if (path) { const fd = openSync(path, "r+"); try { fsyncSync(fd); } finally { closeSync(fd); } }
