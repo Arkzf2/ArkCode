@@ -46,12 +46,10 @@ export function requestBudget(model: Model<Api>, output?: number) {
     }
   }
   const window = model.contextWindow;
-  if (!Number.isFinite(window) || window <= 0 || !Number.isFinite(output) || output <= 0 || output >= window)
+  if (!Number.isFinite(window) || window < 2 || !Number.isFinite(output) || output <= 0)
     throw new CompactionError("budget-insufficient", "The model must declare a context window and a usable output limit before compacting.");
-  const input = window - output;
-  const reserve = window >= 200_000 ? 50_000 : 25_000;
-  const threshold = Math.floor(Math.min(input * 0.9, input - reserve));
-  if (threshold <= 0) throw new CompactionError("budget-insufficient", `The model cannot accommodate the configured ${reserve / 1000}k input reserve. Select a larger-context model.`);
+  const input = Math.floor(window * 0.95);
+  const threshold = Math.floor(window * 0.9);
   return { window, output, input, threshold, measurement: "estimate" as const };
 }
 

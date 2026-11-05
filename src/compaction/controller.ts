@@ -226,12 +226,13 @@ export class CompactionController {
       for (let attempt = 0; !complete && attempt < 2; attempt++) {
         const instruction = [COMPACT_PROMPT, customInstructions ? `Additional user instructions for this summary:\n${customInstructions}` : "", attempt ? COMPACT_RETRY_PROMPT : ""].filter(Boolean).join("\n\n");
         const summaryInput = () => estimateMessages(summarySource) + textTokens(instruction) + 6;
-        if (summaryInput() + output > budget.window) {
+        if (summaryInput() >= budget.input) {
           const pruned = pruneToolResults(summarySource);
           if (prunedResults || !pruned.pruned) throw new CompactionError("overflow", "The summary request does not fit, and tool-result pruning cannot reduce it further.");
           summarySource = pruned.messages; prunedResults = pruned.pruned;
-          if (summaryInput() + output > budget.window) throw new CompactionError("overflow", "The summary request still exceeds the context window after pruning large tool results.");
+          if (summaryInput() >= budget.input) throw new CompactionError("overflow", "The summary request still exceeds the usable context window after pruning large tool results.");
         }
+        output = Math.min(output, budget.input - summaryInput());
         const result = await this.summarize(summarySource, model, output, signal, instruction);
         usage = result.usage;
         const response = result.response;

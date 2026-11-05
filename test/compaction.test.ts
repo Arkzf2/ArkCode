@@ -16,22 +16,28 @@ const user = (value: string, inputId = "input"): RetainedUser => ({ inputId, ent
 const tool = (value: string): Extract<Message, { role: "toolResult" }> => ({ role: "toolResult", toolCallId: "call", toolName: "Read", timestamp: 1, isError: true,
   content: [{ type: "text", text: value }], details: { evidence: "unchanged" } });
 
-test("compact thresholds reserve output before applying 90 percent and the context window reserve tier", () => {
-  assert.deepEqual(requestBudget(model), { window: 204096, output: 4096, input: 200000, threshold: 150000, measurement: "estimate" });
-  assert.equal(requestBudget({ ...model, contextWindow: 1004096 }).threshold, 900000);
-  assert.equal(requestBudget({ ...model, contextWindow: 132096 }).threshold, 103000);
-  assert.equal(requestBudget({ ...model, contextWindow: 128000 }).threshold, 98904);
-  assert.equal(requestBudget({ ...model, contextWindow: 199999 }).threshold, 170903);
-  assert.equal(requestBudget({ ...model, contextWindow: 200000 }).threshold, 145904);
-  assert.equal(requestBudget({ ...model, contextWindow: 200000, maxTokens: 100000 }).threshold, 50000);
-  assert.throws(() => requestBudget({ ...model, contextWindow: 24000 }), /25k/);
-  assert.throws(() => requestBudget({ ...model, contextWindow: 200000, maxTokens: 150000 }), /50k/);
+test("compact uses 90 percent of the full window with 95 percent usable context, independently of output caps", () => {
+  assert.deepEqual(requestBudget(model), { window: 204096, output: 4096, input: 193891, threshold: 183686, measurement: "estimate" });
+  for (const maxTokens of [4096, 255999, 256000]) {
+    assert.deepEqual(requestBudget({ ...model, contextWindow: 256000, maxTokens }), {
+      window: 256000, output: maxTokens, input: 243200, threshold: 230400, measurement: "estimate",
+    });
+  }
+  assert.equal(requestBudget({ ...model, contextWindow: 128000 }).threshold, 115200);
+  assert.equal(requestBudget({ ...model, contextWindow: 199999 }).threshold, 179999);
+  assert.equal(requestBudget({ ...model, contextWindow: 200000 }).threshold, 180000);
+  assert.equal(requestBudget({ ...model, contextWindow: 24000 }).threshold, 21600);
   assert.throws(() => requestBudget({ ...model, maxTokens: Number.NaN }), /context window/);
+  assert.throws(() => requestBudget({ ...model, maxTokens: 0 }), /context window/);
+  assert.throws(() => requestBudget({ ...model, contextWindow: 0 }), /context window/);
+  assert.throws(() => requestBudget({ ...model, contextWindow: Number.POSITIVE_INFINITY }), /context window/);
 });
 
-test("output reserves include model sampling overrides and summary limits override inherited caps", () => {
+test("output caps include model sampling overrides without reducing context and summaries override inherited caps", () => {
   const configured = { ...model, samplingParams: { max_tokens: 8192, temperature: 0.5 }, samplingParamsByThinkingLevel: { high: { max_completion_tokens: 16384 } } };
   assert.equal(requestBudget(configured).output, 16384);
+  assert.equal(requestBudget(configured).threshold, 183686);
+  assert.equal(requestBudget(configured).input, 193891);
   assert.deepEqual(summarySampling(configured, 2048), { max_tokens: 2048, max_completion_tokens: 2048 });
   assert.throws(() => requestBudget({ ...model, samplingParams: { max_tokens: 0 } }), /positive output token limit/);
   assert.throws(() => requestBudget({ ...model, samplingParams: { max_tokens: null } }), /positive output token limit/);

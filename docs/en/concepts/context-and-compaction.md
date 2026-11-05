@@ -14,9 +14,9 @@ Dynamic environment changes take effect on later requests, including requests af
 
 `/compact` triggers compaction manually. Automatic compaction checks the input budget after a complete tool batch closes and before the next model request. An actual overflow can also trigger one compaction and retry. ArkCode manages triggering, summary policy, and checkpoints; Pi provides model calling and history primitives.
 
-Let W be the context window, O the effective max output, and I = W - O the available input. When W is under 200000, ArkCode reserves 25000 tokens; otherwise it reserves 50000. The trigger threshold is `floor(min(0.9 * I, I - reserve))` and must be positive. A larger output budget also reduces available input.
+For a context window W, automatic compaction triggers at `floor(0.9 * W)`, matching Codex's default. The usable context limit is `floor(0.95 * W)`. Neither calculation subtracts `maxTokens` or uses a fixed 25k/50k reserve.
 
-A small window or an incorrect maxTokens can therefore leave too little budget. The budget is an estimate, not a guarantee of provider billing tokens. The status bar statistic and cumulative cost are also different metrics.
+`maxTokens` caps output; the actual summary output limit also depends on the remaining context and compact target. For a 256000-token window, automatic compaction triggers at 230400 tokens and usable context is 243200 tokens. These budgets are estimates, not guarantees of provider billing tokens. The status bar statistic and cumulative cost are also different metrics.
 
 ## What compaction keeps
 

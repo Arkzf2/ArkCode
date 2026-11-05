@@ -149,7 +149,7 @@ function toolPrompt(request: ModelRequest | undefined, section: "builtin_tool_mo
   return [...text.matchAll(new RegExp(`<${section}>\\n([\\s\\S]*?)\\n</${section}>`, "g"))].at(-1)?.[1] ?? "";
 }
 type ToolReply = { kind: "tool"; name: string; arguments: object };
-type Reply = { kind: "text"; text: string; thinking?: string; finish?: "stop" | "length" } | ToolReply | { kind: "tools"; calls: ToolReply[] } | { kind: "error"; status: number; message: string };
+type Reply = { kind: "text"; text: string; thinking?: string; finish?: "stop" | "length"; inputTokens?: number } | ToolReply | { kind: "tools"; calls: ToolReply[] } | { kind: "error"; status: number; message: string };
 
 test("global and recursive workspace rules reach the model as hidden scoped user context", async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Done." }));
@@ -445,7 +445,8 @@ function stream(response: ServerResponse, reply: Reply, index: number): void {
     }
     chunk({}, "tool_calls");
   }
-  response.write(`data: ${JSON.stringify({ id: `chat-${index}`, object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 30, completion_tokens: 10, total_tokens: 40 } })}\n\n`);
+  const inputTokens = reply.kind === "text" ? reply.inputTokens ?? 30 : 30;
+  response.write(`data: ${JSON.stringify({ id: `chat-${index}`, object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: inputTokens, completion_tokens: 10, total_tokens: inputTokens + 10 } })}\n\n`);
   response.end("data: [DONE]\n\n");
 }
 
@@ -1107,7 +1108,7 @@ test("automatic compact applies pending modes and prompts before the next reques
     }
     if (index === 1) return { kind: "tool", name: "read", arguments: { path: "large.txt", offset: 2001, limit: 2000 } };
     return { kind: "text", text: "Summary or completed answer." };
-  }, false, 53000);
+  }, false, 32000);
   home = f.home;
   await writeFile(join(home, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { url: mcp.url } } }));
   await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
@@ -2260,7 +2261,7 @@ test("automatic compact restores the live shell inventory before the next model 
       return { kind: "tool", name: "shell_control", arguments: { action: "send", session_id: sessionId, eof: true } };
     }
     return { kind: "text", text: "The original worker completed after compaction." };
-  }, false, 53000);
+  }, false, 32000);
   await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
   const { host, ui } = await f.start();
   await host.submit("Start a worker, inspect the large file, then finish the worker.");
@@ -2868,7 +2869,7 @@ test("manual compact checkpoints the handoff and refreshes instructions from its
 test("automatic compact during tool continuation reinjects current context before the next conversational request", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (_request, index) => index < 2
     ? { kind: "tool", name: "read", arguments: { path: "large.txt", offset: index * 2000 + 1, limit: 2000 } }
-    : { kind: "text", text: "Compacted evidence or completed answer." }, false, 53000);
+    : { kind: "text", text: "Compacted evidence or completed answer." }, false, 32000);
   await writeFile(join(f.cwd, "large.txt"), "Large inspected evidence.\n".repeat(5200));
   await writeFile(join(f.cwd, "AGENTS.md"), "Current automatic compact instructions.");
   const { host, ui } = await f.start();
@@ -2887,6 +2888,47 @@ test("automatic compact during tool continuation reinjects current context befor
 
 function isCompactRequest(request: ModelRequest): boolean {
   return JSON.stringify(request.messages.at(-1)?.content).includes("Create a context checkpoint for an LLM continuing the same task.");
+}
+
+for (const maxTokens of [255999, 256000]) {
+  test(`a ${maxTokens} output cap starts normally and compacts at 90 percent of a 256k window`, { timeout: 30000 }, async (t) => {
+    const f = await fixture(t, (request, index) => ({ kind: "text", text: isCompactRequest(request)
+      ? "Verified progress. Continue the task."
+      : index === 0 ? "a".repeat(860000) : index === 1 ? "b".repeat(80000) : "Done." }), false, 256000);
+    const path = join(f.home, "models.json");
+    const source = z.object({ providers: z.object({ fixture: z.object({
+      models: z.array(z.object({ maxTokens: z.number() }).passthrough()),
+    }).passthrough() }) }).parse(JSON.parse(await readFile(path, "utf8")));
+    const configured = source.providers.fixture.models[0]; assert.ok(configured);
+    configured.maxTokens = maxTokens;
+    configured.samplingParamsByThinkingLevel = { high: { max_completion_tokens: maxTokens } };
+    await writeFile(path, JSON.stringify(source));
+    const { host, ui } = await f.start();
+    await host.submit("Start the task.");
+    assert.equal(host.outcome, "completed");
+    assert.equal(f.requests.length, 1);
+    const firstOutput = Number(f.requests[0]?.max_completion_tokens ?? f.requests[0]?.max_tokens);
+    assert.ok(firstOutput > 0 && firstOutput < maxTokens);
+    await host.submit("Continue below the compact threshold.");
+    assert.equal(host.outcome, "completed");
+    assert.equal(f.requests.length, 2);
+    assert.equal(f.requests.filter(isCompactRequest).length, 0);
+    await host.submit("Continue after crossing the compact threshold.");
+    assert.equal(host.outcome, "completed", JSON.stringify(ui.messages.filter((message) => message.kind === "error")));
+    assert.equal(f.requests.length, 4);
+    const summary = f.requests.find(isCompactRequest); assert.ok(summary);
+    const summaryOutput = Number(summary.max_completion_tokens ?? summary.max_tokens);
+    assert.ok(summaryOutput > 0 && summaryOutput < 10000);
+    const entry = SessionManager.open((await f.sessions())[0] ?? "").getBranch().findLast((entry) => entry.type === "compaction");
+    assert.ok(entry?.type === "compaction");
+    const checkpoint = parseCheckpoint(entry.details); assert.ok(checkpoint);
+    assert.equal(checkpoint.reason, "threshold");
+    assert.equal(checkpoint.budget.threshold, 230400);
+    assert.equal(checkpoint.budget.input, 243200);
+    assert.ok(checkpoint.tokensBefore >= 230400);
+    assert.ok(checkpoint.tokensAfter < 230400);
+    assert.match(JSON.stringify(f.requests.at(-1)?.messages), /Verified progress/);
+  });
 }
 
 test("ArkCode compact retains 20k of raw user text without restoring historical Skill bodies", { timeout: 30000 }, async (t) => {
@@ -3162,7 +3204,7 @@ test("cancelling manual compact withdraws queued input and does not resurrect it
 test("automatic compact failure warns and continues when the original request still fits", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, (request) => isCompactRequest(request)
     ? { kind: "error", status: 400, message: "Summary generation rejected by fixture" }
-    : { kind: "text", text: "Evidence before failed compact. ".repeat(4500) }, false, 53000);
+    : { kind: "text", text: "Evidence before failed compact. ".repeat(4500), inputTokens: 48000 }, false, 53000);
   const { host, ui } = await f.start();
   await host.submit("Earlier task."); await host.submit("Continue within the hard limit.");
   assert.equal(host.outcome, "completed");
@@ -3172,13 +3214,26 @@ test("automatic compact failure warns and continues when the original request st
   assert.ok(!SessionManager.open((await f.sessions())[0] ?? "").getBranch().some((entry) => entry.type === "compaction"));
 });
 
+test("automatic compact failure pauses above 95 percent of the window", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, (request) => isCompactRequest(request)
+    ? { kind: "error", status: 400, message: "Summary generation rejected by fixture" }
+    : { kind: "text", text: "Verified history. ".repeat(3000), inputTokens: 51000 }, false, 53000);
+  const { host, ui } = await f.start();
+  await host.submit("Earlier task."); await host.submit("Continue beyond the usable context limit.");
+  assert.equal(host.outcome, "failed");
+  assert.equal(f.requests.filter(isCompactRequest).length, 1);
+  assert.equal(f.requests.filter((request) => !isCompactRequest(request)).length, 1);
+  assert.ok(ui.messages.some((message) => /task is paused.*no longer fits/.test(message.text)));
+  assert.match(JSON.stringify(SessionManager.open((await f.sessions())[0] ?? "").buildSessionProjection().messages), /Continue beyond the usable context limit/);
+});
+
 test("a budget pause preserves pending input and resumes in the same session after selecting a larger model", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "Resumed safely." }), false, 28000);
   const { host, ui } = await f.start();
   const id = ui.statuses.at(-1)?.sessionId;
-  await host.submit("PENDING ORIGINAL TASK");
+  await host.submit("PENDING ORIGINAL TASK " + "x".repeat(112000));
   assert.equal(host.outcome, "failed"); assert.equal(f.requests.length, 0);
-  assert.ok(ui.messages.some((message) => /25k input reserve/.test(message.text)));
+  assert.ok(ui.messages.some((message) => /task is paused.*no longer fits/.test(message.text)));
   await host.submit("/model fixture/alternate"); await host.submit("Continue the pending task.");
   assert.equal(host.outcome, "completed");
   assert.equal(ui.statuses.at(-1)?.sessionId, id);
@@ -3266,7 +3321,7 @@ test("automatic compact waits for every tool result in a parallel batch and does
     }
     return index === 0 ? { kind: "tools", calls: ["first.txt", "second.txt"].map((path) => ({ kind: "tool", name: "read", arguments: { path } })) }
       : { kind: "text", text: "Both reads are complete." };
-  }, false, 53000);
+  }, false, 32000);
   for (const file of ["first.txt", "second.txt"]) await writeFile(join(f.cwd, file), ("Parallel batch evidence. ".repeat(2) + "\n").repeat(950));
   const { host, ui } = await f.start();
   await host.submit("Read both files and finish.");
