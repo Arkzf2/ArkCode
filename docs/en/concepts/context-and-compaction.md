@@ -20,6 +20,8 @@ For a context window W, automatic compaction triggers at `floor(0.9 * W)`, match
 
 ## What compaction keeps
 
+To generate a summary, ArkCode appends a summary query to the existing conversation, preserving the original messages and their timestamps. This keeps historical usage available for the SDK's context estimate. Fresh timestamps belong to new messages; the compacted conversation is assembled separately from the summary request.
+
 ArkCode generates a task summary, keeps up to 20000 tokens of real user text from the recent budget, and rebuilds current environment, rules, and tool policy. When the retained budget is insufficient, user text may be truncated by rule. See the [compaction prompt reference](../reference/compaction-prompts.md) for the exact summary instructions.
 
 The original JSONL history is kept, so TUI resume can display messages from before compaction; that does not mean the model can still see the whole history. Skill bodies loaded in history are not automatically refilled. Queued but undelivered input keeps its own body snapshot.

@@ -118,10 +118,9 @@ export class CompactionController {
   }
 
   private async summarize(source: Message[], model: Model<Api>, output: number, signal: AbortSignal, prompt: string): Promise<{ response: AssistantMessage; usage: Usage }> {
-    const current = getCurrentSystemMessage(convertToLlm(source));
+    // Prefix timestamps let the SDK reuse historical usage when capping summary output.
     const messages = convertToLlm([
-      { role: "system", content: current?.content ?? "", sections: current?.sections, toolsAdded: [], timestamp: Date.now() },
-      ...source.filter((message) => message.role !== "system" && !(message.role === "assistant" && message.stopReason === "error")),
+      ...source.filter((message) => !(message.role === "assistant" && message.stopReason === "error")),
       { role: "user", content: prompt, timestamp: Date.now() },
     ]);
     if (!model.input.includes("image") && messages.some((message) => typeof message.content !== "string" && message.content.some((block) => block.type === "image")))
