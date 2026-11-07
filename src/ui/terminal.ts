@@ -32,6 +32,7 @@ import type {
   ApprovalRequest,
   Choice,
   ChoiceOptions,
+  DraftFile,
   InputMode,
   SessionBrowserResult,
   SessionDetails,
@@ -46,6 +47,7 @@ import type {
 import { slashCommands } from "./commands.js";
 import { permissionLabels } from "../permissions/policy.js";
 import { mentionPrefix, WorkspaceAutocompleteProvider } from "./autocomplete.js";
+import { DraftFileAttachments } from "./file-attachments.js";
 import { diffStats, highlightCommand, renderDiff, toolColors } from "./tool-rendering.js";
 import { contextDetails, contextReadout } from "./context-usage.js";
 import { TranscriptSelection } from "./text-selection.js";
@@ -133,7 +135,19 @@ function themes(): { editor: EditorTheme; markdown: MarkdownTheme; select: Selec
 }
 
 class ArkEditor extends Editor {
+  readonly files = new DraftFileAttachments();
   private bottomBorder = "";
+
+  override handleInput(data: string): void {
+    this.files.update(this.getText());
+    super.handleInput(data);
+    this.files.update(this.getText());
+  }
+
+  override setText(text: string): void {
+    super.setText(text);
+    this.files.reset(this.getText());
+  }
   protected override renderTopBorder(width: number, hiddenLineCount: number): string {
     if (width < 2) return accent("─".repeat(width));
     const edge = hiddenLineCount > 0 ? "↑" : "╭";
@@ -203,7 +217,7 @@ async function copyText(text: string): Promise<boolean> {
 export class TerminalUI implements UserInterface {
   private readonly tui: TuiMainScreen;
   private readonly theme = themes();
-  private editor: Editor;
+  private editor: ArkEditor;
   private readonly entries: TranscriptEntry[] = [];
   private readonly tools = new Map<string, Extract<TranscriptEntry, { kind: "tool" }>>();
   private readonly promptHistory: string[] = [];
@@ -256,7 +270,7 @@ export class TerminalUI implements UserInterface {
     if (value.state.kind === "idle") {
       for (const entry of this.entries) if (entry.kind === "reasoning") entry.active = false;
     }
-    if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(value.cwd, () => this.currentStatus?.mcpServers ?? [], () => this.currentStatus?.skills ?? []));
+    if (oldCwd !== value.cwd) this.editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(value.cwd, () => this.currentStatus?.mcpServers ?? [], () => this.currentStatus?.skills ?? [], (selection) => this.editor.files.select(selection)));
     if (wasInitializing !== (value.initializing === true)) this.rebuild();
     this.render();
   }
@@ -530,9 +544,11 @@ export class TerminalUI implements UserInterface {
 
   dismiss(): void { this.panel?.cancel(); if (this.browser) this.finishBrowser(null); }
   draft(): string { return this.editor.getExpandedText(); }
-  setDraft(text: string): void {
+  draftAttachments(): readonly DraftFile[] { return this.editor.files.snapshot(); }
+  setDraft(text: string, files: readonly DraftFile[] = []): void {
     this.lastKey = null;
     this.editor.setText(sanitizeTerminalText(text));
+    this.editor.files.restore(this.editor.getText(), files);
     this.render();
   }
 
@@ -561,9 +577,9 @@ export class TerminalUI implements UserInterface {
     this.started = false;
   }
 
-  private createEditor(): Editor {
+  private createEditor(): ArkEditor {
     const editor = new ArkEditor(this.tui, this.theme.editor, { paddingX: 4, autocompleteMaxVisible: 6 });
-    editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(this.currentStatus?.cwd ?? process.cwd(), () => this.currentStatus?.mcpServers ?? [], () => this.currentStatus?.skills ?? []));
+    editor.setAutocompleteProvider(new WorkspaceAutocompleteProvider(this.currentStatus?.cwd ?? process.cwd(), () => this.currentStatus?.mcpServers ?? [], () => this.currentStatus?.skills ?? [], (selection) => editor.files.select(selection)));
     editor.onSubmit = (value) => this.submit(value, this.busy() ? "steer" : "prompt");
     return editor;
   }
@@ -935,9 +951,10 @@ export class TerminalUI implements UserInterface {
       this.editor.addToHistory(value);
       this.promptHistory.push(value);
     }
+    const files = this.editor.files.paths();
     this.editor.setText("");
     this.run(async () => {
-      try { await this.actions.submit(value, mode); }
+      try { await this.actions.submit(value, mode, files); }
       catch (error) { if (!this.draft()) this.setDraft(value); throw error; }
     });
   }
@@ -1077,7 +1094,8 @@ export class TerminalUI implements UserInterface {
         child.on("close", resolve);
       });
       const edited = await readFile(file, "utf8");
-      this.setDraft(edited);
+      this.editor.files.update(edited);
+      this.setDraft(edited, this.editor.files.snapshot());
       if (code !== 0) this.message("error", `External editor exited with ${code ?? "no exit code"}. Draft retained.`);
     } finally {
       if (!this.started) {

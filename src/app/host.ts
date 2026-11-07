@@ -79,11 +79,11 @@ export class ArkHost {
       throw error;
     } finally { this.opening.delete(entry); }
   }
-  async submit(text: string, mode: InputMode = "prompt"): Promise<void> {
+  async submit(text: string, mode: InputMode = "prompt", files: readonly string[] = []): Promise<void> {
     if (this.closing || !this.current?.runtime.ready || this.navigating) return;
     if (text.trim().toLowerCase() === "/exit") { await this.exit(); return; }
     const match = /^\/(new|sessions|fork)(?:\s+(.*))?$/i.exec(text.trim());
-    if (!match) { await this.current.runtime.submit(text, mode); return; }
+    if (!match) { await this.current.runtime.submit(text, mode, files); return; }
     const [, name, argument = ""] = match;
     this.navigating = true;
     try {

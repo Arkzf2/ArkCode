@@ -20,6 +20,7 @@ Usage: arkcode [options] [prompt]
   Anthropic base URL is the API root; Pi appends /v1/messages.
 
   -C, --cwd PATH           Workspace directory
+  -f, --file PATH          Attach a workspace file (repeatable); prompt @text stays literal
   -m, --model PROVIDER/ID  Select a configured Pi model
       --thinking LEVEL    off, minimal, low, medium, high, xhigh, max
       --permissions MODE  always-ask, ask-when-needed, never-ask
@@ -52,6 +53,7 @@ Switching sessions keeps background runs active. Another terminal opening the sa
 | --- | --- | --- |
 | `--cwd` | string | `-C` |
 | `--home` | string | 无 |
+| `--file` | string[] | `-f` |
 | `--model` | string | `-m` |
 | `--thinking` | string | 无 |
 | `--permissions` | string | 无 |

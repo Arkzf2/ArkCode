@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp, mkdir, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2437,17 +2438,68 @@ test("resuming a compacted session displays messages from before compaction", { 
     ["The original requirement", "A later requirement"]);
 });
 
+test("literal at-signs reach the model unchanged even when a matching image exists", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Task received." }));
+  await writeFile(join(f.cwd, "defer"), largePng());
+  const { host } = await f.start();
+  const input = "Implement @defer and parse `@Ident` and @Ident tokens. Contact dev@example.com; install @scope/package.";
+  await host.submit(input);
+  assert.equal(host.outcome, "completed");
+  assert.ok(f.requests[0]?.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes(input)));
+  const many = Array.from({ length: 12 }, (_, index) => `@decorator${index}`).join(" ");
+  await host.submit(many);
+  assert.equal(host.outcome, "completed");
+  assert.ok(f.requests[1]?.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes(many)));
+});
+
+test("CLI positional and piped prompts keep at-signs literal alongside explicit image attachments", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Task received." }), true);
+  await writeFile(join(f.cwd, "image with space.png"), largePng());
+  const input = "Support @defer and `@Ident` with @scope/package and dev@example.com.";
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  for (const piped of [false, true]) {
+    const child = spawn(process.execPath, ["--import", "tsx", cli, "--cwd", f.cwd, "--home", f.home,
+      "--model", "fixture/test", "--permissions", "never-ask", "--json", "--file", "image with space.png", ...(piped ? [] : [input])],
+    { stdio: ["pipe", "pipe", "pipe"] });
+    t.after(() => { child.kill(); });
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    const exited = once(child, "exit");
+    child.stdin.end(piped ? input : "");
+    const [code] = await exited;
+    assert.equal(code, 0, output);
+    const messages = f.requests.at(-1)?.messages; assert.ok(messages);
+    const user = messages.find((message) => message.role === "user" && JSON.stringify(message.content).includes(input));
+    assert.ok(user);
+    assert.match(JSON.stringify(user.content), /image_url/);
+  }
+  assert.equal(f.requests.length, 2);
+});
+
+test("missing explicit attachments fail before a model request while literal references are accepted", { timeout: 30000 }, async (t) => {
+  const f = await fixture(t, () => ({ kind: "text", text: "Received." }));
+  const { host, ui } = await f.start();
+  await host.submit("Inspect", "prompt", ["missing.png"]);
+  assert.equal(host.outcome, "failed");
+  assert.equal(f.requests.length, 0);
+  assert.ok(ui.messages.some((message) => message.kind === "error" && message.text.includes("missing.png")));
+  await host.submit("Discuss @missing.png and @defer");
+  assert.equal(host.outcome, "completed");
+  assert.equal(f.requests.length, 1);
+});
+
 test("file mentions keep paths visible without copying file contents into history or model input", { timeout: 30000 }, async (t) => {
   const f = await fixture(t, () => ({ kind: "text", text: "I will inspect the path." }));
   await writeFile(join(f.cwd, "large.txt"), "private file content\n".repeat(9000));
   await mkdir(join(f.cwd, "folder"));
   const { host, ui } = await f.start();
-  const input = "Inspect @large.txt and @folder";
-  await host.submit(input);
+  const input = 'Inspect @"large.txt" and @folder';
+  await host.submit(input, "prompt", ["large.txt", "folder"]);
   assert.equal(host.outcome, "completed");
   assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text), [input]);
   const request = JSON.stringify(f.requests[0]?.messages);
-  assert.ok(request.includes(input));
+  assert.ok(request.includes(JSON.stringify(input).slice(1, -1)));
   assert.ok(!request.includes("private file content"));
   await host.exit();
   const resumed = await f.start(new RecordingUI(), ["resume", "--last"]);
@@ -2460,7 +2512,7 @@ test("image mentions above 128 KiB reach an image-capable model as image parts",
   assert.ok(png.length > 128 * 1024);
   await writeFile(join(f.cwd, "large.png"), png);
   const { host, ui } = await f.start();
-  await host.submit("Inspect @large.png");
+  await host.submit("Inspect @large.png", "prompt", ["large.png"]);
   assert.equal(host.outcome, "completed");
   assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text), ["Inspect @large.png"]);
   const userMessage = f.requests[0]?.messages.find((message) => message.role === "user");
@@ -2475,7 +2527,7 @@ test("image mentions give a clear error when the selected model accepts text onl
   await writeFile(join(f.cwd, "image.png"), largePng());
   const { host, ui } = await f.start();
   const query = "Inspect @image.png";
-  await host.submit(query);
+  await host.submit(query, "prompt", ["image.png"]);
   assert.equal(f.requests.length, 0);
   assert.deepEqual(ui.messages.filter((message) => message.kind === "user").map((message) => message.text), [query]);
   assert.ok(ui.messages.some((message) => message.kind === "error" && message.text.includes("does not support images")));
@@ -2495,7 +2547,7 @@ test("queued image mentions retain their image part when the running turn comple
   const { host } = await f.start();
   const run = host.submit("Start work");
   await until(() => f.requests.length === 1);
-  await host.submit("Inspect @queued.png", "follow-up");
+  await host.submit("Inspect @queued.png", "follow-up", ["queued.png"]);
   release();
   await run;
   assert.equal(host.outcome, "completed");

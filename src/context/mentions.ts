@@ -18,13 +18,22 @@ export function displayUserText(text: string): string {
     : text;
 }
 
-export async function prepareMentions(text: string, cwd: string, supportsImages: boolean): Promise<{ text: string; images: ImageContent[] }> {
-  const matches = [...text.matchAll(/(?:^|\s)@(?:"([^"]+)"|([^\s]+))/g)].filter((match) => !(match[1] ?? match[2])?.startsWith("skill:"));
-  if (matches.length > 8) throw new Error("At most 8 file references per input.");
+export function fileMention(path: string): string {
+  return /[\s"<>`]/u.test(path) ? `@${JSON.stringify(path)}` : `@${path}`;
+}
+
+export function withFileMentions(text: string, files: readonly string[]): string {
+  const mentioned = new Set([...text.matchAll(/(?:^|\s)@(?:"([^"\n]+)"|([^\s]+))/g)].map((match) => match[1] ?? match[2]));
+  const references = [...new Set(files)].filter((path) => !mentioned.has(path)).map(fileMention);
+  return [text, ...references].filter(Boolean).join("\n\n");
+}
+
+export async function prepareAttachments(text: string, files: readonly string[], cwd: string, supportsImages: boolean): Promise<{ text: string; images: ImageContent[] }> {
+  const attachments = [...new Set(files)];
+  if (attachments.length > 8) throw new Error("At most 8 file attachments per input.");
   const images: ImageContent[] = [];
-  for (const match of matches) {
-    const name = match[1] ?? match[2];
-    if (!name) continue;
+  for (const name of attachments) {
+    if (!name) throw new Error("File attachment path cannot be empty.");
     const path = await workspacePath(cwd, name);
     const info = await stat(path);
     if (info.isDirectory()) continue;

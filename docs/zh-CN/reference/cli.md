@@ -23,6 +23,7 @@
 | 参数 | 类型及默认 | 行为 |
 | --- | --- | --- |
 | `-C, --cwd` | 路径，默认当前目录 | 工作区目录 |
+| `-f, --file` | 路径，可重复 | 显式指定工作区附件；文本文件保留路径引用，图片作为图片内容传递 |
 | `--home` | 路径 | 覆盖 `ARKCODE_HOME` 和默认 `~/.arkcode` |
 | `-m, --model` | 字符串 | 选择 `provider/id`；无 provider 时按可用模型及默认供应商匹配 |
 | `--thinking` | 枚举 | `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`；实际能力依模型而定 |
@@ -58,7 +59,9 @@
 
 ## 输入与退出
 
-print 模式无位置提示且 stdin 非终端时读取 stdin，最多 1 MiB；仍无提示则报错。普通启动的输入或输出不是终端时，有提示会转为 print，无提示则报错。
+print 模式无位置提示且 stdin 非终端时读取 stdin，最多 1 MiB。必须提供提示或 `--file` 附件。普通启动的输入或输出不是终端时，有提示或附件会转为 print。
+
+正文及 stdin 中的 `@defer`、`@Ident`、`@file.png` 均按原文传递。显式附件使用 `arkcode -p --file "image with space.png" "检查这张图片"`。路径在 `--cwd` 内解析，每次输入最多八个不同附件。附件不存在或向纯文本模型发送图片时会报错。
 
 | 退出码 | 含义 |
 | --- | --- |

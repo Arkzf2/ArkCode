@@ -35,7 +35,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
   if (!options.print && (!process.stdin.isTTY || !process.stdout.isTTY)) {
-    if (options.prompt) options.print = true;
+    if (options.prompt || options.files.length) options.print = true;
     else throw new Error("Interactive mode requires a terminal. Use --print with a prompt, or pipe input with --print.");
   }
   if (options.print && !options.prompt && !process.stdin.isTTY) {
@@ -49,10 +49,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     options.prompt = Buffer.concat(chunks).toString("utf8");
   }
-  if (options.print && !options.prompt) throw new Error("Print mode requires a prompt.");
+  if (options.print && !options.prompt && !options.files.length) throw new Error("Print mode requires a prompt or --file attachment.");
   let host: ArkHost | null = null;
   const ui = options.print ? new PlainUI({ json: options.json, approve: options.approve }) : new TerminalUI({
-    submit: async (text, mode) => { await host?.submit(text, mode); },
+    submit: async (text, mode, files) => { await host?.submit(text, mode, files); },
     interrupt: async () => { await host?.interrupt(); },
     exit: async () => { await host?.exit(); },
     editPrevious: async () => { await host?.editPrevious(); },
@@ -65,7 +65,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   try {
     if (ui instanceof TerminalUI) ui.start();
     await host.start();
-    if (options.prompt) await host.submit(options.prompt);
+    if (options.prompt || options.files.length) await host.submit(options.prompt, "prompt", options.files);
     if (options.print) {
       const outcome = host.outcome;
       if (outcome === "failed" || outcome === null) process.exitCode = 1;

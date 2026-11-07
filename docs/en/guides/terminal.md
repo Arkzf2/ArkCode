@@ -6,7 +6,7 @@ English | [简体中文](../../zh-CN/guides/terminal.md) | [Docs home](../README
 
 Press Enter when idle to submit a task. While a task runs, press Enter to send a steer that adds to or corrects the current task; press Tab to add a new task to the follow-up queue, which continues after the current task ends. Shift+Left edits queue input that has not been consumed.
 
-Enter `@` to search workspace files and enabled Skills. Selecting a file inserts a file mention; paths with spaces keep quotes. Selecting a Skill inserts `@skill:name`; see the [Skills guide](skills.md).
+Enter `@` to search workspace files and enabled Skills. Selecting a file inserts its path and registers an explicit attachment; paths with spaces keep quotes. Selected images are sent as image parts; text files remain path references. Editing or deleting a selected path removes its attachment. Typing or pasting `@file.png`, `@defer`, or `@Ident` directly keeps the text literal. Selecting a Skill inserts `@skill:name`; see the [Skills guide](skills.md).
 
 To run a shell command yourself, type `!` followed by the command. The command uses the shell selected for the current session and goes through the matching approval. It does not turn the terminal into an interactive shell.
 

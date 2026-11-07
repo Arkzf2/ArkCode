@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { SkillsManager } from "../src/integrations/skills.js";
-import { displayUserText, prepareMentions } from "../src/context/mentions.js";
+import { displayUserText, prepareAttachments } from "../src/context/mentions.js";
 import { WorkspaceAutocompleteProvider } from "../src/ui/autocomplete.js";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 
@@ -59,7 +59,7 @@ test("Skill input snapshots, multiple selections, file mentions, and resource bo
   await writeFile(join(dir, "references", "guide.md"), "Reference evidence.");
   const manager = new SkillsManager({ home: join(root, "config"), cwd, trusted: false, userHome: root });
   const input = "Use @skill:review and @skill:manual with @input.txt"; await writeFile(join(cwd, "input.txt"), "Input.");
-  const mentions = await prepareMentions(input, cwd, false);
+  const mentions = await prepareAttachments(input, [], cwd, false);
   const prepared = await manager.prepare(mentions.text);
   assert.equal(prepared, `User activated the skill "review". Follow the loaded skill instructions.\n\n<skill-loaded name="review">\nOriginal Skill body.\n</skill-loaded>\n\nUser activated the skill "manual". Follow the loaded skill instructions.\n\n<skill-loaded name="manual">\nManual Skill body.\n</skill-loaded>\n\n${input}`);
   assert.equal(await manager.prepare("/skill:review @skill:manual @skill:review inspect"), prepared.slice(0, -input.length) + "/skill:review @skill:manual @skill:review inspect");

@@ -12,6 +12,14 @@ import { configureConnection, createModelRuntime, createResources, loadConfig, s
 import { inspectSession, listArkSessions, readRunMarker, recoverRunMarker, SessionLease, writeRunMarker } from "../src/session/storage.js";
 import { parseCli } from "../src/app/args.js";
 
+test("CLI file attachments are separate from literal prompt text", () => {
+  const options = parseCli(["--file", "notes with space.md", "-f", "image.png", "Support @defer and `@Ident`."]);
+  assert.deepEqual(options.files, ["notes with space.md", "image.png"]);
+  assert.equal(options.prompt, "Support @defer and `@Ident`.");
+  assert.deepEqual(parseCli(["@defer"]).files, []);
+  assert.equal(parseCli(["@defer"]).prompt, "@defer");
+});
+
 test("settings persist defaults and reject unknown permission values", async () => {
   const home = await mkdtemp(join(tmpdir(), "arkcode-config-"));
   try {

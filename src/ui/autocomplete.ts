@@ -12,6 +12,7 @@ import { toolModeSchema } from "../tools/mode.js";
 import { workspacePath } from "../tools/workspace.js";
 import type { Status } from "../app/types.js";
 import { accent, directoryText } from "./colors.js";
+import type { FileSelection } from "./file-attachments.js";
 
 const ignoredDirectories = new Set([".git", ".arkcode", "node_modules"]);
 
@@ -23,7 +24,7 @@ export class WorkspaceAutocompleteProvider implements AutocompleteProvider {
   readonly triggerCharacters = ["@"];
   private readonly commands: CombinedAutocompleteProvider;
 
-  constructor(private readonly cwd: string, mcpServers: () => readonly string[] = () => [], private readonly skills: () => NonNullable<Status["skills"]> = () => []) {
+  constructor(private readonly cwd: string, mcpServers: () => readonly string[] = () => [], private readonly skills: () => NonNullable<Status["skills"]> = () => [], private readonly selectFile?: (selection: FileSelection) => void) {
     this.commands = new CombinedAutocompleteProvider(slashCommands.map((command) => command.name === "tool-mode" ? {
       ...command, getArgumentCompletions: (prefix: string) => toolModeSchema.options.filter((value) => value.startsWith(prefix))
         .map((value) => ({ value, label: value })),
@@ -101,7 +102,12 @@ export class WorkspaceAutocompleteProvider implements AutocompleteProvider {
   }
 
   applyCompletion(lines: string[], cursorLine: number, cursorCol: number, item: AutocompleteItem, prefix: string) {
-    return this.commands.applyCompletion(lines, cursorLine, cursorCol, { ...item, label: stripTerminalSequences(item.label) }, prefix);
+    const result = this.commands.applyCompletion(lines, cursorLine, cursorCol, { ...item, label: stripTerminalSequences(item.label) }, prefix);
+    if (prefix.startsWith("@") && item.value.startsWith("@") && !item.value.startsWith("@skill:") && item.description && !item.description.endsWith("/")) {
+      const start = lines.slice(0, cursorLine).reduce((length, line) => length + line.length + 1, 0) + cursorCol - prefix.length;
+      this.selectFile?.({ text: result.lines.join("\n"), path: item.description, start, end: start + item.value.length });
+    }
+    return result;
   }
 
   shouldTriggerFileCompletion(lines: string[], cursorLine: number, cursorCol: number): boolean {

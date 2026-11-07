@@ -28,8 +28,12 @@ export async function cliOptions() {
   return options.properties.map(property => {
     if (!ts.isPropertyAssignment(property) || !ts.isObjectLiteralExpression(property.initializer)) throw new Error("Unsupported CLI declaration.");
     const fields = Object.fromEntries(property.initializer.properties.map(field => {
-      if (!ts.isPropertyAssignment(field) || !ts.isStringLiteral(field.initializer)) throw new Error("Unsupported CLI option field.");
-      return [field.name.getText(source), field.initializer.text];
+      if (!ts.isPropertyAssignment(field)) throw new Error("Unsupported CLI option field.");
+      const value = ts.isStringLiteral(field.initializer) ? field.initializer.text
+        : field.initializer.kind === ts.SyntaxKind.TrueKeyword ? true
+          : field.initializer.kind === ts.SyntaxKind.FalseKeyword ? false : undefined;
+      if (value === undefined) throw new Error("Unsupported CLI option field.");
+      return [field.name.getText(source), value];
     }));
     return { name: ts.isStringLiteral(property.name) ? property.name.text : property.name.getText(source), ...fields };
   });
@@ -44,7 +48,7 @@ export async function documentationArtifacts() {
   const defaults = arkConfigSchema.parse({});
   const cwd = root;
   const tools = createTools({ cwd, shell: new ManagedShell(cwd, "bash"), authorize: async () => false });
-  const cliHelp = (lang) => `# ${lang === "zh" ? "CLI 帮助快照" : "CLI help snapshot"}\n\n${banner[lang]}\`\`\`text\n${HELP.trimEnd()}\n\`\`\`\n\n## ${lang === "zh" ? "解析器参数" : "Parser options"}\n\n| ${lang === "zh" ? "参数" : "Option"} | ${lang === "zh" ? "类型" : "Type"} | ${lang === "zh" ? "短名" : "Short name"} |\n| --- | --- | --- |\n${options.map(option => `| \`--${option.name}\` | ${option.type} | ${option.short ? `\`-${option.short}\`` : lang === "zh" ? "无" : "-"} |`).join("\n")}\n`;
+  const cliHelp = (lang) => `# ${lang === "zh" ? "CLI 帮助快照" : "CLI help snapshot"}\n\n${banner[lang]}\`\`\`text\n${HELP.trimEnd()}\n\`\`\`\n\n## ${lang === "zh" ? "解析器参数" : "Parser options"}\n\n| ${lang === "zh" ? "参数" : "Option"} | ${lang === "zh" ? "类型" : "Type"} | ${lang === "zh" ? "短名" : "Short name"} |\n| --- | --- | --- |\n${options.map(option => `| \`--${option.name}\` | ${option.type}${option.multiple ? "[]" : ""} | ${option.short ? `\`-${option.short}\`` : lang === "zh" ? "无" : "-"} |`).join("\n")}\n`;
   const commands = (lang) => `# ${lang === "zh" ? "交互命令目录" : "Interactive command directory"}\n\n${banner[lang]}| ${lang === "zh" ? "命令" : "Command"} | ${lang === "zh" ? "描述" : "Description"} |\n| --- | --- |\n${slashCommands.map(command => `| \`/${command.name}\` | ${command.description} |`).join("\n")}\n`;
   const settings = (lang) => `# ${lang === "zh" ? "Settings 默认值" : "Settings defaults"}\n\n${banner[lang]}| ${lang === "zh" ? "字段" : "Field"} | ${lang === "zh" ? "默认值" : "Default"} |\n| --- | --- |\n${Object.keys(arkConfigSchema.shape).map(key => `| \`${key}\` | ${key in defaults ? `\`${JSON.stringify(defaults[key])}\`` : lang === "zh" ? "未设置" : "unset"} |`).join("\n")}\n`;
   const artifacts = new Map();

@@ -1,4 +1,4 @@
-import type { ApprovalRequest, Choice, ChoiceOptions, SessionDetails, SessionItem, Status, ToolDetails, ToggleChoice, UserInterface } from "../app/types.js";
+import type { ApprovalRequest, Choice, ChoiceOptions, DraftFile, SessionDetails, SessionItem, Status, ToolDetails, ToggleChoice, UserInterface } from "../app/types.js";
 
 type ViewEntry =
   | { kind: "message"; args: Parameters<UserInterface["message"]> }
@@ -12,6 +12,7 @@ export class SessionView implements UserInterface {
   private focused = false;
   private disposed = false;
   private draftText = "";
+  private draftFiles: readonly DraftFile[] = [];
   private generation = 0;
   private waiters = new Set<() => void>();
   currentStatus: Status | null = null;
@@ -33,13 +34,14 @@ export class SessionView implements UserInterface {
         case "tool": this.ui.tool(entry.id, entry.name, entry.text, entry.state, entry.details); break;
       }
     }
-    this.ui.setDraft(this.draftText);
+    this.ui.setDraft(this.draftText, this.draftFiles);
     this.changed();
     this.wake();
   }
   deactivate(): void {
     if (!this.focused) return;
     this.draftText = this.ui.draft();
+    this.draftFiles = this.ui.draftAttachments?.() ?? [];
     this.focused = false;
     this.ui.dismiss();
   }
@@ -103,7 +105,11 @@ export class SessionView implements UserInterface {
   }
   dismiss(): void { this.generation++; if (this.focused) this.ui.dismiss(); this.wake(); }
   draft(): string { return this.focused ? this.ui.draft() : this.draftText; }
-  setDraft(text: string): void { this.draftText = text; if (this.focused) this.ui.setDraft(text); }
+  draftAttachments(): readonly DraftFile[] { return this.focused ? this.ui.draftAttachments?.() ?? [] : this.draftFiles; }
+  setDraft(text: string, files: readonly DraftFile[] = []): void {
+    this.draftText = text; this.draftFiles = files;
+    if (this.focused) this.ui.setDraft(text, files);
+  }
   clear(): void { this.entries = []; this.assistant = null; if (this.focused) this.ui.clear(); }
   copy(text: string): Promise<boolean> { return this.interact(() => this.ui.copy(text), false); }
   stop(): void { this.disposed = true; this.dismiss(); }

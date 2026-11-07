@@ -35,7 +35,7 @@ import { InputJournal } from "../compaction/inputs.js";
 import { installToolAvailability } from "../context/tool-availability.js";
 import { parsePermission, permissionLabels } from "../permissions/policy.js";
 import { getBranch } from "../ui/review.js";
-import { displayUserText, prepareMentions } from "../context/mentions.js";
+import { displayUserText, prepareAttachments, withFileMentions } from "../context/mentions.js";
 import type { CliOptions } from "./args.js";
 import type { ApprovalRequest, InputMode, Permission, RunState, SessionItem, ToolDetails, UserInterface } from "./types.js";
 
@@ -442,8 +442,9 @@ export class SessionRuntime {
     this.refreshStatus();
   }
 
-  async submit(text: string, mode: InputMode = "prompt"): Promise<void> {
+  async submit(text: string, mode: InputMode = "prompt", files: readonly string[] = []): Promise<void> {
     if (this.closing || this.initializing) return;
+    text = withFileMentions(text, files);
     const rawText = text;
     text = text.trim();
     if (!text) return;
@@ -460,20 +461,20 @@ export class SessionRuntime {
         if (text.startsWith("!")) {
           this.localQueue.push(text); this.refreshStatus(); return;
         }
-        const prepared = await prepareMentions(text, this.cwd, session.model.input.includes("image"));
+        const prepared = await prepareAttachments(text, files, this.cwd, session.model.input.includes("image"));
         const expanded = await this.skills?.prepare(prepared.text) ?? prepared.text;
         this.compaction?.inputs.capture({ rawText, preparedText: expanded, images: prepared.images, delivery: mode === "follow-up" ? "follow-up" : "steering" });
         if (mode === "follow-up") await session.followUp(expanded, prepared.images); else { await session.steer(expanded, prepared.images); this.shell.steer(); }
         this.refreshStatus(); return;
       }
-      await this.run(text, rawText);
+      await this.run(text, rawText, "prompt", false, files);
     } catch (error) {
       if (!text.startsWith("/")) this.ui.message("user", text);
       this.ui.message("error", cleanOutput(error instanceof Error ? error.message : String(error)));
       this.ui.setDraft(text);
     }
   }
-  private async run(text: string, rawText = text, delivery: "prompt" | "task-command" = "prompt", continuation = false): Promise<void> {
+  private async run(text: string, rawText = text, delivery: "prompt" | "task-command" = "prompt", continuation = false, files: readonly string[] = []): Promise<void> {
     const session = this.session;
     if (!session) throw new Error("No session.");
     const runId = randomUUID();
@@ -495,7 +496,7 @@ export class SessionRuntime {
         else if (text.startsWith("!")) await this.userShell(text.slice(1).trim(), runId);
         else {
           let prompt;
-          try { prompt = await prepareMentions(text, this.cwd, session.model?.input.includes("image") ?? false); }
+          try { prompt = await prepareAttachments(text, files, this.cwd, session.model?.input.includes("image") ?? false); }
           catch (error) { this.ui.message("user", text); throw error; }
           if (this.interrupted) return;
           const expanded = await this.skills?.prepare(prompt.text) ?? prompt.text;

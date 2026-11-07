@@ -23,6 +23,7 @@ There are no separate `exec`, `mcp add`, RPC, or app-server subcommands. Model t
 | Option | Type and default | Behavior |
 | --- | --- | --- |
 | `-C, --cwd` | path, current directory | Workspace directory |
+| `-f, --file` | path, repeatable | Explicit workspace attachment; text files remain path references, images become image parts |
 | `--home` | path | Overrides `ARKCODE_HOME` and the default `~/.arkcode` |
 | `-m, --model` | string | Chooses `provider/id`; without a provider, matches available models and the default provider |
 | `--thinking` | enum | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; actual capability depends on the model |
@@ -58,7 +59,9 @@ Providing any endpoint or model capability option enters the custom configuratio
 
 ## Input and exit
 
-Print mode has no positional prompt and reads stdin when stdin is not a terminal, up to 1 MiB; with no prompt it reports an error. In normal launch, when input or output is not a terminal, a prompt switches to print mode; without a prompt it reports an error.
+Print mode reads stdin, up to 1 MiB, when there is no positional prompt and stdin is not a terminal. A prompt or `--file` attachment is required. In normal launch, when input or output is not a terminal, a prompt or attachment switches to print mode.
+
+Prompt text, including stdin, keeps `@defer`, `@Ident`, and `@file.png` literal. Use `arkcode -p --file "image with space.png" "Inspect this image"` to attach a file explicitly. Paths resolve within `--cwd`; up to eight distinct attachments are accepted per input. Missing attachments and images sent to a text-only model report an error.
 
 | Exit code | Meaning |
 | --- | --- |

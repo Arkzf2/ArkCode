@@ -12,6 +12,7 @@ import { sanitizeTerminalText, TerminalUI } from "../src/ui/terminal.js";
 import { ScreenTerminal } from "./terminal-fixture.js";
 import { browseSkills } from "../src/ui/skills.js";
 import { SkillsManager } from "../src/integrations/skills.js";
+import { SessionView } from "../src/ui/session-view.js";
 
 class MemoryTerminal implements Terminal {
   output = "";
@@ -322,6 +323,35 @@ test("@ discovers workspace files and directories and Tab completes a file", asy
   terminal.press("\t");
   await setTimeout(100);
   assert.equal(ui.draft(), '@"notes with space.md" ');
+});
+
+test("only selected file completions become attachments and editing a selection removes it", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "arkcode-selected-file-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await writeFile(join(cwd, "image.png"), "image fixture");
+  const delivered: Array<{ text: string; files: readonly string[] }> = [];
+  const terminal = new MemoryTerminal(100);
+  const ui = new TerminalUI({ ...inertActions, async submit(text, _mode, files = []) { delivered.push({ text, files }); } }, terminal);
+  t.after(() => ui.stop());
+  ui.status({ ...idle, cwd }); ui.start();
+  const view = new SessionView(ui, () => {}); view.activate();
+  for (const key of "@image") terminal.press(key);
+  await setTimeout(150); terminal.press("\t");
+  assert.equal(ui.draft(), "@image.png ");
+  terminal.press("\x01");
+  for (const key of "Inspect ") terminal.press(key);
+  view.deactivate();
+  ui.setDraft("Another session's literal @image.png");
+  view.activate();
+  terminal.press("\r");
+  assert.deepEqual(delivered, [{ text: "Inspect @image.png", files: ["image.png"] }]);
+  ui.setDraft("Inspect @image.png and @defer"); terminal.press("\r");
+  assert.deepEqual(delivered.at(-1), { text: "Inspect @image.png and @defer", files: [] });
+  for (const key of "@image") terminal.press(key);
+  await setTimeout(150); terminal.press("\t");
+  terminal.press("\x7f"); terminal.press("\x7f");
+  terminal.press("\x1b"); terminal.press("\r");
+  assert.deepEqual(delivered.at(-1), { text: "@image.pn", files: [] });
 });
 
 test("Tab keeps a busy @ draft in the editor while file discovery is pending", async (t) => {

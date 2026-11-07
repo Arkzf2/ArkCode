@@ -2,6 +2,7 @@ import type { Permission } from "../permissions/policy.js";
 import type { ContextUsage } from "@earendil-works/pi-coding-agent";
 export type { Permission } from "../permissions/policy.js";
 export type InputMode = "prompt" | "steer" | "follow-up";
+export interface DraftFile { path: string; start: number; end: number }
 export type RunOutcome = "completed" | "failed" | "interrupted";
 export type RunState =
   | { kind: "idle"; outcome: RunOutcome | null }
@@ -82,13 +83,14 @@ export interface UserInterface {
   approve(request: ApprovalRequest): Promise<ApprovalDecision>;
   dismiss(): void;
   draft(): string;
-  setDraft(text: string): void;
+  draftAttachments?(): readonly DraftFile[];
+  setDraft(text: string, files?: readonly DraftFile[]): void;
   clear(): void;
   copy(text: string): Promise<boolean>;
   stop(): void;
 }
 export interface UiActions {
-  submit(text: string, mode: InputMode): Promise<void>;
+  submit(text: string, mode: InputMode, files?: readonly string[]): Promise<void>;
   interrupt(): Promise<void>;
   exit(): Promise<void>;
   editPrevious(): Promise<void>;

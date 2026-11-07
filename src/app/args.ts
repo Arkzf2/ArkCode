@@ -7,6 +7,7 @@ import { thinkingLevelSchema } from "../config/settings.js";
 export function parseCli(argv: string[]) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     cwd: { type: "string", short: "C" }, home: { type: "string" },
+    file: { type: "string", short: "f", multiple: true },
     model: { type: "string", short: "m" }, thinking: { type: "string" },
     permissions: { type: "string" }, "full-access": { type: "boolean" },
     "read-only": { type: "boolean" }, print: { type: "boolean", short: "p" },
@@ -23,6 +24,7 @@ export function parseCli(argv: string[]) {
   const command = ["resume", "fork", "config", "models"].includes(positionals[0] ?? "") ? positionals.shift() : undefined;
   return {
     cwd: resolve(values.cwd ?? process.cwd()),
+    files: values.file ?? [],
     home: resolve(values.home ?? process.env.ARKCODE_HOME ?? resolve(homedir(), ".arkcode")),
     model: values.model, thinking: values.thinking ? thinkingLevelSchema.parse(values.thinking) : undefined,
     permission: values["full-access"] ? parsePermission("never-ask") : values.permissions ? parsePermission(values.permissions) : undefined,
@@ -53,6 +55,7 @@ Usage: arkcode [options] [prompt]
   Anthropic base URL is the API root; Pi appends /v1/messages.
 
   -C, --cwd PATH           Workspace directory
+  -f, --file PATH          Attach a workspace file (repeatable); prompt @text stays literal
   -m, --model PROVIDER/ID  Select a configured Pi model
       --thinking LEVEL    off, minimal, low, medium, high, xhigh, max
       --permissions MODE  always-ask, ask-when-needed, never-ask
