@@ -32,6 +32,8 @@ Replace the example URL, model ID, key, and capability values. A context window 
 
 The configuration entry supports `openai-completions`, `openai-responses`, and `anthropic-messages`. An Anthropic Messages base URL is the API root without a trailing `/v1`; the client appends `/v1/messages`.
 
+For custom reasoning models `deepseek-flash` and `deepseek-v4-pro` using `openai-responses`, ArkCode defaults `compat.supportsDeveloperRole` to `false` so system instructions use the `system` role. Startup also fills this default in existing configurations. Explicit compatibility settings are preserved.
+
 When a custom provider already has a model, you cannot change it to a different protocol or endpoint. Use separate provider names for different endpoints.
 
 ## Choose a model temporarily or isolate configuration

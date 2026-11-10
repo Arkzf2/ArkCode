@@ -38,7 +38,8 @@ function modelDefaults(id: string, api: string | undefined) {
     compat: api === "openai-completions" ? {
       thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true,
       supportsReasoningEffort: true, supportsDeveloperRole: false, supportsStore: false, maxTokensField: "max_tokens",
-    } : api === "anthropic-messages" ? { forceAdaptiveThinking: true } : {},
+    } : api === "openai-responses" ? { supportsDeveloperRole: false }
+      : api === "anthropic-messages" ? { forceAdaptiveThinking: true } : {},
   };
 }
 

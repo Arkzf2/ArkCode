@@ -32,6 +32,8 @@
 
 配置入口支持 `openai-completions`、`openai-responses` 和 `anthropic-messages`。Anthropic Messages 的 base URL 使用 API 根地址，不带末尾 `/v1`；客户端会追加 `/v1/messages`。
 
+自定义推理模型 `deepseek-flash` 和 `deepseek-v4-pro` 使用 `openai-responses` 时，ArkCode 默认设置 `compat.supportsDeveloperRole` 为 `false`，使系统提示使用 `system` 角色。启动时也会为已有配置补齐这一默认值，并保留用户显式设置的兼容性选项。
+
 同一个自定义 provider 已有模型时，不能把它改到不同协议或端点。为不同端点使用不同 provider 名称。
 
 ## 临时选择模型或隔离配置

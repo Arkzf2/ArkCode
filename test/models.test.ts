@@ -32,6 +32,13 @@ test("existing custom reasoning models expose all levels while preserving explic
         { "id": "other", "reasoning": true, "thinkingLevelMap": { "xhigh": null, "max": "custom-max" } },
         { "id": "plain", "reasoning": false }
       ]
+    },
+    "responses": { "baseUrl": "http://localhost:1234/v1", "api": "openai-responses", "apiKey": "dummy",
+      "models": [
+        { "id": "deepseek-flash", "reasoning": true, "compat": { "supportsStore": false } },
+        { "id": "deepseek-flash-proxy", "reasoning": true, "compat": { "supportsDeveloperRole": true } },
+        { "id": "other", "reasoning": true }
+      ]
     } }
   }`);
   const runtime = await createModelRuntime(home);
@@ -43,6 +50,9 @@ test("existing custom reasoning models expose all levels while preserving explic
   const plain = runtime.getModel("custom", "plain");
   assert.ok(plain);
   assert.deepEqual(getSupportedThinkingLevels(plain), ["off"]);
+  assert.deepEqual(runtime.getModel("responses", "deepseek-flash")?.compat, { supportsStore: false, supportsDeveloperRole: false });
+  assert.deepEqual(runtime.getModel("responses", "deepseek-flash-proxy")?.compat, { supportsDeveloperRole: true });
+  assert.equal(runtime.getModel("responses", "other")?.compat, undefined);
   assert.match(await readFile(path, "utf8"), /Keep this comment/);
   const upgraded = await readFile(path, "utf8");
   await createModelRuntime(home);
@@ -73,13 +83,21 @@ test("custom DeepSeek transports send the documented thinking mappings and sampl
     const levels = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
     const efforts = ["low", "low", "high", "high", "high", "max"];
     for (const [index, reasoning] of levels.entries()) {
-      await runtime.completeSimple(model, { messages: [{ role: "user", content: "ping", timestamp: Date.now() }] }, { reasoning, maxRetries: 0 });
+      await runtime.completeSimple(model, { messages: [
+        { role: "system", content: "Keep this system instruction.", timestamp: Date.now() },
+        { role: "user", content: "ping", timestamp: Date.now() },
+      ] }, { reasoning, maxRetries: 0 });
       const body = requests.at(-1);
       assert.ok(body);
       if (api === "openai-completions") {
         assert.deepEqual(body.thinking, { type: "enabled" });
         assert.equal(body.reasoning_effort, efforts[index]);
-      } else if (api === "openai-responses") assert.equal(z.object({ effort: z.string() }).parse(body.reasoning).effort, efforts[index]);
+      } else if (api === "openai-responses") {
+        assert.equal(z.object({ effort: z.string() }).parse(body.reasoning).effort, efforts[index]);
+        assert.deepEqual(z.array(z.object({ role: z.string(), content: z.unknown() })).parse(body.input)[0], {
+          role: "system", content: "Keep this system instruction.",
+        });
+      }
       else {
         assert.equal(z.object({ effort: z.string() }).parse(body.output_config).effort, efforts[index]);
         assert.deepEqual(body.thinking, { type: "enabled" });
