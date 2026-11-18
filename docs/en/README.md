@@ -4,6 +4,8 @@ English | [简体中文](../zh-CN/README.md)
 
 This site explains how to use, configure, and interface with ArkCode `0.1.0`. Start with the [Quickstart](quickstart.md).
 
+For benchmark results, see the [project overview](../../README.md#benchmark).
+
 ## Day-to-day usage
 
 | Task | Document |
