@@ -5,3 +5,4 @@ dist/
 .arkcode/
 .audit/runtime/
 *.tgz
+benchmarks/
