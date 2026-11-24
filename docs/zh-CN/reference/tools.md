@@ -27,27 +27,25 @@ edit 和 write 在同一进程的 SDK 实例内按实际文件串行修改；不
 | 字段 | 约束 |
 | --- | --- |
 | `command` | 必填非空字符串，按实际 shell 语法执行 |
-| `yield_time_ms` | 整数毫秒，默认 10000，范围 10000 至 60000 |
-| `timeout` | 可选执行期限，1 至 600 秒，允许小数，无默认值 |
-| `stdin` | `closed` 或 `pipe`，默认 closed，不分配 PTY |
+| `io_mode` | `pipe` 或 `pty`，默认 `pipe`。`pipe` 保留普通流和可写 stdin，`pty` 提供终端语义 |
+| `yield_time_ms` | 初始观察窗口，整数毫秒，默认 10000，范围 10000 至 60000 |
 
-观察窗口到期时返回 `running` 和短 `session_id`，进程继续运行。应使用相同句柄等待，不重新启动命令。执行期限独立生效，到期会请求取消进程树。
+命令会先运行并观察 `yield_time_ms` 指定的时间。若仍在运行，返回 `running` 和 `session_id`，进程继续运行。后续使用相同句柄调用 `shell_control`，不要重新启动命令。`yield_time_ms` 不会终止进程。普通命令使用 `pipe`，REPL、TUI 和终端提示使用 `pty`。
 
 ## shell_control
 
-对当前 agent run 内已有句柄执行 wait、send 或 stop。`session_id` 是不透明句柄，不是 OS PID，不承诺跨用户轮次保留。精确 schema 见[shell_control 输入](../../shared/schemas/shell_control.input.schema.json)。
+继续当前运行内已有句柄。`session_id` 是不透明句柄，不是 OS PID，不承诺跨用户轮次保留。精确 schema 见[shell_control 输入](../../shared/schemas/shell_control.input.schema.json)。
 
 | action | 参数和默认值 |
 | --- | --- |
-| `wait` | 必填 session_id；wait_ms 默认 10000，整数范围 10000 至 300000 |
-| `send` | 必填 session_id；需要非空 data 或 eof=true；wait_ms 默认 500，整数范围 500 至 60000 |
-| `stop` | 只接受 action 和 session_id，立即发起取消，不接受 wait_ms |
+| `wait` | 必填 `session_id`；可选 `chars`、`eof` 和 `yield_time_ms`；只读等待默认 10000 ms，带输入等待默认 500 ms |
+| `stop` | 只接受 `action` 和 `session_id`，请求取消进程树 |
 
-已结束进程立即返回。wait 不因一条进度立即返回，也不因观察到期终止进程。同一句柄拒绝重叠 wait，但允许 wait 期间发出 send 或 stop。
+已结束进程立即返回。观察到期会让进程继续运行。同一句柄拒绝重叠 `wait`，但允许在等待期间输入和 `stop`。省略 `action` 且未提供输入字段时，按 `wait` 处理。发送 `chars` 或 `eof` 时必须使用 `action: "wait"`。
 
-send 要求启动时选择 pipe，精确传递字符串，不 trim 或自动添加换行。最多 65536 UTF-8 字节。EOF 永久关闭 stdin，不等于终止或 Ctrl+C。`accepted` 只证明交付，不证明程序处理；`unknown` 时不能自动重发。两种询问模式下每次 send 都需要批准。
+`chars` 精确传递文本，不 trim 或自动添加换行，最多 65536 UTF-8 字节。pipe 和 PTY 都支持 `chars`。`eof: true` 只适用于 pipe，会永久关闭 stdin。PTY 返回 `eof_not_supported`，应通过 `chars` 发送终端输入。`accepted` 只证明输入已交付，`unknown` 时不要自动重发。
 
-stop 最多等待内部 5000 ms 确认清理。`stopping` 表示尚未确认全部后代停止；后续 wait 可取得最终状态。清理失败会保留未确认状态并阻止继续执行。重复 stop 不延长原确认期限。
+`stop` 请求取消进程树，最多等待内部 5000 ms 确认清理。`stopping` 表示尚未确认全部后代停止，后续 `wait` 可取得最终状态。
 
 ## shell 结果与输出
 
@@ -56,16 +54,16 @@ stop 最多等待内部 5000 ms 确认清理。`stopping` 表示尚未确认全�
 | 字段 | 含义 |
 | --- | --- |
 | `kind` | `session` 或 `error` |
-| `status` | session 的 running、stopping、completed、failed、cancelled 或 timed_out |
+| `status` | session 的 `running`、`stopping`、`completed`、`failed` 或 `cancelled` |
 | `session_id` | 同一 run 内可使用的句柄 |
 | `output` | 本次新增的结构化输出 |
 | `wake_reason` | exit、wait_limit、user_steer、stop_unconfirmed 或 cleanup_failed |
 | `wall_time_seconds` | 本次调用耗时，单位秒，不含审批，不是累计进程寿命 |
 | `exit_code`、`signal` | 终态的真实退出信息 |
-| `termination_reason`、`cleanup` | 取消或超时的原因与清理确认状态 |
+| `termination_reason`、`cleanup` | 取消原因与清理确认状态 |
 | `truncated`、`truncation`、`output_file` | 结构化输出是否省略、原因和保存路径 |
 | `input` | 输入交付状态，错误结果可能为 accepted、not_sent 或 unknown |
-| `error.code`、`error.message` | 工具调用失败原因；不同于进程正常非零退出 |
+| `error.code`、`error.message`、`error.field`、`error.hint` | 工具调用失败原因和修复提示；不同于进程非零退出 |
 
 | 输出层 | 限制及截断方式 |
 | --- | --- |
@@ -73,9 +71,11 @@ stop 最多等待内部 5000 ms 确认清理。`stopping` 表示尚未确认全�
 | CodeMode 接收的结构化 shell 数据 | 独立 1 MiB，超过后保留头尾并标注省略 |
 | CodeMode 交给模型的脚本输出 | 使用自身输出预算，当前默认 10000 tokens |
 
-后续 wait 只返回新的输出，不补发之前省略的内容。截断时保存完整日志或运行中的不可变完整前缀快照，可用 read 的 offset/limit 补读。登记的文本输出支持分段读取超过 64 MiB 的文件，授权在文件身份变化或运行实例结束后失效，恢复历史不恢复授权。
+后续 `wait` 只返回新的输出，不补发之前省略的内容。截断输出会保存到文件，可用 `read` 的 `offset` 和 `limit` 补读。登记的文本输出支持分段读取超过 64 MiB 的文件，授权在文件变化或运行结束后失效。
 
-CodeMode 脚本结束不代表嵌套进程结束。脚本需检查 `kind` 和 `status`，也要处理参数校验造成的 reject。整个 agent run 结束、中断或 runtime 退出会清理持续进程。
+CodeMode 脚本结束不代表嵌套进程结束。脚本应检查 `kind` 和 `status`，并处理参数校验错误。当前运行结束、中断或 runtime 退出时会清理持续进程。
+
+宿主为每个 CodeMode 结果附加最多 2 KiB 的 shell 状态摘要。摘要覆盖仍在运行、失败、取消、工具错误和会话控制结果。正常退出且没有保存日志的 `bash` 调用省略摘要。`wait_limit` 表示观察窗口结束时进程仍在运行。
 
 ## 动态工具
 

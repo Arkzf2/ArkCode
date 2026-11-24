@@ -1,5 +1,6 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { spawn as spawnPty, type IPty } from "node-pty";
 import { createOutputCleaner } from "./output.js";
 import { resolveShell, shellInstructions, type ShellConfiguration } from "./shell-config.js";
 import { ShellOutput, type CapturePosition } from "./shell-output.js";
@@ -7,7 +8,7 @@ import type { BashInput, ShellControlInput, ShellError, ShellPreview, ShellSessi
 
 const RECEIPT_BYTES = 128 * 1024;
 const STOP_CONFIRM_MS = 5000;
-type Reason = "stop" | "timeout" | "user_interrupt";
+type Reason = "stop" | "user_interrupt";
 export interface ShellReceipt {
   id: string; command: string; cwd: string; shell: string; pid: number | null;
   startedAt: number; endedAt: number | null; status: ShellState["status"];
@@ -16,11 +17,12 @@ export interface ShellReceipt {
 type Projection = Awaited<ReturnType<ShellOutput["project"]>>;
 export interface ShellObservation { result: ShellSessionResult; text: string; receipt: ShellReceipt }
 interface Entry {
-  child: ChildProcess; receipt: ShellReceipt; state: ShellState; log: ShellOutput;
+  mode: "pipe" | "pty"; child?: ChildProcess; pty?: IPty; pid: number | null; stdin?: NonNullable<ChildProcess["stdin"]>;
+  receipt: ShellReceipt; state: ShellState; log: ShellOutput;
   position: CapturePosition; closed: Promise<void>; resolveClosed: () => void;
   observers: Set<() => void>; waiting: boolean; observing: number; writing: boolean;
   handedOff: boolean; terminalDelivered: boolean; noticeDelivered: boolean;
-  results: Promise<unknown>; deadline?: NodeJS.Timeout; killTimer?: NodeJS.Timeout;
+  results: Promise<unknown>; killTimer?: NodeJS.Timeout;
   progressTimer?: NodeJS.Timeout;
   cancellation?: { reason: Reason; startedAt: number; cleanup: Promise<Error | null> };
   cleanupError?: Error;
@@ -28,12 +30,35 @@ interface Entry {
   onUpdate?: (receipt: ShellReceipt) => void; onData?: (data: Buffer) => void;
 }
 interface ObserveOptions { signal?: AbortSignal; exportFile?: (path: string) => Promise<void>; input?: "accepted"; onData?: (data: Buffer) => void }
+type LegacyShellControlInput =
+  | { action: "send"; session_id: string; data?: string; eof?: boolean; wait_ms?: number }
+  | { action: "wait"; session_id: string; wait_ms?: number };
+type ShellControlRequest = ShellControlInput | LegacyShellControlInput;
 export class ShellOperationError extends Error {
   constructor(readonly code: ShellError["error"]["code"], message: string, readonly snapshot?: ShellError["session"], readonly delivery?: "accepted" | "not_sent" | "unknown") { super(message); }
 }
 const live = (state: ShellState) => state.status === "running" || state.status === "stopping";
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const noProcess = (error: unknown) => error instanceof Error && "code" in error && error.code === "ESRCH";
+const isObjectLike = (value: unknown): value is object => typeof value === "object" && value !== null;
+const invokeNoArg = (owner: unknown, method: string): void => {
+  if (!isObjectLike(owner)) return;
+  const operation = Reflect.get(owner, method);
+  if (typeof operation === "function") Reflect.apply(operation, owner, []);
+};
+const disposePtyResources = (pty: IPty): void => {
+  if (process.platform !== "win32") {
+    invokeNoArg(pty, "destroy");
+    return;
+  }
+  const agent = Reflect.get(pty, "_agent");
+  if (isObjectLike(agent)) {
+    invokeNoArg(Reflect.get(agent, "_conoutSocketWorker"), "dispose");
+    invokeNoArg(Reflect.get(agent, "_inSocket"), "destroy");
+    invokeNoArg(Reflect.get(agent, "_outSocket"), "destroy");
+  }
+  invokeNoArg(Reflect.get(pty, "_socket"), "destroy");
+};
 
 export class ManagedShell {
   private readonly selected: ShellConfiguration;
@@ -106,19 +131,33 @@ export class ManagedShell {
     const args = this.kind === "powershell"
       ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);\n${input.command}\n$arkcodeCommandSucceeded = $?; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; if (-not $arkcodeCommandSucceeded) { exit 1 }`]
       : ["-c", input.command];
-    const child = spawn(this.executable, args, { cwd: this.cwd, shell: false, windowsHide: true, detached: process.platform !== "win32", stdio: [input.stdin === "pipe" ? "pipe" : "ignore", "pipe", "pipe"] });
+    const mode = input.io_mode ?? "pipe";
+    let child: ChildProcess | undefined;
+    let pty: IPty | undefined;
+    try {
+      if (mode === "pty") {
+        pty = spawnPty(this.executable, args, { cwd: this.cwd, env: process.env, cols: 120, rows: 40, name: "xterm-color", useConpty: true });
+      } else {
+        child = spawn(this.executable, args, { cwd: this.cwd, shell: false, windowsHide: true, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
+      }
+    } catch (error) {
+      await log.close();
+      throw new ShellOperationError("spawn_failed", `The command did not start. ${errorText(error)}`);
+    }
     let resolveClosed = () => {};
     const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
-    const receipt: ShellReceipt = { id: this.allocateId(), command: input.command, cwd: this.cwd, shell: this.executable, pid: child.pid ?? null,
+    const pid = child?.pid ?? pty?.pid ?? null;
+    const receipt: ShellReceipt = { id: this.allocateId(), command: input.command, cwd: this.cwd, shell: this.executable, pid,
       startedAt: Date.now(), endedAt: null, status: "running", exitCode: null, output: "", truncated: false };
-    const entry: Entry = { child, log, receipt, closed, resolveClosed, state: { status: "running", stdin_open: input.stdin === "pipe" },
+    const entry: Entry = { mode, child, pty, pid, stdin: child?.stdin ?? undefined, log, receipt, closed, resolveClosed, state: { status: "running", stdin_open: true },
       position: { bytes: 0, newlines: 0, openLine: false }, observers: new Set(), waiting: false, observing: 0, writing: false, handedOff: false,
       terminalDelivered: false, noticeDelivered: false, results: Promise.resolve(), onUpdate, onData };
     this.entries.set(receipt.id, entry);
     const append = (cleaned: string) => {
       if (!log.append(cleaned)) {
-        child.stdout?.pause(); child.stderr?.pause();
-        log.drained(() => { child.stdout?.resume(); child.stderr?.resume(); });
+        child?.stdout?.pause(); child?.stderr?.pause();
+        pty?.pause();
+        log.drained(() => { child?.stdout?.resume(); child?.stderr?.resume(); pty?.resume(); });
       }
       onData?.(Buffer.from(cleaned));
       const room = RECEIPT_BYTES - Buffer.byteLength(receipt.output);
@@ -130,26 +169,33 @@ export class ManagedShell {
         entry.progressTimer.unref();
       }
     };
-    child.stdout?.setEncoding("utf8"); child.stderr?.setEncoding("utf8");
     const stdout = createOutputCleaner(); const stderr = createOutputCleaner();
-    child.stdout?.on("data", (text: string) => append(stdout(text))); child.stderr?.on("data", (text: string) => append(stderr(text)));
-    child.stdin?.on("error", () => {});
-    child.stdin?.on("close", () => { if (entry.state.status === "running") entry.state = { status: "running", stdin_open: false }; });
-    child.on("close", (code, signal) => { void this.finish(entry, code, signal).catch(error => {
+    if (child) {
+      child.stdout?.setEncoding("utf8"); child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (text: string) => append(stdout(text))); child.stderr?.on("data", (text: string) => append(stderr(text)));
+      child.stdin?.on("error", () => {});
+      child.stdin?.on("close", () => { if (entry.state.status === "running") entry.state = { status: "running", stdin_open: false }; });
+      child.on("close", (code, signal) => { void this.finish(entry, code, signal).catch(error => {
       entry.cleanupError = new Error(errorText(error));
       entry.state = { status: "stopping", stdin_open: false, termination_reason: entry.cancellation?.reason ?? "stop", cleanup: { state: "failed", message: errorText(error) } };
       receipt.status = "stopping"; resolveClosed(); this.notify(entry);
-    }); });
-    try { await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); }); }
-    catch (error) {
-      await closed; this.entries.delete(receipt.id); await log.close();
-      throw new ShellOperationError("spawn_failed", `The command did not start. ${errorText(error)}`);
+      }); });
+      try { await new Promise<void>((resolve, reject) => { child?.once("spawn", resolve); child?.once("error", reject); }); }
+      catch (error) {
+        await closed; this.entries.delete(receipt.id); await log.close();
+        throw new ShellOperationError("spawn_failed", `The command did not start. ${errorText(error)}`);
+      }
+    } else if (pty) {
+      pty.onData(data => append(stdout(data)));
+      pty.onExit(({ exitCode, signal }) => { void this.finish(entry, exitCode, signal === undefined || signal === 0 ? null : String(signal)).catch(error => {
+        entry.cleanupError = new Error(errorText(error));
+        entry.state = { status: "stopping", stdin_open: false, termination_reason: entry.cancellation?.reason ?? "stop", cleanup: { state: "failed", message: errorText(error) } };
+        receipt.status = "stopping"; resolveClosed(); this.notify(entry);
+      }); });
     }
-    if (input.timeout !== undefined) entry.deadline = setTimeout(() => { this.cancel(entry, "timeout"); }, input.timeout * 1000);
     this.notify(entry); return entry;
   }
-  private async finish(entry: Entry, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
-    if (entry.deadline) clearTimeout(entry.deadline);
+  private async finish(entry: Entry, code: number | null, signal: string | null): Promise<void> {
     if (entry.killTimer) clearTimeout(entry.killTimer);
     entry.receipt.exitCode = code;
     if (!entry.cancellation) {
@@ -159,17 +205,19 @@ export class ManagedShell {
       entry.receipt.status = entry.state.status;
       entry.receipt.endedAt = Date.now();
     }
-    if (entry.cancellation && process.platform !== "win32" && entry.child.pid) {
-      try { process.kill(-entry.child.pid, "SIGKILL"); } catch (error) { if (!noProcess(error)) entry.cleanupError = new Error(errorText(error)); }
+    if (entry.cancellation && process.platform !== "win32" && entry.pid) {
+      try { process.kill(-entry.pid, "SIGKILL"); } catch (error) { if (!noProcess(error)) entry.cleanupError = new Error(errorText(error)); }
     }
     const cleanup = await entry.cancellation?.cleanup;
     if (cleanup) entry.cleanupError = cleanup;
     try { await entry.log.flush(); } catch { /* The output operation reports capture failure independently of process exit. */ }
     if (entry.cleanupError) entry.state = { status: "stopping", stdin_open: false, termination_reason: entry.cancellation?.reason ?? "stop", cleanup: { state: "failed", message: entry.cleanupError.message } };
-    else if (entry.cancellation?.reason === "timeout") entry.state = { status: "timed_out", stdin_open: false, exit_code: code, signal, termination_reason: "timeout", cleanup: { state: "confirmed" } };
     else if (entry.cancellation) entry.state = { status: "cancelled", stdin_open: false, exit_code: code, signal, termination_reason: entry.cancellation.reason, cleanup: { state: "confirmed" } };
     else if (code === 0 && signal === null) entry.state = { status: "completed", stdin_open: false, exit_code: 0, signal: null };
     else entry.state = { status: "failed", stdin_open: false, exit_code: code, signal };
+    if (entry.pty) {
+      try { disposePtyResources(entry.pty); } catch { /* PTY process state is already settled. */ }
+    }
     entry.receipt.status = entry.state.status;
     if (!live(entry.state)) entry.receipt.endedAt = Date.now();
     entry.resolveClosed(); this.notify(entry);
@@ -178,14 +226,18 @@ export class ManagedShell {
     if (entry.state.status !== "running") return false;
     entry.state = { status: "stopping", stdin_open: false, termination_reason: reason, cleanup: { state: "pending" } };
     entry.receipt.status = "stopping";
-    const pid = entry.child.pid;
+    const pid = entry.pid;
     const cleanup = new Promise<Error | null>(resolve => {
       if (!pid) { resolve(null); return; }
       if (process.platform === "win32") execFile("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, timeout: STOP_CONFIRM_MS }, error => {
         resolve(error ? new Error(`Process tree cleanup unconfirmed: ${error.message}`) : null);
       });
       else {
-        try { process.kill(-pid, "SIGTERM"); resolve(null); } catch (error) { resolve(noProcess(error) ? null : new Error(errorText(error))); }
+        try {
+          process.kill(-pid, "SIGTERM");
+          if (entry.pty) entry.pty.kill();
+          resolve(null);
+        } catch (error) { resolve(noProcess(error) ? null : new Error(errorText(error))); }
         entry.killTimer = setTimeout(() => {
           try { process.kill(-pid, "SIGKILL"); } catch (error) { if (!noProcess(error)) entry.cleanupError = new Error(errorText(error)); }
         }, 1000);
@@ -250,7 +302,7 @@ export class ManagedShell {
       : result.status === "stopping" ? "Cancellation requested; termination is not yet confirmed." : "Process continues.";
     let text = `Session: ${result.session_id} | Status: ${result.status} | ${status}\nWall time: ${result.wall_time_seconds.toFixed(3)} seconds | Observation: ${result.wake_reason} | Stdin: ${result.stdin_open ? "open" : "closed"}`;
     if (result.message) text += `\n${result.message}`;
-    if (result.input) text += "\nInput accepted by stdin. This does not confirm application processing.";
+    if (result.input) text += "\nInput accepted by the session. Application processing remains unconfirmed.";
     if ("cleanup" in result && result.cleanup.message) text += `\nCleanup: ${result.cleanup.state}. ${result.cleanup.message}`;
     text += `\n\n${projection.display.content || "(no new output)"}`;
     if (projection.display.truncated) {
@@ -269,42 +321,60 @@ export class ManagedShell {
     try { if (options.signal?.aborted) { abort(); options.signal.throwIfAborted(); } return await this.observe(entry, input.yield_time_ms ?? 10000, options, started); }
     finally { options.signal?.removeEventListener("abort", abort); }
   }
-  async control(input: ShellControlInput, options: ObserveOptions = {}): Promise<ShellObservation> {
+  async control(input: ShellControlRequest, options: ObserveOptions = {}): Promise<ShellObservation> {
     const started = performance.now();
-    options.signal?.throwIfAborted(); const entry = this.get(input.session_id);
-    if (input.action === "stop") return this.observe(entry, this.cancel(entry, "stop") ? STOP_CONFIRM_MS : 0, options, started);
-    if (input.action === "send") {
+    options.signal?.throwIfAborted();
+    const request = input.action === "send"
+      ? { action: "wait", session_id: input.session_id, chars: input.data, eof: input.eof, yield_time_ms: input.wait_ms }
+      : "wait_ms" in input
+        ? { action: "wait", session_id: input.session_id, yield_time_ms: input.wait_ms }
+        : input;
+    const entry = this.get(request.session_id);
+    if (request.action === "stop") return this.observe(entry, this.cancel(entry, "stop") ? STOP_CONFIRM_MS : 0, options, started);
+    const chars = "chars" in request ? request.chars : undefined;
+    const eof = "eof" in request ? request.eof : undefined;
+    const yieldTime = "yield_time_ms" in request ? request.yield_time_ms : undefined;
+    const hasInput = (chars?.length ?? 0) > 0 || eof === true;
+    if (hasInput) {
       if (entry.state.status !== "running") throw new ShellOperationError("process_exited", "Input was not sent; the process is finished or stopping.", this.snapshot(entry), "not_sent");
-      const stream = entry.child.stdin;
-      if (!entry.state.stdin_open || !stream || stream.destroyed || stream.writableEnded) throw new ShellOperationError("stdin_closed", "Input was not sent. This session's stdin is closed and cannot be reopened.", this.snapshot(entry), "not_sent");
+      if (eof === true && entry.mode === "pty") throw new ShellOperationError("eof_not_supported", "Input was not sent. eof is supported only for pipe sessions. PTY input uses terminal characters through chars.", this.snapshot(entry), "not_sent");
+      if (!entry.state.stdin_open) throw new ShellOperationError("stdin_closed", "Input was not sent. This session's stdin is closed and cannot be reopened.", this.snapshot(entry), "not_sent");
       if (entry.writing) throw new ShellOperationError("observation_in_progress", "Another input delivery is still in progress.", this.snapshot(entry), "not_sent");
       entry.writing = true;
       try {
-        await new Promise<void>((resolve, reject) => {
-          let finished = false;
-          const finish = (error?: Error | null) => { if (finished) return; finished = true; clearTimeout(timer); stream.removeListener("error", failed); stream.removeListener("close", closed); options.signal?.removeEventListener("abort", abort); error ? reject(error) : resolve(); };
-          const failed = (error: Error) => finish(error);
-          const closed = () => finish(new Error("stdin closed during input delivery"));
-          const abort = () => { stream.destroy(); finish(new Error("input delivery interrupted")); };
-          const timer = setTimeout(() => { stream.destroy(); finish(new Error("input delivery exceeded 5000 ms")); }, 5000);
-          stream.once("error", failed); stream.once("close", closed); options.signal?.addEventListener("abort", abort, { once: true });
-          const afterWrite = (error?: Error | null) => {
-            if (error) { finish(error); return; }
-            if (input.eof) stream.end(() => { if (entry.state.status === "running") entry.state = { ...entry.state, stdin_open: false }; finish(); });
-            else finish();
-          };
-          if (input.data) stream.write(input.data, "utf8", afterWrite); else afterWrite();
-          if (options.signal?.aborted) abort();
-        });
+        if (entry.pty) {
+          if (chars) entry.pty.write(chars);
+        } else {
+          const stream = entry.stdin;
+          if (!stream || stream.destroyed || stream.writableEnded) throw new Error("stdin is closed during input delivery");
+          await new Promise<void>((resolve, reject) => {
+            let finished = false;
+            const finish = (error?: Error | null) => { if (finished) return; finished = true; clearTimeout(timer); stream.removeListener("error", failed); stream.removeListener("close", closed); options.signal?.removeEventListener("abort", abort); error ? reject(error) : resolve(); };
+            const failed = (error: Error) => finish(error);
+            const closed = () => finish(new Error("stdin closed during input delivery"));
+            const abort = () => { stream.destroy(); finish(new Error("input delivery interrupted")); };
+            const timer = setTimeout(() => { stream.destroy(); finish(new Error("input delivery exceeded 5000 ms")); }, 5000);
+            stream.once("error", failed); stream.once("close", closed); options.signal?.addEventListener("abort", abort, { once: true });
+            const afterWrite = (error?: Error | null) => {
+              if (error) { finish(error); return; }
+              if (eof) stream.end(() => { if (entry.state.status === "running") entry.state = { ...entry.state, stdin_open: false }; finish(); });
+              else finish();
+            };
+            if (chars) stream.write(chars, "utf8", afterWrite); else afterWrite();
+            if (options.signal?.aborted) abort();
+          });
+        }
+        if (entry.pty && entry.state.status === "running") entry.state = { ...entry.state, stdin_open: true };
       } catch (error) {
-        stream.destroy(); if (entry.state.status === "running") entry.state = { ...entry.state, stdin_open: false };
+        if (entry.stdin) entry.stdin.destroy();
+        if (entry.state.status === "running" && entry.mode === "pipe") entry.state = { ...entry.state, stdin_open: false };
         throw new ShellOperationError("stdin_write_failed", `Input delivery is unknown; do not resend automatically. ${errorText(error)}`, this.snapshot(entry), "unknown");
       } finally { entry.writing = false; }
-      return this.observe(entry, input.wait_ms ?? 500, { ...options, input: "accepted" }, started);
+      return this.observe(entry, yieldTime ?? 500, { ...options, input: "accepted" }, started);
     }
     if (entry.waiting) throw new ShellOperationError("observation_in_progress", "Another wait is observing this session. Input and stop remain available.", this.snapshot(entry));
     entry.waiting = true;
-    try { return await this.observe(entry, input.wait_ms ?? 10000, options, started); }
+    try { return await this.observe(entry, yieldTime ?? 10000, options, started); }
     finally { entry.waiting = false; }
   }
   async stopAll(): Promise<void> {
@@ -315,6 +385,7 @@ export class ManagedShell {
   }
   async execute(command: string, signal?: AbortSignal, onUpdate?: Entry["onUpdate"], onData?: Entry["onData"]): Promise<ShellReceipt> {
     signal?.throwIfAborted(); const entry = await this.start({ command }, onUpdate, onData);
+    entry.stdin?.end();
     const abort = () => { this.cancel(entry, "user_interrupt"); };
     signal?.addEventListener("abort", abort, { once: true }); if (signal?.aborted) abort();
     try { await entry.closed; if (entry.cleanupError) throw entry.cleanupError; entry.terminalDelivered = true; return { ...entry.receipt }; }

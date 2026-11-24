@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50 KiB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.\n\nReturns process status and a short session_id. Commands that finish sooner return immediately; commands still running after the requested observation window continue in the same session. This is not a failure. Use shell_control to wait, send input, or stop that session instead of launching the command again. Already-finished sessions return immediately. wall_time_seconds reports this call's actual elapsed seconds, not cumulative process lifetime. A running session's saved file is an immutable snapshot of the command output captured so far. Read saved output only when needed for the task. Programmatic callers receive independently bounded structured output.\n\nRuns with your OS privileges; commands can access paths outside the workspace.",
+  "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50 KiB (whichever is hit first). If truncated, full output is saved to a temp file.\n\nReturns process status and a short session_id. Commands that finish sooner return immediately; commands still running after the requested observation window continue in the same session. Choose io_mode \"pipe\" by default for ordinary streams, scripts, tests, and commands that may need a real EOF. Choose io_mode \"pty\" for REPLs, TUIs, and terminal prompts. Use shell_control with action \"wait\" to observe or provide chars, or action \"stop\" to cancel that session. chars works for either mode. eof closes stdin for pipe sessions and returns eof_not_supported for PTY sessions. Already-finished sessions return immediately. wall_time_seconds reports this call's actual elapsed seconds, not cumulative process lifetime. A running session's saved file is an immutable snapshot of the command output captured so far. Read saved output only when needed for the task. Programmatic callers receive independently bounded structured output.\n\nRuns with your OS privileges; commands can access paths outside the workspace.",
   "type": "object",
   "required": [
     "command"
@@ -11,32 +11,28 @@
       "minLength": 1,
       "description": "Command interpreted by the selected shell in the current working directory."
     },
+    "io_mode": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "pipe",
+          "description": "Use ordinary stdout/stderr pipes and a writable stdin. shell_control can send chars or close stdin with eof."
+        },
+        {
+          "type": "string",
+          "const": "pty",
+          "description": "Use pseudo-terminal semantics for REPLs, TUIs, and terminal prompts. shell_control can send chars; eof is rejected for PTY sessions."
+        }
+      ],
+      "default": "pipe",
+      "description": "Process transport. Defaults to pipe. PTY output is returned in the same normalized session result format."
+    },
     "yield_time_ms": {
       "type": "integer",
       "minimum": 10000,
       "maximum": 60000,
       "default": 10000,
-      "description": "Maximum initial observation time in milliseconds, default 10000, range 10000 to 60000. Earlier exit returns earlier; expiry leaves the process running."
-    },
-    "timeout": {
-      "type": "number",
-      "minimum": 1,
-      "maximum": 600,
-      "description": "Optional execution deadline in seconds, 1 to 600, no default. Expiry cancels the process tree, including after handoff."
-    },
-    "stdin": {
-      "anyOf": [
-        {
-          "type": "string",
-          "const": "closed"
-        },
-        {
-          "type": "string",
-          "const": "pipe"
-        }
-      ],
-      "default": "closed",
-      "description": "closed by default. pipe permits later exact input through shell_control. No PTY is allocated."
+      "description": "Maximum initial observation window in integer milliseconds, default 10000, range 10000 to 60000. Earlier exit returns earlier; expiry leaves the process running for shell_control."
     }
   },
   "additionalProperties": false

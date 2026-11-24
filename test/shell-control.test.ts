@@ -11,7 +11,7 @@ import { ManagedShell, ShellOperationError } from "../src/tools/shell.js";
 import { ToolOutputFiles } from "../src/tools/output-files.js";
 import { ShellOutput } from "../src/tools/shell-output.js";
 import { createOutputCleaner } from "../src/tools/output.js";
-import { bashInputSchema, shellControlInputSchema, shellResultSchema, parseShellArguments } from "../src/tools/shell-contract.js";
+import { bashInputSchema, shellControlInputSchema, shellResultSchema, parseShellArguments, ShellArgumentError } from "../src/tools/shell-contract.js";
 
 async function fixture(t: TestContext, executable?: string) {
   const cwd = await mkdtemp(join(tmpdir(), "arkcode-control-test-"));
@@ -60,18 +60,49 @@ test("shell output cleaning retains text across split ANSI escape sequences", ()
 test("shell schemas enforce exact timing, operation fields, input presence and byte size before effects", () => {
   for (const yield_time_ms of [0, 9999, 60001, 10000.5, "10000", null]) assert.throws(() => parseShellArguments(bashInputSchema, { command: "echo ok", yield_time_ms }));
   for (const yield_time_ms of [10000, 60000]) assert.ok(parseShellArguments(bashInputSchema, { command: "echo ok", yield_time_ms }));
-  for (const wait_ms of [0, 9999, 300001, 10000.5]) assert.throws(() => parseShellArguments(shellControlInputSchema, { action: "wait", session_id: "s", wait_ms }));
-  for (const wait_ms of [10000, 300000]) assert.ok(parseShellArguments(shellControlInputSchema, { action: "wait", session_id: "s", wait_ms }));
-  for (const data of [" ", "\n"]) assert.ok(parseShellArguments(shellControlInputSchema, { action: "send", session_id: "s", data }));
-  assert.ok(parseShellArguments(shellControlInputSchema, { action: "send", session_id: "s", eof: true }));
+  assert.deepEqual(parseShellArguments(bashInputSchema, { command: "echo ok" }), { command: "echo ok", io_mode: "pipe", yield_time_ms: 10000 });
+  let removedTimeout: unknown;
+  try { parseShellArguments(bashInputSchema, { command: "echo ok", timeout: 1 }); }
+  catch (error) { removedTimeout = error; }
+  assert.ok(removedTimeout instanceof ShellArgumentError);
+  assert.equal(removedTimeout.field, "timeout");
+  assert.match(removedTimeout.hint ?? "", /Omit timeout/);
+  for (const yield_time_ms of [0, 499, 300001, 10000.5]) assert.throws(() => parseShellArguments(shellControlInputSchema, { action: "wait", session_id: "s", yield_time_ms }));
+  for (const yield_time_ms of [10000, 300000]) assert.ok(parseShellArguments(shellControlInputSchema, { action: "wait", session_id: "s", yield_time_ms }));
+  for (const yield_time_ms of [0, 499, 60001, 10000.5]) assert.throws(() => parseShellArguments(shellControlInputSchema, { action: "wait", session_id: "s", chars: "x", yield_time_ms }));
+  for (const yield_time_ms of [500, 60000]) assert.ok(parseShellArguments(shellControlInputSchema, { action: "wait", session_id: "s", chars: "x", yield_time_ms }));
+  for (const chars of [" ", "\n"]) assert.ok(parseShellArguments(shellControlInputSchema, { action: "wait", session_id: "s", chars }));
+  assert.ok(parseShellArguments(shellControlInputSchema, { action: "wait", session_id: "s", eof: true }));
+  assert.deepEqual(parseShellArguments(shellControlInputSchema, { session_id: "s" }), { action: "wait", session_id: "s", yield_time_ms: 10000 });
+  assert.deepEqual(parseShellArguments(shellControlInputSchema, { session_id: "s", wait_ms: 60000 }), { action: "wait", session_id: "s", yield_time_ms: 60000 });
+  assert.deepEqual(parseShellArguments(shellControlInputSchema, { action: "send", session_id: "s", data: "x" }), { action: "wait", session_id: "s", chars: "x", yield_time_ms: 500 });
   for (const params of [
     { action: "send", session_id: "s" }, { action: "send", session_id: "s", data: "" },
-    { action: "send", session_id: "s", data: "中".repeat(22000) },
-    { action: "send", session_id: "s", data: "x", wait_ms: 499 },
-    { action: "stop", session_id: "s", wait_ms: 5000 },
-    { action: "wait", session_id: "s", eof: true },
+    { action: "wait", session_id: "s", chars: "中".repeat(22000) },
+    { action: "wait", session_id: "s", chars: "x", yield_time_ms: 499 },
+    { action: "stop", session_id: "s", yield_time_ms: 5000 },
     { action: "wait", session_id: "s", max_output_tokens: 10000 },
   ]) assert.throws(() => parseShellArguments(shellControlInputSchema, params));
+});
+
+test("shell argument and operation errors identify the repair", async (t) => {
+  let caught: unknown;
+  try { parseShellArguments(shellControlInputSchema, { action: "wait", session_id: "s", chars: "x", yield_time_ms: 499 }); }
+  catch (error) { caught = error; }
+  assert.ok(caught instanceof ShellArgumentError);
+  const invalid = caught;
+  assert.match(invalid.message, /between 500 and 60000/);
+  assert.equal(invalid.field, "yield_time_ms");
+  assert.ok(invalid.hint);
+  assert.match(invalid.hint, /inclusive range/);
+  const { cwd, shell } = await fixture(t);
+  const tool = createTools({ cwd, shell, authorize: async () => true }).find(candidate => candidate.name === "shell_control");
+  assert.ok(tool);
+  const result = await Reflect.apply(tool.execute, tool, ["invalid", { action: "wait", session_id: "s", yield_time_ms: 500 }]);
+  const parsed = z.object({ isError: z.literal(true), structuredContent: z.object({ kind: z.literal("error"), error: z.object({
+    code: z.literal("invalid_arguments"), field: z.literal("yield_time_ms"), hint: z.string(), retryable: z.literal(true), message: z.string(),
+  }) }) }).parse(result);
+  assert.match(parsed.structuredContent.error.message, /10000 and 300000/);
 });
 
 test("shell handoff names the requested window and finished waits report only this call's seconds", { timeout: 10000 }, async (t) => {
@@ -91,7 +122,7 @@ test("shell handoff names the requested window and finished waits report only th
   for (const key of ["waited_ms", "elapsed_ms", "shell", "cwd"]) assert.equal(key in started.result, false);
 
   await until(() => shell.list()[0]?.status === "completed");
-  const ended = await shell.control({ action: "wait", session_id: id, wait_ms: 300000 }, { signal: AbortSignal.timeout(1500) });
+  const ended = await shell.control({ action: "wait", session_id: id, yield_time_ms: 300000 }, { signal: AbortSignal.timeout(1500) });
   assert.equal(ended.result.status, "completed");
   assert.equal(ended.result.output, "FINISHED\n");
   assert.equal(ended.result.wake_reason, "exit");
@@ -107,30 +138,59 @@ test("shell handoff names the requested window and finished waits report only th
   assert.notEqual(next.result.session_id, id);
 });
 
+test("PTY sessions accept chars and report that EOF is unsupported", { timeout: 15000 }, async (t) => {
+  const { shell, tools } = await fixture(t);
+  const interactive = `process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');process.stdin.once('data',d=>{process.stdout.write('INPUT:'+d);process.exit(0)});`;
+  const started = await shell.launch({ command: command(interactive), io_mode: "pty", yield_time_ms: 500 });
+  assert.equal(started.result.status, "running");
+  const sent = await shell.control({ action: "wait", session_id: started.result.session_id, chars: "go\r\n", yield_time_ms: 3000 });
+  assert.equal(sent.result.status, "completed");
+  assert.equal(sent.result.input?.state, "accepted");
+  assert.match(sent.result.output, /INPUT:go/);
+
+  const waiting = await shell.launch({ command: command("setTimeout(()=>{},10000)"), io_mode: "pty", yield_time_ms: 100 });
+  const control = tools.find(tool => tool.name === "shell_control");
+  assert.ok(control);
+  const eofResult = await Reflect.apply(control.execute, control, ["pty-eof", { action: "wait", session_id: waiting.result.session_id, eof: true }]);
+  const eofError = z.object({ isError: z.literal(true), structuredContent: z.object({
+    kind: z.literal("error"), error: z.object({ code: z.literal("eof_not_supported"), hint: z.string(), retryable: z.literal(true) }),
+    input: z.object({ state: z.literal("not_sent") }),
+  }) }).parse(eofResult);
+  assert.match(eofError.structuredContent.error.hint, /chars/);
+  await shell.control({ action: "stop", session_id: waiting.result.session_id });
+});
+
 for (const executable of [undefined, ...(process.platform === "win32" ? ["powershell.exe"] : [])]) {
   test(`real redirected input and EOF work with ${executable ?? "selected shell"}`, async (t) => {
     const { shell } = await fixture(t, executable);
-    const started = await shell.launch({ command: command(worker), stdin: "pipe", yield_time_ms: 200 });
+    const eofOnlyStart = await shell.launch({ command: command(worker), io_mode: "pipe", yield_time_ms: 200 });
+    const eofOnly = await shell.control({ action: "wait", session_id: eofOnlyStart.result.session_id, eof: true });
+    assert.equal(eofOnly.result.status, "completed");
+    assert.equal(eofOnly.result.stdin_open, false);
+    assert.equal(eofOnly.result.input?.state, "accepted");
+    assert.match(eofOnly.result.output, /EOF\n$/);
+
+    const started = await shell.launch({ command: command(worker), io_mode: "pipe", yield_time_ms: 200 });
     assert.equal(started.result.status, "running");
     const id = started.result.session_id;
-    const sent = await shell.control({ action: "send", session_id: id, data: "中文🙂\n", eof: true });
+    const sent = await shell.control({ action: "wait", session_id: id, chars: "中文🙂\n", eof: true });
     assert.equal(sent.result.status, "completed");
     assert.equal(sent.result.stdin_open, false);
     assert.equal(sent.result.input?.state, "accepted");
     assert.match(sent.result.output, /INPUT:中文🙂\nEOF/);
     assert.ok(Value.Check(shellResultSchema, sent.result));
     assert.equal((await shell.control({ action: "wait", session_id: id })).result.output, "");
-    await assert.rejects(shell.control({ action: "send", session_id: id, data: "again" }), error => error instanceof ShellOperationError && error.delivery === "not_sent");
+    await assert.rejects(shell.control({ action: "wait", session_id: id, chars: "again" }), error => error instanceof ShellOperationError && error.delivery === "not_sent");
   });
 }
 
-test("wait batches progress, steering releases observation, and send/stop remain usable during wait", async (t) => {
+test("wait batches progress, steering releases observation, and input/stop remain usable during wait", async (t) => {
   const { shell } = await fixture(t);
-  const started = await shell.launch({ command: command(worker), stdin: "pipe", yield_time_ms: 50 });
+  const started = await shell.launch({ command: command(worker), io_mode: "pipe", yield_time_ms: 50 });
   const id = started.result.session_id;
-  const waiting = shell.control({ action: "wait", session_id: id, wait_ms: 10000 });
+  const waiting = shell.control({ action: "wait", session_id: id, yield_time_ms: 10000 });
   await assert.rejects(shell.control({ action: "wait", session_id: id }), /Another wait/);
-  const sent = await shell.control({ action: "send", session_id: id, data: "ping\n", wait_ms: 500 });
+  const sent = await shell.control({ action: "wait", session_id: id, chars: "ping\n", yield_time_ms: 500 });
   assert.equal(sent.result.status, "running");
   assert.match(sent.result.output, /INPUT:ping/);
   shell.steer();
@@ -150,13 +210,13 @@ test("wait batches progress, steering releases observation, and send/stop remain
 
 test("denied input has no effect and duplicate control call ids do not resend input", async (t) => {
   const { cwd, shell } = await fixture(t);
-  const started = await shell.launch({ command: command(worker), stdin: "pipe", yield_time_ms: 200 });
+  const started = await shell.launch({ command: command(worker), io_mode: "pipe", yield_time_ms: 200 });
   const deniedTools = createTools({ cwd, shell, authorize: async () => false });
   const tool = deniedTools.find(tool => tool.name === "shell_control"); assert.ok(tool);
-  const denied = await Reflect.apply(tool.execute, tool, ["denied", { action: "send", session_id: started.result.session_id, data: "DENIED\n" }]);
+  const denied = await Reflect.apply(tool.execute, tool, ["denied", { action: "wait", session_id: started.result.session_id, chars: "DENIED\n" }]);
   const parsed = z.object({ isError: z.literal(true), structuredContent: z.object({ input: z.object({ state: z.literal("not_sent") }) }) }).parse(denied);
   assert.equal(parsed.isError, true);
-  const send = () => shell.control({ action: "send", session_id: started.result.session_id, data: "ONCE\n", eof: true });
+  const send = () => shell.control({ action: "wait", session_id: started.result.session_id, chars: "ONCE\n", eof: true });
   const [first, repeated] = await Promise.all([shell.once("same-call", send), shell.once("same-call", send)]);
   assert.deepEqual(first, repeated);
   assert.doesNotMatch(first.result.output, /DENIED/);
@@ -168,9 +228,9 @@ test("denied input has no effect and duplicate control call ids do not resend in
 test("truncated live output yields an immutable readable prefix and later waits contain only new output", async (t) => {
   const { shell, files } = await fixture(t);
   const source = `for(let i=1;i<=2500;i++)console.log('line '+i);process.stdin.once('data',()=>{console.log('LATER');process.exit(0)});require('fs').writeFileSync('ready','yes');`;
-  const first = await shell.launch({ command: command(source), stdin: "pipe", yield_time_ms: 500 }, { exportFile: path => files.capture("shell_control", { fullOutputPath: path }) });
+  const first = await shell.launch({ command: command(source), io_mode: "pipe", yield_time_ms: 500 }, { exportFile: path => files.capture("shell_control", { fullOutputPath: path }) });
   await until(async () => { try { await stat(join(shell.cwd, "ready")); return true; } catch { return false; } });
-  const observed = first.text.includes("line 2500") ? first : await shell.control({ action: "wait", session_id: first.result.session_id, wait_ms: 100 });
+  const observed = first.text.includes("line 2500") ? first : await shell.control({ action: "wait", session_id: first.result.session_id, yield_time_ms: 10000 });
   assert.equal(observed.result.status, "running");
   assert.match(observed.text, /Output truncated.*Showing lines 501-2500/s);
   assert.equal(observed.result.truncated, false);
@@ -182,7 +242,7 @@ test("truncated live output yields an immutable readable prefix and later waits 
   assert.ok(before.startsWith("line 1\n"));
   const read = await files.readText(shell.cwd, path, { offset: 1, limit: 2 });
   assert.ok(read?.startsWith("line 1\nline 2\n"));
-  const final = await shell.control({ action: "send", session_id: first.result.session_id, data: "go\n" });
+  const final = await shell.control({ action: "wait", session_id: first.result.session_id, chars: "go\n" });
   assert.equal(final.result.status, "completed");
   assert.equal(final.result.output, "LATER\n");
   assert.equal(await readFile(path, "utf8"), before);
@@ -214,17 +274,6 @@ test("a failed artifact export does not consume the observation", async (t) => {
   assert.ok(id);
   const result = await shell.control({ action: "wait", session_id: id });
   assert.equal(result.result.output.length, 70000);
-});
-
-test("execution deadlines survive handoff and run end expires handles", async (t) => {
-  const { shell } = await fixture(t);
-  const start = await shell.launch({ command: command("setTimeout(()=>{},30000)"), timeout: 1, yield_time_ms: 50 });
-  assert.equal(start.result.status, "running");
-  const ended = await shell.control({ action: "wait", session_id: start.result.session_id });
-  assert.equal(ended.result.status, "timed_out");
-  assert.ok(Value.Check(shellResultSchema, ended.result));
-  await shell.endRun();
-  await assert.rejects(shell.control({ action: "wait", session_id: start.result.session_id }), error => error instanceof ShellOperationError && error.code === "session_expired");
 });
 
 test("completion notices are once-only metadata and do not consume output", async (t) => {

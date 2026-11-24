@@ -155,32 +155,28 @@
             "minLength": 1,
             "description": "Command interpreted by the selected shell in the current working directory."
           },
+          "io_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "pipe",
+                "description": "Use ordinary stdout/stderr pipes and a writable stdin. shell_control can send chars or close stdin with eof."
+              },
+              {
+                "type": "string",
+                "const": "pty",
+                "description": "Use pseudo-terminal semantics for REPLs, TUIs, and terminal prompts. shell_control can send chars; eof is rejected for PTY sessions."
+              }
+            ],
+            "default": "pipe",
+            "description": "Process transport. Defaults to pipe. PTY output is returned in the same normalized session result format."
+          },
           "yield_time_ms": {
             "type": "integer",
             "minimum": 10000,
             "maximum": 60000,
             "default": 10000,
-            "description": "Maximum initial observation time in milliseconds, default 10000, range 10000 to 60000. Earlier exit returns earlier; expiry leaves the process running."
-          },
-          "timeout": {
-            "type": "number",
-            "minimum": 1,
-            "maximum": 600,
-            "description": "Optional execution deadline in seconds, 1 to 600, no default. Expiry cancels the process tree, including after handoff."
-          },
-          "stdin": {
-            "anyOf": [
-              {
-                "type": "string",
-                "const": "closed"
-              },
-              {
-                "type": "string",
-                "const": "pipe"
-              }
-            ],
-            "default": "closed",
-            "description": "closed by default. pipe permits later exact input through shell_control. No PTY is allocated."
+            "description": "Maximum initial observation window in integer milliseconds, default 10000, range 10000 to 60000. Earlier exit returns earlier; expiry leaves the process running for shell_control."
           }
         },
         "additionalProperties": false
@@ -200,19 +196,29 @@
               "action": {
                 "type": "string",
                 "const": "wait",
-                "description": "Observe until exit, observation expiry, or user steering. Return new output; never replay earlier omitted logs."
+                "description": "Observe this session and optionally deliver chars or eof before observing. Omit chars and eof for a read-only wait."
               },
               "session_id": {
                 "type": "string",
                 "minLength": 1,
                 "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
               },
-              "wait_ms": {
+              "chars": {
+                "type": "string",
+                "maxLength": 0,
+                "description": "Empty or omitted chars means no input."
+              },
+              "eof": {
+                "type": "boolean",
+                "const": false,
+                "description": "No stdin is closed during a read-only wait."
+              },
+              "yield_time_ms": {
                 "type": "integer",
                 "minimum": 10000,
                 "maximum": 300000,
                 "default": 10000,
-                "description": "Observation budget in integer milliseconds, default 10000, range 10000 to 300000. Earlier exit and finished sessions return earlier. Expiry never stops the process."
+                "description": "Observation budget in integer milliseconds. Read-only waits use 10000-300000; waits that write chars or EOF use 500-60000. Default 10000 for a read-only wait."
               }
             },
             "additionalProperties": false
@@ -221,60 +227,78 @@
             "type": "object",
             "required": [
               "action",
-              "session_id"
+              "session_id",
+              "chars"
             ],
             "properties": {
               "action": {
                 "type": "string",
-                "const": "send",
-                "description": "Write exact input, optionally close stdin, then observe. Requires nonempty data or eof true."
+                "const": "wait",
+                "description": "Observe this session and optionally deliver chars or eof before observing. Omit chars and eof for a read-only wait."
               },
               "session_id": {
                 "type": "string",
                 "minLength": 1,
                 "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
               },
-              "data": {
+              "chars": {
                 "type": "string",
+                "minLength": 1,
                 "maxLength": 65536,
-                "description": "Exact UTF-8 input, at most 65536 bytes. No trimming or appended newline. Include \\n when required."
+                "description": "Optional exact UTF-8 text sent to the session, at most 65536 bytes. No trimming or appended newline. Include \\n when required. PTY sessions receive this as terminal input."
               },
               "eof": {
                 "type": "boolean",
                 "default": false,
-                "description": "After optional data, permanently close stdin. Can be true without data. EOF is not process termination or Ctrl+C."
+                "description": "Pipe sessions only. After optional chars, permanently close the pipe stdin. PTY sessions reject eof with error code eof_not_supported. EOF is not process termination or Ctrl+C."
               },
-              "wait_ms": {
+              "yield_time_ms": {
                 "type": "integer",
                 "minimum": 500,
                 "maximum": 60000,
                 "default": 500,
-                "description": "Observation budget after input delivery, in integer milliseconds, default 500, range 500 to 60000. Earlier exit returns earlier."
+                "description": "Observation budget in integer milliseconds. Read-only waits use 10000-300000; waits that write chars or EOF use 500-60000. Default 500 after input."
               }
             },
-            "additionalProperties": false,
-            "anyOf": [
-              {
-                "required": [
-                  "data"
-                ],
-                "properties": {
-                  "data": {
-                    "minLength": 1
-                  }
-                }
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "action",
+              "session_id",
+              "eof"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "wait",
+                "description": "Observe this session and optionally deliver chars or eof before observing. Omit chars and eof for a read-only wait."
               },
-              {
-                "required": [
-                  "eof"
-                ],
-                "properties": {
-                  "eof": {
-                    "const": true
-                  }
-                }
+              "session_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Short opaque session_id returned by bash in this agent run. Pass it unchanged to shell_control; never use an OS PID."
+              },
+              "chars": {
+                "type": "string",
+                "maxLength": 65536,
+                "description": "Optional exact UTF-8 text sent to the session, at most 65536 bytes. No trimming or appended newline. Include \\n when required. PTY sessions receive this as terminal input."
+              },
+              "eof": {
+                "type": "boolean",
+                "const": true,
+                "description": "Pipe sessions only. After optional chars, permanently close the pipe stdin. PTY sessions reject eof with error code eof_not_supported. EOF is not process termination or Ctrl+C."
+              },
+              "yield_time_ms": {
+                "type": "integer",
+                "minimum": 500,
+                "maximum": 60000,
+                "default": 500,
+                "description": "Observation budget in integer milliseconds. Read-only waits use 10000-300000; waits that write chars or EOF use 500-60000. Default 500 after input."
               }
-            ]
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",

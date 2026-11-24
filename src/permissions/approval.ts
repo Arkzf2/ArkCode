@@ -18,14 +18,15 @@ export class ApprovalBroker {
     if (permission === "never-ask") return true;
     const mcp = request.invocation?.kind === "mcp" ? request.invocation : undefined;
     const control = request.invocation?.kind === "shell_control" ? request.invocation : undefined;
-    if (control && control.action !== "send") return true;
+    const controlWrites = control?.action === "wait" && ((control.chars?.length ?? 0) > 0 || control.eof === true);
+    if (control && !controlWrites) return true;
     if (!mcp && ["read", "grep", "glob"].includes(request.tool)) return true;
     const generation = this.generation;
     const inspection = request.invocation?.kind === "shell"
       ? await inspectShell(request.invocation.command, request.invocation.shell) : undefined;
     if (generation !== this.generation || this.permission() !== permission) return false;
     const digest = createHash("sha256").update(JSON.stringify([request.tool, request.cwd, request.description, request.invocation])).digest("hex");
-    const dangerous = inspection?.dangerous || mcp?.destructive || control?.action === "send";
+    const dangerous = inspection?.dangerous || mcp?.destructive || controlWrites;
     if (!dangerous && this.grants.has(digest)) return true;
     if (!dangerous && (mcp ? permission === "ask-when-needed" && mcp.autoApprove : permission === "ask-when-needed" || inspection?.listing)) return true;
     const previous = this.queue;

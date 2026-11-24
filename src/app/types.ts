@@ -16,7 +16,7 @@ export interface ApprovalRequest {
   description: string;
   cwd: string;
   invocation?: { kind: "shell"; command: string; shell: string } | { kind: "file"; path: string }
-    | { kind: "shell_control"; action: "wait" | "send" | "stop"; session_id: string; command: string; shell: string; data?: string; eof?: boolean }
+    | { kind: "shell_control"; action: "wait" | "stop"; session_id: string; command: string; shell: string; chars?: string; eof?: boolean }
     | { kind: "mcp"; server: string; tool: string; source: string; identity: string;
       arguments: Record<string, unknown>; autoApprove: boolean; destructive: boolean };
 }

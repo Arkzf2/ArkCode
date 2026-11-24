@@ -48,10 +48,6 @@
                     },
                     {
                       "type": "string",
-                      "const": "timeout"
-                    },
-                    {
-                      "type": "string",
                       "const": "user_interrupt"
                     }
                   ]
@@ -238,66 +234,6 @@
                   }
                 }
               }
-            },
-            {
-              "type": "object",
-              "required": [
-                "stdin_open",
-                "exit_code",
-                "signal",
-                "status",
-                "termination_reason",
-                "cleanup"
-              ],
-              "properties": {
-                "stdin_open": {
-                  "type": "boolean",
-                  "const": false
-                },
-                "exit_code": {
-                  "anyOf": [
-                    {
-                      "type": "integer"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "signal": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "const": "timed_out"
-                },
-                "termination_reason": {
-                  "type": "string",
-                  "const": "timeout"
-                },
-                "cleanup": {
-                  "type": "object",
-                  "required": [
-                    "state"
-                  ],
-                  "properties": {
-                    "state": {
-                      "type": "string",
-                      "const": "confirmed"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
             }
           ]
         },
@@ -424,7 +360,7 @@
                   "const": "cleanup_failed"
                 }
               ],
-              "description": "Why this observation returned. wait_limit leaves the process running and does not mean failure or execution timeout."
+              "description": "Why this observation returned. wait_limit leaves the process running and does not mean failure or process termination."
             },
             "wall_time_seconds": {
               "type": "number",
@@ -509,6 +445,10 @@
                 },
                 {
                   "type": "string",
+                  "const": "eof_not_supported"
+                },
+                {
+                  "type": "string",
                   "const": "process_exited"
                 },
                 {
@@ -527,6 +467,15 @@
             },
             "message": {
               "type": "string"
+            },
+            "field": {
+              "type": "string"
+            },
+            "hint": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
             }
           }
         },
@@ -573,10 +522,6 @@
                         {
                           "type": "string",
                           "const": "stop"
-                        },
-                        {
-                          "type": "string",
-                          "const": "timeout"
                         },
                         {
                           "type": "string",
@@ -749,66 +694,6 @@
                           "const": "user_interrupt"
                         }
                       ]
-                    },
-                    "cleanup": {
-                      "type": "object",
-                      "required": [
-                        "state"
-                      ],
-                      "properties": {
-                        "state": {
-                          "type": "string",
-                          "const": "confirmed"
-                        },
-                        "message": {
-                          "type": "string"
-                        }
-                      }
-                    }
-                  }
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "stdin_open",
-                    "exit_code",
-                    "signal",
-                    "status",
-                    "termination_reason",
-                    "cleanup"
-                  ],
-                  "properties": {
-                    "stdin_open": {
-                      "type": "boolean",
-                      "const": false
-                    },
-                    "exit_code": {
-                      "anyOf": [
-                        {
-                          "type": "integer"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "signal": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "status": {
-                      "type": "string",
-                      "const": "timed_out"
-                    },
-                    "termination_reason": {
-                      "type": "string",
-                      "const": "timeout"
                     },
                     "cleanup": {
                       "type": "object",

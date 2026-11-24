@@ -27,27 +27,25 @@ edit and write serialize against actual files within the same process SDK instan
 | Field | Constraint |
 | --- | --- |
 | `command` | Required non-empty string, executed with the actual shell syntax |
-| `yield_time_ms` | integer milliseconds, default 10000, range 10000 to 60000 |
-| `timeout` | optional execution limit, 1 to 600 seconds, decimals allowed, no default |
-| `stdin` | `closed` or `pipe`, default closed, no PTY |
+| `io_mode` | `pipe` or `pty`, default `pipe`. `pipe` keeps ordinary streams and writable stdin. `pty` provides terminal semantics |
+| `yield_time_ms` | initial observation window in integer milliseconds, default 10000, range 10000 to 60000 |
 
-When the observation window expires, the tool returns `running` with a short `session_id`; the process keeps running. Wait with the same handle; do not restart the command. The execution limit acts independently and requests cancellation of the process tree when it expires.
+The tool runs the command for the requested observation window. If the process is still running, it returns `running` and a `session_id`; the process continues. Use the same handle with `shell_control`; do not restart the command. `yield_time_ms` does not terminate the process. Use `pipe` for ordinary commands and `pty` for REPLs, TUIs, and terminal prompts.
 
 ## shell_control
 
-Performs wait, send, or stop on an existing handle within the current agent run. `session_id` is an opaque handle, not an OS PID, and is not promised across user turns. For the exact schema, see [shell_control input](../../shared/schemas/shell_control.input.schema.json).
+Continues an existing handle within the current agent run. `session_id` is an opaque handle, not an OS PID, and is not promised across user turns. For the exact schema, see [shell_control input](../../shared/schemas/shell_control.input.schema.json).
 
 | action | Arguments and defaults |
 | --- | --- |
-| `wait` | required session_id; wait_ms default 10000, integer range 10000 to 300000 |
-| `send` | required session_id; requires non-empty data or eof=true; wait_ms default 500, integer range 500 to 60000 |
-| `stop` | accepts only action and session_id; starts cancellation immediately, does not accept wait_ms |
+| `wait` | required `session_id`; optional `chars`, `eof`, and `yield_time_ms`; read-only waits default to 10000 ms, input waits default to 500 ms |
+| `stop` | accepts only `action` and `session_id`. Requests process-tree cancellation |
 
-An ended process returns immediately. wait does not return on one progress event, and observation expiry does not terminate the process. Overlapping waits on the same handle are rejected, but send and stop are allowed during a wait.
+An ended process returns immediately. Observation expiry leaves the process alive. Overlapping `wait` calls on the same handle are rejected, while input and `stop` remain available. If `action` is omitted without input fields, the host infers `wait`. Use `action: "wait"` when sending `chars` or `eof`.
 
-send requires the process to have started with pipe. It passes the string exactly, without trimming or adding a newline, up to 65536 UTF-8 bytes. EOF closes stdin permanently; it is not termination or Ctrl+C. `accepted` proves delivery only, not program processing; `unknown` must not be resent automatically. Every send needs approval in both ask modes.
+`chars` passes exact text without trimming or adding a newline, up to 65536 UTF-8 bytes. It works for pipe and PTY sessions. `eof: true` applies only to pipe sessions and permanently closes stdin. PTY sessions return `eof_not_supported`; send terminal input through `chars`. `accepted` proves delivery only; do not resend input when the state is `unknown`.
 
-stop waits up to an internal 5000 ms for cleanup confirmation. `stopping` means not all descendants are confirmed stopped; a later wait can get the final state. A cleanup failure keeps the unconfirmed state and blocks further execution. Repeated stop does not extend the original confirmation deadline.
+`stop` requests process-tree cancellation and waits up to 5000 ms for cleanup confirmation. `stopping` means that cleanup is not confirmed; a later `wait` can return the final state.
 
 ## Shell results and output
 
@@ -56,16 +54,16 @@ The structured result is defined exactly in the [shared result schema](../../sha
 | Field | Meaning |
 | --- | --- |
 | `kind` | `session` or `error` |
-| `status` | session: running, stopping, completed, failed, cancelled, or timed_out |
+| `status` | session: `running`, `stopping`, `completed`, `failed`, or `cancelled` |
 | `session_id` | handle usable within the same run |
 | `output` | new structured output of this call |
 | `wake_reason` | exit, wait_limit, user_steer, stop_unconfirmed, or cleanup_failed |
 | `wall_time_seconds` | this call's duration in seconds, excluding approval, not cumulative process lifetime |
 | `exit_code`, `signal` | real exit information at a terminal state |
-| `termination_reason`, `cleanup` | cancellation or timeout reason and cleanup confirmation state |
+| `termination_reason`, `cleanup` | cancellation reason and cleanup confirmation state |
 | `truncated`, `truncation`, `output_file` | whether structured output was omitted, why, and the saved path |
 | `input` | delivery state; error results may be accepted, not_sent, or unknown |
-| `error.code`, `error.message` | tool call failure reason; different from a process normal non-zero exit |
+| `error.code`, `error.message`, `error.field`, `error.hint` | tool call failure reason and repair guidance; different from a process non-zero exit |
 
 | Output layer | Limit and truncation |
 | --- | --- |
@@ -73,9 +71,11 @@ The structured result is defined exactly in the [shared result schema](../../sha
 | Structured shell data received by CodeMode | separate 1 MiB; when exceeded, keeps head and tail and marks omission |
 | Script output CodeMode passes to the model | uses its own output budget, currently default 10000 tokens |
 
-Later waits return only new output; omitted content is not resent. On truncation, the complete log or an immutable complete prefix snapshot of the running output is saved; use read with offset and limit to read more. Registered text output supports ranged reads beyond 64 MiB files; authorization expires when the file identity changes or the run instance ends, and history resume does not restore it.
+Later `wait` calls return only new output; omitted content is not resent. Truncated output is saved to a file; use `read` with `offset` and `limit` to read more. Registered text output supports ranged reads beyond 64 MiB files; authorization expires when the file changes or the run ends.
 
-A CodeMode script ending does not mean a nested process ended. Scripts must check `kind` and `status` and handle rejects caused by argument validation. The whole agent run end, interruption, or runtime exit cleans up persistent processes.
+A CodeMode script ending does not mean a nested process ended. Scripts must check `kind` and `status` and handle argument validation errors. The agent run end, interruption, or runtime exit cleans up persistent processes.
+
+The host adds up to 2 KiB of shell status to each CodeMode result. The summary covers running commands, failures, cancellations, tool errors, and session-control results. A successful `bash` call without a saved log is omitted. `wait_limit` means that the process was still running when the observation window closed.
 
 ## Dynamic tools
 

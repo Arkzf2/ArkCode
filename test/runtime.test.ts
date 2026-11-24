@@ -2181,6 +2181,69 @@ test("actual provider reasoning reaches the transcript with a stable identity an
   assert.equal(f.requests.length, 1);
 });
 
+test("CodeMode sends bounded shell status to the next model request even when the script discards it", { timeout: 30000 }, async (t) => {
+  const prefix = "Shell results (host observations)\n";
+  const call = (code: string): ToolReply => ({ kind: "tool", name: "codemode", arguments: { code } });
+  let logPath: string | undefined;
+  t.after(async () => { if (logPath) await rm(logPath, { force: true }); });
+  const f = await fixture(t, (request, index) => {
+    const message = request.messages.findLast(message => message.role === "tool")?.content;
+    assert.ok(index === 0 || typeof message === "string");
+    const output = typeof message === "string" ? message : "";
+    switch (index) {
+      case 0:
+        return call('const r = await tools.bash({command: "exit 0"}); text(r.output);');
+      case 1:
+        assert.ok(!output.includes(prefix));
+        return call(`// @options: {"max_output_tokens": 64}
+const r = await tools.bash({command: "exit 8"});
+text(r.output);
+try { await tools.shell_control({session_id: "sh_fixture", action: "wait", yield_time_ms: 2}); } catch {}
+await tools.shell_control({session_id: "sh_fixture"});
+text("Z".repeat(1000));`);
+      case 2:
+        assert.match(output, /^Script completed/);
+        assert.match(output, /#1 bash session_id=sh_[0-9a-f]+ status=failed .*exit_code=8 .*wake_reason=exit/);
+        assert.match(output, /#2 shell_control kind=error code=invalid_arguments field="yield_time_ms".*10000.*300000/);
+        assert.match(output, /#3 shell_control kind=error code=session_not_found/);
+        assert.match(output, /truncated output/);
+        return call(`for (let i = 0; i < 30; i++) {
+  try { await tools.bash({command: "exit 0", io_mode: "中".repeat(1000)}); } catch {}
+}`);
+      case 3: {
+        const summary = output.slice(output.indexOf(prefix));
+        assert.ok(summary.startsWith(prefix));
+        assert.match(summary, /code=invalid_arguments field="io_mode".*中/);
+        assert.doesNotMatch(summary, /\ufffd/);
+        assert.match(summary, /Additional shell results omitted\./);
+        assert.ok(Buffer.byteLength(summary, "utf8") <= 2048);
+        const command = 'node -e "process.stdout.write(\'shell log marker\\n\'+\'A\'.repeat(60000));process.exitCode=8"';
+        return call(`await tools.bash(${JSON.stringify({ command })});`);
+      }
+      case 4: {
+        assert.match(output, /status=failed .*exit_code=8/);
+        assert.doesNotMatch(output, /shell log marker/);
+        const match = /output_file=("(?:[^"\\]|\\.)*")/.exec(output);
+        assert.ok(match?.[1], output);
+        const path: unknown = JSON.parse(match[1]);
+        assert.ok(typeof path === "string");
+        logPath = path;
+        return call(`text(await tools.read(${JSON.stringify({ path, offset: 1, limit: 1 })}));`);
+      }
+      case 5:
+        assert.match(output, /shell log marker/);
+        assert.ok(!output.includes(prefix));
+        return { kind: "text", text: "Verified shell status." };
+      default:
+        assert.fail("Unexpected model request");
+    }
+  });
+  const { host } = await f.start();
+  await host.submit("Check the shell results while preserving only selected logs.");
+  assert.equal(host.outcome, "completed");
+  assert.equal(f.requests.length, 6);
+});
+
 for (const mode of ["direct", "codemode", "codemode-only"]) {
   test(`shell_control shares sessions across tool calls in ${mode} mode`, { timeout: 60000 }, async (t) => {
     let sessionId = "";
@@ -2191,25 +2254,28 @@ for (const mode of ["direct", "codemode", "codemode-only"]) {
     const f = await fixture(t, (request, index) => {
       const latest = request.messages.findLast(message => message.role === "tool")?.content;
       const output = typeof latest === "string" ? latest : JSON.stringify(latest);
-      if (index === 0) return call("bash", { command, stdin: "pipe" });
+      if (index === 0) return call("bash", { command, io_mode: "pipe" });
       if (index === 1) {
         assert.match(output, /running/); assert.match(output, /READY/);
+        if (mode === "codemode-only") assert.match(output, /#1 bash session_id=sh_[0-9a-f]+ status=running .*wake_reason=wait_limit/);
+        else assert.doesNotMatch(output, /Shell results \(host observations\)/);
         assert.match(output, /10000ms observation window/);
         assert.match(output, /(?:wall_time_seconds|Wall time:)/);
         assert.doesNotMatch(output, /waited_ms|elapsed_ms/);
         const match = output.match(/(?:Session: |"session_id"\s*:\s*")(sh_[a-f0-9]{8})/);
         assert.ok(match?.[1], output); sessionId = match[1];
-        return call("shell_control", { action: "send", session_id: sessionId, data: "中文🙂\n" });
+        return call("shell_control", { action: "wait", session_id: sessionId, chars: "中文🙂\n" });
       }
       if (index === 2) {
         assert.match(output, /INPUT:中文🙂/); assert.doesNotMatch(output, /READY/);
         assert.match(output, /accepted/);
         assert.ok(request.messages.some(message => JSON.stringify(message.content).includes("Host shell-session state")));
-        return call("shell_control", { action: "send", session_id: sessionId, eof: true });
+        return call("shell_control", { action: "wait", session_id: sessionId, eof: true });
       }
       if (index === 3) return call("shell_control", { action: "wait", session_id: sessionId });
       if (index === 4) {
         assert.match(output, /completed/); assert.doesNotMatch(output, /INPUT:中文🙂/);
+        if (mode !== "direct") assert.match(output, /#1 shell_control session_id=sh_[0-9a-f]+ status=completed .*exit_code=0/);
         return call("shell_control", { action: "stop", session_id: sessionId });
       }
       if (index === 6) return call("shell_control", { action: "wait", session_id: sessionId });
@@ -2248,7 +2314,7 @@ test("automatic compact restores the live shell inventory before the next model 
     }
     if (!launched) {
       launched = true;
-      return { kind: "tool", name: "bash", arguments: { command: `node -e "console.log('READY');process.stdin.resume();process.stdin.on('end',()=>process.exit(0));"`, stdin: "pipe" } };
+      return { kind: "tool", name: "bash", arguments: { command: `node -e "console.log('READY');process.stdin.resume();process.stdin.on('end',()=>process.exit(0));"`, io_mode: "pipe" } };
     }
     if (!sessionId) {
       const match = JSON.stringify(request.messages).match(/Session: (sh_[a-f0-9]{8})/);
@@ -2259,7 +2325,7 @@ test("automatic compact restores the live shell inventory before the next model 
       assert.equal(compacted, true);
       assert.ok(request.messages.some(message => JSON.stringify(message.content).includes("Host shell-session state") && JSON.stringify(message.content).includes(sessionId)));
       sent = true;
-      return { kind: "tool", name: "shell_control", arguments: { action: "send", session_id: sessionId, eof: true } };
+      return { kind: "tool", name: "shell_control", arguments: { action: "wait", session_id: sessionId, eof: true } };
     }
     return { kind: "text", text: "The original worker completed after compaction." };
   }, false, 32000);

@@ -274,7 +274,7 @@ test("SDK shell provides structured output beyond the bounded process receipt", 
   } finally { await shell.stopAll(); await files.cleanup(); }
 });
 
-test("approval requests identify exact write content and shell timeout", async () => {
+test("approval requests identify exact write content and shell commands", async () => {
   const files = await fixture();
   const shell = new ManagedShell(files.cwd);
   const requests: ApprovalRequest[] = [];
@@ -287,8 +287,8 @@ test("approval requests identify exact write content and shell timeout", async (
     await assert.rejects(executeTool(write, "first", { path: "file.txt", content: "first" }), /denied/);
     await assert.rejects(executeTool(write, "second", { path: "file.txt", content: "second" }), /denied/);
     const denied = z.object({ isError: z.literal(true), structuredContent: z.object({ kind: z.literal("error"), error: z.object({ code: z.literal("permission_denied") }) }) });
-    denied.parse(await executeTool(bash, "third", { command: "node --version", timeout: 1 }));
-    denied.parse(await executeTool(bash, "fourth", { command: "node --version", timeout: 2 }));
+    denied.parse(await executeTool(bash, "third", { command: "node --version" }));
+    denied.parse(await executeTool(bash, "fourth", { command: "node -e \"console.log('different command')\"" }));
     assert.notEqual(requests[0]?.description, requests[1]?.description);
     assert.notEqual(requests[2]?.description, requests[3]?.description);
     assert.equal(shell.list().length, 0);
@@ -317,7 +317,7 @@ test("managed native shell records exit codes and waits for descendant cancellat
   } finally { await shell.stopAll(); await files.cleanup(); }
 });
 
-test("bash timeout and nonzero exit retain structured session outcomes and real exit codes", { timeout: 15000 }, async () => {
+test("bash and nonzero exit retain structured session outcomes and real exit codes", { timeout: 15000 }, async () => {
   const files = await fixture();
   const shell = new ManagedShell(files.cwd);
   try {
@@ -329,11 +329,6 @@ test("bash timeout and nonzero exit retain structured session outcomes and real 
     assert.equal(failure.details.exitCode, 9);
     assert.equal(failure.structuredContent.status, "failed");
     assert.match(JSON.stringify(failure.content), /Exit code: 9/);
-    const timeout = failedReceipt.parse(await executeTool(bash, "timeout", { command: "node -e \"setTimeout(()=>{},30000)\"", timeout: 1 }));
-    assert.equal(timeout.isError, undefined);
-    assert.equal(timeout.details.exitCode, timeout.structuredContent.exit_code);
-    assert.equal(timeout.details.status, "timed_out");
-    assert.match(JSON.stringify(timeout.content), /timed_out/);
     assert.equal(shell.list().filter((entry) => entry.status === "running").length, 0);
   } finally { await shell.stopAll(); await files.cleanup(); }
 });

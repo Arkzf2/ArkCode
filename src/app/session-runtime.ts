@@ -24,6 +24,7 @@ import { slashCommands } from "../ui/commands.js";
 import { configuredModelIds, configureConnection, createModelRuntime, createResources, loadConfig, removeConfiguredModel, saveConfig, selectModel, thinkingLevelSchema, type ArkConfig, type ConnectionRequest } from "../config/settings.js";
 import { SessionLease, inspectSession, readRunMarker, writeRunMarker } from "../session/storage.js";
 import { ManagedShell } from "../tools/shell.js";
+import { installCodemodeShellSummary } from "../tools/codemode-shell-summary.js";
 import { installShellContext } from "../tools/shell-context.js";
 import { createTools, TOOL_NAMES, READ_TOOL_NAMES } from "../tools/index.js";
 import { cleanOutput } from "../tools/output.js";
@@ -50,7 +51,7 @@ export function contentText(content: unknown): string {
 const unsupported = new Set(["goal", "agent", "plugins", "memories", "plan", "cloud"]);
 const toolTargetSchema = z.object({ path: z.string().optional(), command: z.string().optional(), pattern: z.string().optional(), query: z.string().optional() });
 const toolResultSchema = z.object({ exitCode: z.number().nullable().optional(), diff: z.string().optional() });
-const shellToolDetailsSchema = z.object({ id: z.string(), status: z.enum(["running", "stopping", "completed", "failed", "cancelled", "timed_out"]) });
+const shellToolDetailsSchema = z.object({ id: z.string(), status: z.enum(["running", "stopping", "completed", "failed", "cancelled"]) });
 const shellHistorySchema = z.object({ id: z.string(), command: z.string(), exitCode: z.number().nullable(), status: z.enum(["running", "completed", "failed", "cancelled"]), output: z.string() });
 
 function toolDetails(args: unknown, name = ""): ToolDetails | undefined {
@@ -245,6 +246,7 @@ export class SessionRuntime {
       extensionFactories: [{ name: "arkcode-tool-output", hidden: true, factory: (pi) => {
           pi.on("tool_result", async (event) => { await outputFiles.capture(event.toolName, event.details); });
         } },
+        { name: "arkcode-codemode-shell-status", hidden: true, factory: installCodemodeShellSummary },
         { name: "arkcode-tool-loadout", hidden: true, factory: createToolLoadout({ settings: toolSettings, mcp, shell: () => shell.executable, shellInstructions: () => shell.instructions,
           tools: () => createTools({ cwd, shell, outputFiles, skills, authorize: (request) => this.authorizeTool(request) }),
           resetApprovals: () => this.broker.reset(),
@@ -368,7 +370,7 @@ export class SessionRuntime {
           cleanOutput(call.error ?? (call.status === "ok" ? "Completed in CodeMode. Output was consumed by the script." : "Execution unconfirmed.")),
           call.status === "ok" ? "done" : "error", toolDetails(call.arguments, call.name));
         const shellResult = shellToolDetailsSchema.safeParse(message.details);
-        const failed = shellResult.success && ["failed", "cancelled", "timed_out"].includes(shellResult.data.status);
+        const failed = shellResult.success && ["failed", "cancelled"].includes(shellResult.data.status);
         this.ui.tool(message.toolCallId, message.toolName, contentText(message.content), message.isError || failed ? "error" : "done", { ...details.get(message.toolCallId), ...toolResultDetails(message.details) });
       }
       else if (message.role === "bashExecution") this.ui.tool(randomUUID(), "shell", message.output, message.cancelled || message.exitCode !== 0 ? "error" : "done", { target: cleanOutput(message.command), exitCode: message.exitCode });
@@ -420,7 +422,7 @@ export class SessionRuntime {
         const shellResult = shellToolDetailsSchema.safeParse(event.result.details);
         if (shellResult.success && (event.toolName === "bash" || event.toolName === "shell_control")) this.shellCalls.set(shellResult.data.id, { id: event.toolCallId, name: event.toolName });
         const live = shellResult.success && (shellResult.data.status === "running" || shellResult.data.status === "stopping");
-        const failed = shellResult.success && ["failed", "cancelled", "timed_out"].includes(shellResult.data.status);
+        const failed = shellResult.success && ["failed", "cancelled"].includes(shellResult.data.status);
         this.ui.tool(event.toolCallId, event.toolName, contentText(event.result.content), live ? "running" : event.isError || failed ? "error" : "done", toolResultDetails(event.result.details));
         break;
       }
